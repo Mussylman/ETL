@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% set active_nav = "registers" %}
+
+{% block title %}{{ 'Edit' if union else 'New' }} Union — ETL Config{% endblock %}
+
+{% block breadcrumb %}
+    <li><a href="/registers">Registers</a></li>
+    <li><a href="/registers/{{ register.id }}">{{ register.code }}</a></li>
+    <li class="active">{{ 'Edit Union' if union else 'New Union' }}</li>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>{{ 'Edit Union' if union else 'New Union' }}</h2>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <form method="POST" action="{{ '/unions/' ~ union.id ~ '/edit' if union else '/registers/' ~ register.id ~ '/unions/new' }}">
+            <div class="form-grid">
+                <div class="form-group">
+                    <label for="union_code">Union Code *</label>
+                    <input type="text" id="union_code" name="union_code" required
+                           value="{{ union.union_code if union else '' }}"
+                           placeholder="combined_sales">
+                </div>
+                <div class="form-group full-width">
+                    <label for="description">Description</label>
+                    <textarea id="description" name="description" rows="2">{{ union.description if union else '' }}</textarea>
+                </div>
+                <div class="form-group full-width">
+                    <label for="output_columns">Output Columns</label>
+                    <input type="text" id="output_columns" name="output_columns"
+                           value="{{ union.output_columns | join(', ') if union and union.output_columns else '' }}"
+                           placeholder="col1, col2, col3 (comma-separated)">
+                    <div class="help">Comma-separated list of columns that all union members must provide</div>
+                </div>
+            </div>
+            <div class="d-flex gap-2" style="margin-top:20px">
+                <button type="submit" class="btn btn-primary">{{ 'Save Changes' if union else 'Create Union' }}</button>
+                <a href="/registers/{{ register.id }}" class="btn btn-secondary">Cancel</a>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

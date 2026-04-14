@@ -1,0 +1,263 @@
+{% extends "base.html" %}
+{% set active_nav = "registers" %}
+
+{% block title %}{{ 'Edit' if mapping else 'New' }} Mapping — ETL Config{% endblock %}
+
+{% block breadcrumb %}
+    <li><a href="/registers">Registers</a></li>
+    <li><a href="/registers/{{ source.register_id }}">{{ source.register_code if source.register_code else 'Register' }}</a></li>
+    <li><a href="/sources/{{ source.id }}">{{ source.source_code }}</a></li>
+    <li class="active">{{ 'Edit Mapping' if mapping else 'New Mapping' }}</li>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>{{ 'Edit Column Mapping' if mapping else 'New Column Mapping' }}{% if onec_field_name %} <span style="color:#4f46e5">{{ onec_field_name }}</span>{% endif %}</h2>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <form method="POST" action="{{ '/mappings/' ~ mapping.id ~ '/edit' if mapping else '/sources/' ~ source.id ~ '/mappings/new' }}">
+            <div class="form-grid">
+                <div class="form-group">
+                    <label for="source_column_display">Source Column * <small class="text-muted">(1C field)</small></label>
+                    <div class="autocomplete-wrap">
+                        <input type="text" id="source_column_display" required
+                               value="{{ onec_field_name if onec_field_name else (mapping.source_column if mapping else '') }}"
+                               placeholder="Начните вводить имя поля 1С...">
+                        <input type="hidden" id="source_column" name="source_column"
+                               value="{{ mapping.source_column if mapping else '' }}">
+                    </div>
+                    <div class="help" id="source_column_hint">
+                        {%- if mapping and mapping.source_column -%}
+                            MSSQL: {{ mapping.source_column }}
+                        {%- else -%}
+                            Введите русское имя поля — MSSQL-имя подставится автоматически
+                        {%- endif -%}
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="target_column">Target Column *</label>
+                    <input type="text" id="target_column" name="target_column" required
+                           value="{{ mapping.target_column if mapping else '' }}"
+                           placeholder="sum_document">
+                    <div class="help">Column name in PostgreSQL target table</div>
+                </div>
+                <div class="form-group">
+                    <label for="target_type">Target Type *</label>
+                    <input type="hidden" id="target_type_value" name="target_type" value="{{ mapping.target_type if mapping else '' }}">
+                    <select id="target_type" onchange="onTargetTypeChange()">
+                        <option value="">— select —</option>
+                        <option value="varchar">varchar</option>
+                        <option value="text">text</option>
+                        <option value="integer">integer</option>
+                        <option value="bigint">bigint</option>
+                        <option value="numeric">numeric</option>
+                        <option value="boolean">boolean</option>
+                        <option value="uuid">uuid</option>
+                        <option value="timestamp">timestamp</option>
+                        <option value="date">date</option>
+                        <option value="jsonb">jsonb</option>
+                        <option value="bytea">bytea</option>
+                    </select>
+                </div>
+                <div class="form-group" id="type_length_group" style="display:none">
+                    <label for="type_length">Length / Precision</label>
+                    <input type="text" id="type_length" placeholder="255, or 10,2 for numeric">
+                    <div class="help">For varchar(255) enter 255, for numeric(10,2) enter 10,2</div>
+                </div>
+                <div class="form-group">
+                    <label for="transform_type">Transform</label>
+                    <select id="transform_type" name="transform_type">
+                        <option value="">— none —</option>
+                        <option value="binary_to_uuid" {{ 'selected' if mapping and mapping.transform_type == 'binary_to_uuid' }}>binary_to_uuid (1C ref → UUID)</option>
+                        <option value="fix_year" {{ 'selected' if mapping and mapping.transform_type == 'fix_year' }}>fix_year (fix 1C dates)</option>
+                        <option value="binary_to_int" {{ 'selected' if mapping and mapping.transform_type == 'binary_to_int' }}>binary_to_int (1C TRef → int)</option>
+                        <option value="binary_to_bool" {{ 'selected' if mapping and mapping.transform_type == 'binary_to_bool' }}>binary_to_bool (binary(1) → bool)</option>
+                        <option value="recorder_type_lookup" {{ 'selected' if mapping and mapping.transform_type == 'recorder_type_lookup' }}>recorder_type_lookup (TRef → название)</option>
+                    </select>
+                </div>
+                <input type="hidden" id="transform_params" name="transform_params"
+                       value="{{ mapping.transform_params if mapping and mapping.transform_params else '' }}">
+                <div class="form-group">
+                    <label for="default_value">Default Value</label>
+                    <input type="text" id="default_value" name="default_value"
+                           value="{{ mapping.default_value if mapping and mapping.default_value else '' }}"
+                           placeholder="Optional">
+                </div>
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" name="is_expression" value="true"
+                               {{ 'checked' if mapping and mapping.is_expression }}
+                               style="width:auto;margin-right:6px">
+                        Is Expression
+                    </label>
+                    <div class="help">Source column is a SQL expression, not a column name</div>
+                </div>
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" name="is_nullable" value="true"
+                               {{ 'checked' if not mapping or mapping.is_nullable }}
+                               style="width:auto;margin-right:6px">
+                        Nullable
+                    </label>
+                </div>
+            </div>
+
+            <div class="d-flex gap-2" style="margin-top:20px">
+                <button type="submit" class="btn btn-primary">{{ 'Save Changes' if mapping else 'Create Mapping' }}</button>
+                <a href="/sources/{{ source.id }}" class="btn btn-secondary">Cancel</a>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── Target type → length/precision logic ──
+const TYPES_WITH_LENGTH = ['varchar', 'numeric'];
+
+function onTargetTypeChange() {
+    const sel = document.getElementById('target_type');
+    const grp = document.getElementById('type_length_group');
+    const lenInput = document.getElementById('type_length');
+    if (TYPES_WITH_LENGTH.includes(sel.value)) {
+        grp.style.display = '';
+        if (sel.value === 'varchar' && !lenInput.value) lenInput.value = '255';
+        if (sel.value === 'numeric' && !lenInput.value) lenInput.value = '10,2';
+    } else {
+        grp.style.display = 'none';
+        lenInput.value = '';
+    }
+    // Auto-set transform for uuid
+    const tf = document.getElementById('transform_type');
+    if (sel.value === 'uuid' && !tf.value) {
+        tf.value = 'binary_to_uuid';
+    }
+}
+
+// On form submit: merge type + length into hidden input
+document.querySelector('form').addEventListener('submit', function() {
+    const sel = document.getElementById('target_type');
+    const lenInput = document.getElementById('type_length');
+    const hidden = document.getElementById('target_type_value');
+    let val = sel.value;
+    if (lenInput.value && TYPES_WITH_LENGTH.includes(val)) {
+        val = val + '(' + lenInput.value.trim() + ')';
+    }
+    hidden.value = val;
+});
+
+// On load: parse existing target_type like "varchar(255)" back into select + length
+(function initTargetType() {
+    const sel = document.getElementById('target_type');
+    const lenInput = document.getElementById('type_length');
+    const hidden = document.getElementById('target_type_value');
+    const val = hidden.value;
+    if (!val) return;
+    const m = val.match(/^(\w+)\((.+)\)$/);
+    if (m) {
+        sel.value = m[1];
+        lenInput.value = m[2];
+    } else {
+        sel.value = val;
+    }
+    onTargetTypeChange();
+})();
+
+(function() {
+    const onecName = "{{ source.onec_name or '' }}";
+    if (!onecName) return;
+
+    // Load 1C columns once and use for autocomplete
+    let columns = [];
+
+    fetch(`/api/1c/structure?table=${encodeURIComponent(onecName)}`)
+        .then(r => r.json())
+        .then(data => {
+            if (data.length && data[0].fields) {
+                columns = data[0].fields;
+            }
+        });
+
+    const display = document.getElementById('source_column_display');
+    const hidden = document.getElementById('source_column');
+    const hint = document.getElementById('source_column_hint');
+    const wrap = display.closest('.autocomplete-wrap');
+    const listEl = document.createElement('div');
+    listEl.className = 'autocomplete-list';
+    wrap.appendChild(listEl);
+
+    display.addEventListener('input', () => {
+        // Clear hidden value when user types (they need to pick from list)
+        hidden.value = '';
+        hint.textContent = '';
+        const q = display.value.trim().toLowerCase();
+        if (!q || !columns.length) {
+            listEl.classList.remove('show');
+            return;
+        }
+        const matches = columns.filter(c =>
+            c.field_name.toLowerCase().includes(q) ||
+            c.field_name_sql.toLowerCase().includes(q)
+        ).slice(0, 20);
+
+        if (!matches.length) {
+            listEl.classList.remove('show');
+            return;
+        }
+        const specialMap = {'Recorder': '_RecorderRRef', 'ID': '_IDRRef'};
+        listEl.innerHTML = matches.map(c => {
+            const mssqlCol = specialMap[c.field_name_sql] || ('_' + c.field_name_sql);
+            return `<div class="autocomplete-item" data-sql="${mssqlCol}" data-name="${c.field_name}">
+                ${c.field_name}
+                <span class="sql-name">${mssqlCol}</span>
+            </div>`;
+        }).join('');
+        listEl.classList.add('show');
+
+        listEl.querySelectorAll('.autocomplete-item').forEach(el => {
+            el.addEventListener('click', () => {
+                display.value = el.dataset.name;       // "Номенклатура"
+                hidden.value = el.dataset.sql;          // "_Fld17845"
+                hint.textContent = 'MSSQL: ' + el.dataset.sql;
+                listEl.classList.remove('show');
+                // Auto-fill target_column
+                const targetInput = document.getElementById('target_column');
+                if (targetInput && !targetInput.value) {
+                    targetInput.value = el.dataset.sql.replace(/^_/, '').toLowerCase();
+                }
+            });
+        });
+    });
+
+    input.addEventListener('focus', () => {
+        if (columns.length && !input.value) {
+            // Show all columns on focus
+            listEl.innerHTML = columns.slice(0, 30).map(c =>
+                `<div class="autocomplete-item" data-sql="${c.field_name_sql}" data-name="${c.field_name}">
+                    ${c.field_name}
+                    <span class="sql-name">${c.field_name_sql}</span>
+                </div>`
+            ).join('');
+            listEl.classList.add('show');
+            listEl.querySelectorAll('.autocomplete-item').forEach(el => {
+                el.addEventListener('click', () => {
+                    input.value = el.dataset.sql;
+                    listEl.classList.remove('show');
+                    const targetInput = document.getElementById('target_column');
+                    if (targetInput && !targetInput.value) {
+                        targetInput.value = el.dataset.sql.toLowerCase();
+                    }
+                });
+            });
+        }
+    });
+
+    document.addEventListener('click', (e) => {
+        if (!wrap.contains(e.target)) listEl.classList.remove('show');
+    });
+})();
+</script>
+{% endblock %}

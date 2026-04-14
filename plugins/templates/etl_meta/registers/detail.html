@@ -1,0 +1,184 @@
+{% extends 'etl_meta/base.html' %}
+{% from 'etl_meta/_macros.html' import row_actions, active_badge %}
+
+{% block breadcrumb %}
+    <li><a href="{{ url_for('RegisterView.list') }}">Registers</a></li>
+    <li class="active">{{ register.code }}</li>
+{% endblock %}
+
+{% block page_content %}
+<div class="row">
+    <div class="col-md-12">
+        <h3>{{ register.name }} <small>{{ register.code }}</small>
+            <a href="{{ url_for('RegisterView.edit', id=register.id) }}" class="btn btn-warning btn-sm">
+                <i class="fa fa-pencil"></i> Edit
+            </a>
+        </h3>
+        <p>{{ register.description or '' }}</p>
+        <dl class="dl-horizontal">
+            <dt>Mode</dt><dd><code>{{ register.default_mode }}</code></dd>
+            <dt>Retail Table</dt><dd>{{ register.retail_table or '-' }}</dd>
+            <dt>Retail UID Column</dt><dd>{{ register.retail_uid_column or '-' }}</dd>
+            <dt>Status</dt><dd>{{ active_badge(register.is_active) }}</dd>
+        </dl>
+        <hr>
+
+        <!-- TABS -->
+        <ul class="nav nav-tabs" role="tablist">
+            <li role="presentation" class="active"><a href="#sources" data-toggle="tab">Sources ({{ sources|length }})</a></li>
+            <li role="presentation"><a href="#unions" data-toggle="tab">Unions ({{ unions|length }})</a></li>
+            <li role="presentation"><a href="#targets" data-toggle="tab">Targets ({{ targets|length }})</a></li>
+            <li role="presentation"><a href="#history" data-toggle="tab">History</a></li>
+        </ul>
+
+        <div class="tab-content" style="padding-top: 15px;">
+            <!-- SOURCES TAB -->
+            <div role="tabpanel" class="tab-pane active" id="sources">
+                <a href="{{ url_for('SourceView.create', register_id=register.id) }}" class="btn btn-primary btn-sm" style="margin-bottom:10px;">
+                    <i class="fa fa-plus"></i> Add Source
+                </a>
+                <table class="table table-striped table-bordered">
+                    <thead>
+                        <tr>
+                            <th>Code</th>
+                            <th>Type</th>
+                            <th>MSSQL Table</th>
+                            <th>Parent</th>
+                            <th>JOIN</th>
+                            <th>Columns</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for s in sources %}
+                        <tr>
+                            <td><a href="{{ url_for('SourceView.detail', id=s.id) }}">{{ s.source_code }}</a></td>
+                            <td><code>{{ s.source_type }}</code></td>
+                            <td><code>{{ s.mssql_schema }}.{{ s.mssql_table }}</code></td>
+                            <td>{{ s.parent_source_code or '-' }}</td>
+                            <td>{{ s.join_type or '-' }}</td>
+                            <td><span class="badge">{{ s.column_count }}</span></td>
+                            {{ row_actions(
+                                detail_url=url_for('SourceView.detail', id=s.id),
+                                edit_url=url_for('SourceView.edit', id=s.id),
+                                delete_url=url_for('SourceView.delete', id=s.id),
+                                item_name=s.source_code
+                            ) }}
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="7" class="text-center text-muted">No sources</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- UNIONS TAB -->
+            <div role="tabpanel" class="tab-pane" id="unions">
+                <a href="{{ url_for('UnionView.create', register_id=register.id) }}" class="btn btn-primary btn-sm" style="margin-bottom:10px;">
+                    <i class="fa fa-plus"></i> Add Union
+                </a>
+                <table class="table table-striped table-bordered">
+                    <thead>
+                        <tr>
+                            <th>Code</th>
+                            <th>Description</th>
+                            <th>Members</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for u in unions %}
+                        <tr>
+                            <td><a href="{{ url_for('UnionView.detail', id=u.id) }}">{{ u.union_code }}</a></td>
+                            <td>{{ u.description or '-' }}</td>
+                            <td><span class="badge">{{ u.member_count }}</span></td>
+                            {{ row_actions(
+                                detail_url=url_for('UnionView.detail', id=u.id),
+                                edit_url=url_for('UnionView.edit', id=u.id),
+                                delete_url=url_for('UnionView.delete', id=u.id),
+                                item_name=u.union_code
+                            ) }}
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="4" class="text-center text-muted">No unions</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- TARGETS TAB -->
+            <div role="tabpanel" class="tab-pane" id="targets">
+                <a href="{{ url_for('TargetView.create', register_id=register.id) }}" class="btn btn-primary btn-sm" style="margin-bottom:10px;">
+                    <i class="fa fa-plus"></i> Add Target
+                </a>
+                <table class="table table-striped table-bordered">
+                    <thead>
+                        <tr>
+                            <th>Table</th>
+                            <th>Load Mode</th>
+                            <th>Source</th>
+                            <th>Upsert Keys</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for t in targets %}
+                        <tr>
+                            <td><code>{{ t.target_schema }}.{{ t.target_table }}</code></td>
+                            <td><code>{{ t.load_mode }}</code></td>
+                            <td>{{ t.union_code or t.source_code or '-' }}</td>
+                            <td>{{ t.upsert_keys|join(', ') if t.upsert_keys else '-' }}</td>
+                            {{ row_actions(
+                                edit_url=url_for('TargetView.edit', id=t.id),
+                                delete_url=url_for('TargetView.delete', id=t.id),
+                                item_name=t.target_table
+                            ) }}
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="5" class="text-center text-muted">No targets</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- HISTORY TAB -->
+            <div role="tabpanel" class="tab-pane" id="history">
+                <table class="table table-striped table-bordered">
+                    <thead>
+                        <tr>
+                            <th>Started</th>
+                            <th>Target</th>
+                            <th>Mode</th>
+                            <th>Status</th>
+                            <th>Rows</th>
+                            <th>Duration</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for h in history %}
+                        <tr>
+                            <td>{{ h.started_at }}</td>
+                            <td>{{ h.target_table or '-' }}</td>
+                            <td><code>{{ h.run_mode }}</code></td>
+                            <td>
+                                {% if h.status == 'success' %}
+                                    <span class="label label-success">{{ h.status }}</span>
+                                {% elif h.status == 'error' %}
+                                    <span class="label label-danger">{{ h.status }}</span>
+                                {% else %}
+                                    <span class="label label-warning">{{ h.status }}</span>
+                                {% endif %}
+                            </td>
+                            <td>{{ h.rows_loaded or 0 }}</td>
+                            <td>{% if h.finished_at %}{{ (h.finished_at - h.started_at).total_seconds()|round(1) }}s{% else %}-{% endif %}</td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="6" class="text-center text-muted">No history</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

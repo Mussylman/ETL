@@ -1,0 +1,63 @@
+{% extends 'etl_meta/base.html' %}
+{% from 'etl_meta/_macros.html' import row_actions %}
+
+{% block breadcrumb %}
+    <li><a href="{{ url_for('RegisterView.list') }}">Registers</a></li>
+    <li><a href="{{ url_for('RegisterView.detail', id=union.register_id) }}">{{ union.register_code }}</a></li>
+    <li class="active">Union: {{ union.union_code }}</li>
+{% endblock %}
+
+{% block page_content %}
+<div class="row">
+    <div class="col-md-10">
+        <h3>Union: {{ union.union_code }}
+            <a href="{{ url_for('UnionView.edit', id=union.id) }}" class="btn btn-warning btn-sm">
+                <i class="fa fa-pencil"></i> Edit
+            </a>
+        </h3>
+        <p>{{ union.description or '' }}</p>
+        {% if union.output_columns %}
+        <p><strong>Output columns:</strong> <code>{{ union.output_columns|join(', ') }}</code></p>
+        {% endif %}
+
+        <hr>
+        <h4>Members
+            <a href="{{ url_for('UnionMemberView.create', union_id=union.id) }}" class="btn btn-primary btn-sm">
+                <i class="fa fa-plus"></i> Add Member
+            </a>
+        </h4>
+        <table class="table table-striped table-bordered">
+            <thead>
+                <tr>
+                    <th>Priority</th>
+                    <th>Source</th>
+                    <th>MSSQL Table</th>
+                    <th>WHERE</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for m in members %}
+                <tr>
+                    <td>{{ m.priority }}</td>
+                    <td>{{ m.source_code }}</td>
+                    <td><code>{{ m.mssql_table }}</code></td>
+                    <td>{{ m.where_clause or '-' }}</td>
+                    {{ row_actions(
+                        edit_url=url_for('UnionMemberView.edit', id=m.id),
+                        delete_url=url_for('UnionMemberView.delete', id=m.id),
+                        item_name=m.source_code
+                    ) }}
+                </tr>
+                {% else %}
+                <tr><td colspan="5" class="text-center text-muted">No members</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <a href="{{ url_for('RegisterView.detail', id=union.register_id) }}" class="btn btn-default btn-sm">
+            <i class="fa fa-arrow-left"></i> Back to Register
+        </a>
+    </div>
+</div>
+{% endblock %}

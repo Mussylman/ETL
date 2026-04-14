@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% set active_nav = "registers" %}
+
+{% block title %}{{ 'Edit' if member else 'Add' }} Member — ETL Config{% endblock %}
+
+{% block breadcrumb %}
+    <li><a href="/registers">Registers</a></li>
+    <li><a href="/registers/{{ union.register_id }}">{{ union.register_code if union.register_code else 'Register' }}</a></li>
+    <li><a href="/unions/{{ union.id }}">{{ union.union_code }}</a></li>
+    <li class="active">{{ 'Edit Member' if member else 'Add Member' }}</li>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>{{ 'Edit Member' if member else 'Add Member' }} <span class="text-muted" style="font-size:16px">{{ union.union_code }}</span></h2>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <form method="POST" action="{{ '/members/' ~ member.id ~ '/edit' if member else '/unions/' ~ union.id ~ '/members/new' }}">
+            <div class="form-grid">
+                <div class="form-group">
+                    <label for="source_id">Source *</label>
+                    <select id="source_id" name="source_id" required>
+                        <option value="">— select source —</option>
+                        {% for s in sources %}
+                        <option value="{{ s.id }}" {{ 'selected' if member and member.source_id == s.id }}>
+                            {{ s.source_code }} ({{ s.mssql_table }})
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="priority">Priority</label>
+                    <input type="number" id="priority" name="priority"
+                           value="{{ member.priority if member else 0 }}">
+                </div>
+                <div class="form-group full-width">
+                    <label for="where_clause">WHERE Clause</label>
+                    <textarea id="where_clause" name="where_clause" rows="2"
+                              placeholder="Additional SQL filter for this member">{{ member.where_clause if member else '' }}</textarea>
+                </div>
+            </div>
+            <div class="d-flex gap-2" style="margin-top:20px">
+                <button type="submit" class="btn btn-primary">{{ 'Save Changes' if member else 'Add Member' }}</button>
+                <a href="/unions/{{ union.id }}" class="btn btn-secondary">Cancel</a>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

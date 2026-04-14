@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% set active_nav = "registers" %}
+
+{% block title %}Регистры — ETL Config{% endblock %}
+
+{% block breadcrumb %}
+    <li class="active">Регистры</li>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h2>Регистры</h2>
+        <span class="text-secondary" style="font-size:13px">Конфигурации пайплайнов данных</span>
+    </div>
+    <a href="/registers/new" class="btn btn-primary">+ Новый регистр</a>
+</div>
+
+{% if registers %}
+<div class="register-grid">
+    {% for reg in registers %}
+    <a href="/registers/{{ reg.id }}" class="register-card">
+        <div class="d-flex align-center justify-between">
+            <h3>{{ reg.name or reg.code }}</h3>
+            {% if reg.is_active %}
+                <span class="dot dot-green" title="Активен"></span>
+            {% else %}
+                <span class="dot dot-gray" title="Неактивен"></span>
+            {% endif %}
+        </div>
+        <div class="code">{{ reg.code }}</div>
+        {% if reg.description %}
+            <div class="desc">{{ reg.description[:100] }}{{ '...' if reg.description|length > 100 else '' }}</div>
+        {% endif %}
+        <div class="meta">
+            <span>
+                <span class="badge badge-{{ reg.default_mode or 'info' }}" style="font-size:10px">{{ reg.default_mode }}</span>
+            </span>
+            {% if reg.updated_at %}
+                <span>{{ reg.updated_at.strftime('%d.%m.%Y %H:%M') }}</span>
+            {% endif %}
+        </div>
+    </a>
+    {% endfor %}
+</div>
+{% else %}
+<div class="card">
+    <div class="empty-state">
+        <div class="empty-icon">&#9634;</div>
+        <p>Регистров пока нет. Создайте первый регистр для начала работы.</p>
+        <a href="/registers/new" class="btn btn-primary">+ Новый регистр</a>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

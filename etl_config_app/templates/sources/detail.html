@@ -1,0 +1,277 @@
+{% extends "base.html" %}
+{% set active_nav = "registers" %}
+
+{% block title %}{{ source.source_code }} — ETL Config{% endblock %}
+
+{% block breadcrumb %}
+    <li><a href="/registers">Регистры</a></li>
+    <li><a href="/registers/{{ source.register_id }}">{{ source.register_code }}</a></li>
+    <li class="active">{{ source.source_code }}</li>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <div class="d-flex align-center gap-2">
+            <h2>{{ source.onec_name or source.source_code }}</h2>
+            <span class="badge badge-{{ source.source_type }}">{{ source.source_type }}</span>
+        </div>
+        <span class="text-mono text-secondary" style="font-size:12px">{{ source.mssql_schema }}.{{ source.mssql_table }}</span>
+    </div>
+    <div class="btn-group">
+        <a href="/sources/{{ source.id }}/edit" class="btn btn-secondary btn-sm">Редактировать</a>
+        <button class="btn btn-danger btn-sm" onclick="showDeleteModal('/sources/{{ source.id }}/delete', '{{ source.source_code }}')">Удалить</button>
+    </div>
+</div>
+
+<!-- Source Info -->
+{% if source.join_type or source.parent_source_code %}
+<div style="padding:8px 14px;background:var(--cyan-50);border:1px solid var(--cyan-100);border-radius:var(--radius);margin-bottom:16px;font-size:12px;color:var(--cyan-600)">
+    <strong>Соединение ({{ source.join_type or 'JOIN' }}):</strong>
+    <code style="background:rgba(8,145,178,.08);padding:1px 6px;border-radius:3px">{{ source.mssql_table }}.{{ source.join_key_source }} = {{ source.parent_source_code }}.{{ source.join_key_parent }}</code>
+</div>
+{% endif %}
+
+{% if source.where_clause %}
+<div style="padding:8px 14px;background:var(--amber-50);border:1px solid var(--amber-100);border-radius:var(--radius);margin-bottom:16px;font-size:12px;color:var(--amber-600)">
+    <strong>WHERE:</strong>
+    <code style="background:rgba(245,158,11,.08);padding:1px 6px;border-radius:3px">{{ source.where_clause }}</code>
+</div>
+{% endif %}
+
+<!-- Маппинг колонок (только чтение) -->
+<div class="card mb-4">
+    <div class="card-header">
+        <h3><span class="card-icon">&#9776;</span> Маппинг колонок <span class="tab-count">{{ mappings|length }}</span></h3>
+    </div>
+    {% if mappings %}
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Имя 1С</th>
+                    <th>Колонка источника</th>
+                    <th>Целевая колонка</th>
+                    <th>Тип</th>
+                    <th>Преобразование</th>
+                    <th>Статус</th>
+                    <th style="width:60px"></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for m in mappings %}
+                <tr{% if not m.is_active %} style="opacity:0.4"{% endif %} data-mapping-id="{{ m.id }}">
+                    <td style="color:var(--brand-600);font-weight:600">{{ m.onec_name or '--' }}</td>
+                    <td class="text-mono">{{ m.source_column }}</td>
+                    <td>
+                        <span class="text-mono fw-600" style="cursor:pointer" title="Нажмите для переименования"
+                              onclick="startRename(this, '{{ m.target_column }}', {{ source.register_id }})">{{ m.target_column }}</span>
+                    </td>
+                    <td class="text-secondary">{{ m.target_type or '--' }}</td>
+                    <td>{% if m.transform_type %}<span class="badge badge-info" style="font-size:10px">{{ m.transform_type }}</span>{% else %}--{% endif %}</td>
+                    <td>
+                        <form method="POST" action="/mappings/{{ m.id }}/toggle" style="display:inline">
+                            {% if m.is_active %}
+                                <button type="submit" class="dot dot-green" style="cursor:pointer;border:none;padding:0" title="Нажмите чтобы выключить"></button>
+                            {% else %}
+                                <button type="submit" class="dot dot-gray" style="cursor:pointer;border:none;padding:0" title="Нажмите чтобы включить"></button>
+                            {% endif %}
+                        </form>
+                    </td>
+                    <td>
+                        <button class="btn btn-ghost btn-xs" onclick="deleteMapping({{ m.id }}, '{{ m.source_column }}')" title="Удалить" style="color:var(--red-500)">&#10005;</button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state" style="padding:24px">
+        <p>Маппингов пока нет.</p>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Available Fields -->
+<div class="card">
+    <div class="card-header">
+        <h3><span class="card-icon">&#9634;</span> Доступные поля</h3>
+        <button class="btn btn-secondary btn-sm" onclick="loadFields()">Обновить</button>
+    </div>
+    <div id="fieldsTable"></div>
+</div>
+{% endblock %}
+
+{% block modals %}
+<div id="deleteModal" class="modal-backdrop">
+    <div class="modal">
+        <h3>Подтвердите удаление</h3>
+        <p>Вы уверены, что хотите удалить <strong class="delete-name"></strong>?</p>
+        <form method="POST" action="">
+            <div class="btn-group" style="justify-content:flex-end">
+                <button type="button" class="btn btn-secondary" onclick="hideDeleteModal()">Отмена</button>
+                <button type="submit" class="btn btn-danger">Удалить</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function loadFields() {
+    const container = document.getElementById('fieldsTable');
+    container.innerHTML = '<div style="padding:20px;color:var(--text-tertiary)"><span class="spinner"></span> Загрузка полей...</div>';
+    fetch('/api/sources/{{ source.id }}/fields')
+    .then(r => r.json())
+    .then(data => {
+        const fields = data.fields || [];
+        if (!fields.length) {
+            container.innerHTML = '<div class="empty-state" style="padding:24px"><p>Поля не найдены</p></div>';
+            return;
+        }
+        const mapped = new Set();
+        {% for m in mappings %}mapped.add('{{ m.source_column }}'.toLowerCase());{% endfor %}
+
+        let html = '<div class="table-wrap"><table><thead><tr>'
+            + '<th style="width:36px"><input type="checkbox" id="fields_check_all" onchange="toggleAllFields(this)"></th>'
+            + '<th>Имя 1С</th><th>Колонка MSSQL</th><th>Тип</th><th>Целевой тип</th><th>Преобразование</th><th>Статус</th>'
+            + '</tr></thead><tbody>';
+        fields.forEach(f => {
+            const col = f.mssql_column || ('_' + f.field_name_sql);
+            const isMapped = mapped.has(col.toLowerCase());
+            const targetType = f.target_type || 'text';
+            const transform = f.transform_type || '';
+            const targetCol = (f.field_name_sql || col).toLowerCase().replace(/^_/, '').replace(/rref$/i, '');
+            html += '<tr' + (isMapped ? ' style="background:var(--green-50);opacity:.6"' : '') + '>'
+                + '<td>' + (isMapped ? '' : '<input type="checkbox" class="field-cb"'
+                    + ' data-source-col="' + col + '"'
+                    + ' data-target-col="' + targetCol + '"'
+                    + ' data-target-type="' + targetType + '"'
+                    + ' data-transform="' + transform + '"'
+                    + ' data-onec-name="' + (f.field_name || '') + '"'
+                    + '>') + '</td>'
+                + '<td style="font-weight:600;color:var(--accent)">' + (f.field_name || '--') + '</td>'
+                + '<td class="text-mono">' + col + '</td>'
+                + '<td class="text-secondary">' + (f.mssql_type || '--') + (f.mssql_length ? '(' + f.mssql_length + ')' : '') + '</td>'
+                + '<td>' + targetType + '</td>'
+                + '<td>' + (transform ? '<span class="badge badge-info" style="font-size:10px">' + transform + '</span>' : '--') + '</td>'
+                + '<td>' + (isMapped ? '<span class="badge badge-active" style="font-size:10px">Mapped</span>' : '') + '</td>'
+                + '</tr>';
+        });
+        html += '</tbody></table></div>';
+        html += '<div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;align-items:center;gap:10px">'
+            + '<button class="btn btn-primary btn-sm" onclick="addSelectedFields()">Добавить выбранные</button>'
+            + '<span id="fields_selected_count" class="text-secondary" style="font-size:12px">0 выбрано</span>'
+            + '</div>';
+        container.innerHTML = html;
+        // Update count on checkbox change
+        container.querySelectorAll('.field-cb').forEach(cb => {
+            cb.addEventListener('change', updateFieldCount);
+        });
+    })
+    .catch(err => { container.innerHTML = '<div style="padding:20px;color:var(--red-500)">Error: ' + err + '</div>'; });
+}
+loadFields();
+
+function toggleAllFields(master) {
+    document.querySelectorAll('.field-cb').forEach(cb => { cb.checked = master.checked; });
+    updateFieldCount();
+}
+
+function updateFieldCount() {
+    const count = document.querySelectorAll('.field-cb:checked').length;
+    const el = document.getElementById('fields_selected_count');
+    if (el) el.textContent = count + ' выбрано';
+}
+
+function addSelectedFields() {
+    const checked = document.querySelectorAll('.field-cb:checked');
+    if (checked.length === 0) { alert('Выберите хотя бы одно поле'); return; }
+
+    const mappings = [];
+    checked.forEach(cb => {
+        mappings.push({
+            source_column: cb.dataset.sourceCol,
+            target_column: cb.dataset.targetCol,
+            target_type: cb.dataset.targetType || 'text',
+            transform_type: cb.dataset.transform || null,
+            onec_name: cb.dataset.onecName || null,
+        });
+    });
+
+    const btn = event.target;
+    btn.innerHTML = '<span class="spinner"></span> Добавление...';
+    btn.disabled = true;
+
+    fetch('/sources/{{ source.id }}/mappings/batch', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({mappings: mappings}),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) {
+            location.reload();
+        } else {
+            alert('Ошибка: ' + (data.error || 'unknown'));
+            btn.textContent = 'Добавить выбранные';
+            btn.disabled = false;
+        }
+    })
+    .catch(err => {
+        alert('Ошибка: ' + err);
+        btn.textContent = 'Добавить выбранные';
+        btn.disabled = false;
+    });
+}
+
+function startRename(el, oldName, regId) {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = oldName;
+    input.style.cssText = 'font-family:JetBrains Mono,monospace;font-size:12px;font-weight:600;padding:2px 6px;border:1px solid var(--brand-500);border-radius:var(--radius-xs);outline:none;width:150px;box-shadow:var(--shadow-focus)';
+    input.onblur = function() { finishRename(this, oldName, regId); };
+    input.onkeydown = function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); this.blur(); }
+        if (e.key === 'Escape') { this.value = oldName; this.blur(); }
+    };
+    el.replaceWith(input);
+    input.focus();
+    input.select();
+}
+
+function finishRename(input, oldName, regId) {
+    const newName = input.value.trim();
+    if (!newName || newName === oldName) {
+        const span = document.createElement('span');
+        span.className = 'text-mono fw-600';
+        span.style.cursor = 'pointer';
+        span.title = 'Нажмите для переименования';
+        span.textContent = oldName;
+        span.onclick = function() { startRename(this, oldName, regId); };
+        input.replaceWith(span);
+        return;
+    }
+    fetch('/api/registers/' + regId + '/rename-column', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({old_name: oldName, new_name: newName}),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) location.reload();
+        else { alert(data.error || 'Ошибка'); location.reload(); }
+    })
+    .catch(err => { alert('Ошибка: ' + err); location.reload(); });
+}
+
+function deleteMapping(mappingId, name) {
+    if (!confirm('Удалить маппинг "' + name + '"?')) return;
+    fetch('/mappings/' + mappingId + '/delete', {method: 'POST'})
+    .then(() => location.reload())
+    .catch(err => alert('Ошибка: ' + err));
+}
+</script>
+{% endblock %}

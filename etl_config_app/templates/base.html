@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}ETL Config{% endblock %}</title>
+    <link href="{{ url_for('static', path='css/style.css') }}" rel="stylesheet">
+</head>
+<body>
+    <!-- Sidebar -->
+    <aside class="sidebar">
+        <div class="sidebar-brand">
+            <div class="logo">&#9670;</div>
+            <div>
+                <h1>DataPipe</h1>
+                <small>Конфигуратор ETL</small>
+            </div>
+        </div>
+        <nav class="sidebar-nav">
+            <div class="nav-section">Пайплайн</div>
+            <a href="/registers" class="{% if active_nav == 'registers' %}active{% endif %}">
+                <span class="icon">&#9633;</span>
+                Регистры
+            </a>
+        </nav>
+        <div class="sidebar-footer">
+            v2.0 &middot; DataPipe
+        </div>
+    </aside>
+
+    <!-- Main content -->
+    <div class="main">
+        <div class="topbar">
+            <ul class="breadcrumb">
+                <li><a href="/registers">Главная</a></li>
+                {% block breadcrumb %}{% endblock %}
+            </ul>
+        </div>
+        <div class="content">
+            {% block content %}{% endblock %}
+        </div>
+    </div>
+
+    {% block modals %}{% endblock %}
+
+    <script src="{{ url_for('static', path='js/app.js') }}"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

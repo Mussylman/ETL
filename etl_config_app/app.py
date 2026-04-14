@@ -1,0 +1,1261 @@
+"""
+ETL Config — standalone web application.
+FastAPI + Jinja2, port 5555.
+
+Run:  python app.py
+  or: uvicorn app:app --host 0.0.0.0 --port 5555 --reload
+"""
+
+import json
+from pathlib import Path
+from fastapi import FastAPI, Request, Form, Query
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+import uvicorn
+
+import dao
+import onec_client
+import mssql_client
+
+
+# MSSQL type → (target_type, transform_type)
+_MSSQL_TYPE_RULES = {
+    ("binary", 16):  ("uuid", "binary_auto"),
+    ("binary", 1):   ("boolean", "binary_auto"),
+    ("binary", 4):   ("integer", "binary_auto"),
+    ("datetime", None): ("timestamp", "fix_year"),
+    ("numeric", None):  ("numeric", None),
+    ("int", None):      ("integer", None),
+    ("bigint", None):   ("bigint", None),
+    ("float", None):    ("numeric", None),
+    ("real", None):     ("numeric", None),
+    ("nchar", None):    ("varchar", None),
+    ("nvarchar", None): ("varchar", None),
+    ("ntext", None):    ("text", None),
+    ("text", None):     ("text", None),
+    ("image", None):    ("bytea", None),
+    ("bit", None):      ("boolean", None),
+    ("date", None):     ("date", None),
+    ("varbinary", None): ("bytea", None),
+}
+
+
+def _resolve_mssql_type(data_type: str, max_length=None) -> tuple:
+    """Resolve MSSQL data type to (target_type, transform_type)."""
+    # Try exact match with length first (for binary variants)
+    result = _MSSQL_TYPE_RULES.get((data_type, max_length))
+    if result:
+        return result
+    # Fallback to type-only match
+    result = _MSSQL_TYPE_RULES.get((data_type, None))
+    if result:
+        return result
+    return ("text", None)
+
+
+def _enrich_fields_with_mssql_types(fields: list, col_types: dict):
+    """Add mssql_type, target_type, transform_type to each field based on MSSQL column info."""
+    for f in fields:
+        sql_name = f.get("field_name_sql", "")
+        # MSSQL column has _ prefix: _Fld13608RRef for API's Fld13608
+        # Also try with RRef suffix for reference fields
+        mssql_col = f"_{sql_name}"
+        info = col_types.get(mssql_col)
+        if not info:
+            # Try with RRef suffix (reference fields)
+            info = col_types.get(f"{mssql_col}RRef")
+            if info:
+                mssql_col = f"{mssql_col}RRef"
+        if info:
+            dt = info["data_type"]
+            ml = info.get("max_length")
+            target_type, transform = _resolve_mssql_type(dt, ml)
+            f["mssql_column"] = mssql_col
+            f["mssql_type"] = dt
+            f["mssql_length"] = ml
+            f["target_type"] = target_type
+            f["transform_type"] = transform
+
+
+def _resolve_onec_field_name(onec_table: str, source_column: str) -> str | None:
+    """Lookup Russian field name from 1C API by MSSQL column name."""
+    structs = onec_client.get_structure([onec_table])
+    if not structs or not structs[0].get("fields"):
+        return None
+    col = source_column.lstrip("_").lower()
+    for f in structs[0]["fields"]:
+        key = f["field_name_sql"].lower()
+        if key == col or (key == "recorder" and col == "recorderrref") or (key == "id" and col == "idrref"):
+            return f["field_name"]
+    return None
+
+
+def _sync_targets_for_source(src_id: int):
+    """Find all targets linked to this source (directly or via union) and sync them."""
+    source = dao.get_source(src_id)
+    if not source:
+        return
+    targets = dao.list_targets_for_register(source["register_id"])
+    for t in targets:
+        if t.get("source_id") == src_id:
+            dao.sync_target_table(t["id"])
+        elif t.get("union_id"):
+            members = dao.list_members_for_union(t["union_id"])
+            if any(m["source_id"] == src_id for m in members):
+                dao.sync_target_table(t["id"])
+
+app = FastAPI(title="ETL Config")
+BASE = Path(__file__).parent
+
+app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
+templates = Jinja2Templates(directory=BASE / "templates")
+
+
+# ────────────────────────────────────────────
+#  Template helpers
+# ────────────────────────────────────────────
+def _tpl(name: str, request: Request, **ctx):
+    return templates.TemplateResponse(name, {"request": request, **ctx})
+
+
+# ────────────────────────────────────────────
+#  PAGES: Registers
+# ────────────────────────────────────────────
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    return RedirectResponse("/registers", status_code=302)
+
+
+@app.get("/registers", response_class=HTMLResponse)
+async def register_list(request: Request):
+    regs = dao.list_registers(include_inactive=True)
+    return _tpl("registers/list.html", request, registers=regs)
+
+
+@app.get("/registers/new", response_class=HTMLResponse)
+async def register_new(request: Request):
+    all_regs = dao.list_registers()
+    return _tpl("registers/form.html", request, register=None, all_registers=all_regs)
+
+
+@app.post("/registers/new")
+async def register_create(
+    request: Request,
+    code: str = Form(...),
+    name: str = Form(""),
+    description: str = Form(""),
+    default_mode: str = Form("incremental"),
+    retail_table: str = Form(""),
+    retail_uid_column: str = Form(""),
+    parent_id: str = Form(""),
+):
+    dao.create_register({
+        "code": code, "name": name, "description": description,
+        "default_mode": default_mode,
+        "retail_table": retail_table or None,
+        "retail_uid_column": retail_uid_column or None,
+        "parent_id": int(parent_id) if parent_id else None,
+    })
+    return RedirectResponse("/registers", status_code=303)
+
+
+@app.get("/registers/{reg_id}", response_class=HTMLResponse)
+async def register_detail(request: Request, reg_id: int):
+    reg = dao.get_register(reg_id)
+    if not reg:
+        return RedirectResponse("/registers", status_code=302)
+    sources = dao.list_sources_for_register(reg_id)
+    unions = dao.list_unions_for_register(reg_id)
+    targets = dao.list_targets_for_register(reg_id)
+    history = dao.list_load_history(reg_id)
+    parent_reg = dao.get_register(reg.get("parent_id")) if reg.get("parent_id") else None
+    return _tpl("registers/detail.html", request,
+                register=reg, sources=sources, unions=unions,
+                targets=targets, history=history, parent_register=parent_reg)
+
+
+@app.get("/registers/{reg_id}/edit", response_class=HTMLResponse)
+async def register_edit(request: Request, reg_id: int):
+    reg = dao.get_register(reg_id)
+    all_regs = dao.list_registers()
+    return _tpl("registers/form.html", request, register=reg, all_registers=all_regs)
+
+
+@app.post("/registers/{reg_id}/edit")
+async def register_update(
+    request: Request, reg_id: int,
+    code: str = Form(...),
+    name: str = Form(""),
+    description: str = Form(""),
+    default_mode: str = Form("incremental"),
+    retail_table: str = Form(""),
+    retail_uid_column: str = Form(""),
+    parent_id: str = Form(""),
+):
+    # Preserve existing join keys (set automatically by Discover)
+    existing = dao.get_register(reg_id)
+    dao.update_register(reg_id, {
+        "code": code, "name": name, "description": description,
+        "default_mode": default_mode,
+        "retail_table": retail_table or None,
+        "retail_uid_column": retail_uid_column or None,
+        "parent_id": int(parent_id) if parent_id else None,
+        "parent_join_key": existing.get("parent_join_key") if existing else None,
+        "child_join_key": existing.get("child_join_key") if existing else None,
+    })
+    return RedirectResponse(f"/registers/{reg_id}", status_code=303)
+
+
+@app.post("/registers/{reg_id}/delete")
+async def register_delete(reg_id: int):
+    dao.delete_register(reg_id)
+    return RedirectResponse("/registers", status_code=303)
+
+
+@app.post("/registers/{reg_id}/toggle")
+async def register_toggle(reg_id: int):
+    reg = dao.get_register(reg_id)
+    if reg:
+        dao.toggle_register(reg_id, not reg["is_active"])
+    return RedirectResponse(f"/registers/{reg_id}", status_code=303)
+
+
+# ────────────────────────────────────────────
+#  PAGES: Sources
+# ────────────────────────────────────────────
+@app.get("/registers/{reg_id}/sources/new", response_class=HTMLResponse)
+async def source_new(request: Request, reg_id: int):
+    reg = dao.get_register(reg_id)
+    sources = dao.list_sources_for_register(reg_id)
+    return _tpl("sources/form.html", request,
+                register=reg, source=None, all_sources=sources)
+
+
+@app.post("/registers/{reg_id}/sources/new")
+async def source_create(
+    request: Request, reg_id: int,
+    source_code: str = Form(...),
+    source_type: str = Form("header"),
+    mssql_schema: str = Form("dbo"),
+    mssql_table: str = Form(...),
+    onec_name: str = Form(""),
+    parent_source_id: str = Form(""),
+    join_type: str = Form(""),
+    join_key_source: str = Form(""),
+    join_key_parent: str = Form(""),
+    where_clause: str = Form(""),
+    priority: int = Form(0),
+):
+    sid = dao.create_source({
+        "register_id": reg_id, "source_code": source_code,
+        "source_type": source_type, "mssql_schema": mssql_schema,
+        "mssql_table": mssql_table, "onec_name": onec_name or None,
+        "parent_source_id": int(parent_source_id) if parent_source_id else None,
+        "join_type": join_type or None,
+        "join_key_source": join_key_source or None,
+        "join_key_parent": join_key_parent or None,
+        "where_clause": where_clause or None,
+        "priority": priority,
+    })
+    # Auto-create mappings for system fields from 1C
+    if onec_name:
+        fields = onec_client.get_structure([onec_name])
+        if fields and fields[0].get("fields"):
+            dao.auto_create_mappings(sid, fields[0]["fields"])
+    return RedirectResponse(f"/sources/{sid}", status_code=303)
+
+
+@app.get("/sources/{src_id}", response_class=HTMLResponse)
+async def source_detail(request: Request, src_id: int):
+    source = dao.get_source(src_id)
+    if not source:
+        return RedirectResponse("/registers", status_code=302)
+    mappings = dao.list_mappings_for_source(src_id)
+    return _tpl("sources/detail.html", request,
+                source=source, mappings=mappings)
+
+
+@app.get("/sources/{src_id}/edit", response_class=HTMLResponse)
+async def source_edit(request: Request, src_id: int):
+    source = dao.get_source(src_id)
+    reg = dao.get_register(source["register_id"])
+    sources = dao.list_sources_for_register(source["register_id"])
+    return _tpl("sources/form.html", request,
+                register=reg, source=source, all_sources=sources)
+
+
+@app.post("/sources/{src_id}/edit")
+async def source_update(
+    request: Request, src_id: int,
+    source_code: str = Form(...),
+    source_type: str = Form("header"),
+    mssql_schema: str = Form("dbo"),
+    mssql_table: str = Form(...),
+    onec_name: str = Form(""),
+    parent_source_id: str = Form(""),
+    join_type: str = Form(""),
+    join_key_source: str = Form(""),
+    join_key_parent: str = Form(""),
+    where_clause: str = Form(""),
+    priority: int = Form(0),
+):
+    source = dao.get_source(src_id)
+    dao.update_source(src_id, {
+        "source_code": source_code, "source_type": source_type,
+        "mssql_schema": mssql_schema, "mssql_table": mssql_table,
+        "onec_name": onec_name or None,
+        "parent_source_id": int(parent_source_id) if parent_source_id else None,
+        "join_type": join_type or None,
+        "join_key_source": join_key_source or None,
+        "join_key_parent": join_key_parent or None,
+        "where_clause": where_clause or None,
+        "priority": priority,
+    })
+    return RedirectResponse(f"/sources/{src_id}", status_code=303)
+
+
+@app.post("/sources/{src_id}/delete")
+async def source_delete(src_id: int):
+    source = dao.get_source(src_id)
+    reg_id = source["register_id"] if source else None
+    dao.delete_source(src_id)
+    return RedirectResponse(f"/registers/{reg_id}" if reg_id else "/registers", status_code=303)
+
+
+# ────────────────────────────────────────────
+#  PAGES: Column Mappings
+# ────────────────────────────────────────────
+@app.get("/sources/{src_id}/mappings/new", response_class=HTMLResponse)
+async def mapping_new(request: Request, src_id: int):
+    source = dao.get_source(src_id)
+    return _tpl("mappings/form.html", request, source=source, mapping=None)
+
+
+@app.post("/sources/{src_id}/mappings/new")
+async def mapping_create(
+    request: Request, src_id: int,
+    source_column: str = Form(...),
+    target_column: str = Form(...),
+    is_expression: bool = Form(False),
+    target_type: str = Form(""),
+    transform_type: str = Form(""),
+    transform_params: str = Form(""),
+    default_value: str = Form(""),
+    is_nullable: bool = Form(True),
+):
+    # Resolve 1C Russian name for this column
+    onec_name = None
+    source = dao.get_source(src_id)
+    if source and source.get("onec_name"):
+        try:
+            onec_name = _resolve_onec_field_name(source["onec_name"], source_column)
+        except Exception:
+            pass
+    dao.create_mapping({
+        "source_id": src_id,
+        "source_column": source_column,
+        "target_column": target_column,
+        "is_expression": is_expression,
+        "target_type": target_type or None,
+        "transform_type": transform_type or None,
+        "transform_params": transform_params or None,
+        "default_value": default_value or None,
+        "is_nullable": is_nullable,
+        "onec_name": onec_name,
+    })
+    _sync_targets_for_source(src_id)
+    return RedirectResponse(f"/sources/{src_id}", status_code=303)
+
+
+@app.get("/mappings/{map_id}/edit", response_class=HTMLResponse)
+async def mapping_edit(request: Request, map_id: int):
+    mapping = dao.get_mapping(map_id)
+    source = dao.get_source(mapping["source_id"])
+    onec_field_name = mapping.get("onec_name")
+    return _tpl("mappings/form.html", request, source=source, mapping=mapping, onec_field_name=onec_field_name)
+
+
+@app.post("/mappings/{map_id}/edit")
+async def mapping_update(
+    request: Request, map_id: int,
+    source_column: str = Form(...),
+    target_column: str = Form(...),
+    is_expression: bool = Form(False),
+    target_type: str = Form(""),
+    transform_type: str = Form(""),
+    transform_params: str = Form(""),
+    default_value: str = Form(""),
+    is_nullable: bool = Form(True),
+):
+    mapping = dao.get_mapping(map_id)
+    dao.update_mapping(map_id, {
+        "source_column": source_column,
+        "target_column": target_column,
+        "is_expression": is_expression,
+        "target_type": target_type or None,
+        "transform_type": transform_type or None,
+        "transform_params": transform_params or None,
+        "default_value": default_value or None,
+        "is_nullable": is_nullable,
+    })
+    _sync_targets_for_source(mapping['source_id'])
+    return RedirectResponse(f"/sources/{mapping['source_id']}", status_code=303)
+
+
+@app.post("/mappings/{map_id}/delete")
+async def mapping_delete(map_id: int):
+    mapping = dao.get_mapping(map_id)
+    src_id = mapping["source_id"] if mapping else None
+    dao.delete_mapping(map_id)
+    return RedirectResponse(f"/sources/{src_id}" if src_id else "/registers", status_code=303)
+
+
+@app.post("/mappings/{map_id}/toggle")
+async def mapping_toggle(map_id: int):
+    mapping = dao.get_mapping(map_id)
+    if mapping:
+        dao.toggle_mapping(map_id, not mapping.get("is_active", True))
+    src_id = mapping["source_id"] if mapping else None
+    return RedirectResponse(f"/sources/{src_id}" if src_id else "/registers", status_code=303)
+
+
+# Batch save mappings from 1C API columns
+@app.post("/sources/{src_id}/mappings/batch")
+async def mapping_batch(request: Request, src_id: int):
+    body = await request.json()
+    mappings = body.get("mappings", [])
+    for m in mappings:
+        m["source_id"] = src_id
+        dao.create_mapping(m)
+    _sync_targets_for_source(src_id)
+    return JSONResponse({"ok": True, "count": len(mappings)})
+
+
+# ────────────────────────────────────────────
+#  PAGES: Unions
+# ────────────────────────────────────────────
+@app.get("/registers/{reg_id}/unions/new", response_class=HTMLResponse)
+async def union_new(request: Request, reg_id: int):
+    reg = dao.get_register(reg_id)
+    return _tpl("unions/form.html", request, register=reg, union=None)
+
+
+@app.post("/registers/{reg_id}/unions/new")
+async def union_create(
+    request: Request, reg_id: int,
+    union_code: str = Form(...),
+    description: str = Form(""),
+    output_columns: str = Form(""),
+):
+    uid = dao.create_union({
+        "register_id": reg_id, "union_code": union_code,
+        "description": description or None,
+        "output_columns": output_columns,
+    })
+    return RedirectResponse(f"/unions/{uid}", status_code=303)
+
+
+@app.get("/unions/{union_id}", response_class=HTMLResponse)
+async def union_detail(request: Request, union_id: int):
+    union = dao.get_union(union_id)
+    if not union:
+        return RedirectResponse("/registers", status_code=302)
+    members = dao.list_members_for_union(union_id)
+    sources = dao.list_sources_for_register(union["register_id"])
+    return _tpl("unions/detail.html", request,
+                union=union, members=members, sources=sources)
+
+
+@app.get("/unions/{union_id}/edit", response_class=HTMLResponse)
+async def union_edit(request: Request, union_id: int):
+    union = dao.get_union(union_id)
+    reg = dao.get_register(union["register_id"])
+    return _tpl("unions/form.html", request, register=reg, union=union)
+
+
+@app.post("/unions/{union_id}/edit")
+async def union_update(
+    request: Request, union_id: int,
+    union_code: str = Form(...),
+    description: str = Form(""),
+    output_columns: str = Form(""),
+):
+    dao.update_union(union_id, {
+        "union_code": union_code,
+        "description": description or None,
+        "output_columns": output_columns,
+    })
+    return RedirectResponse(f"/unions/{union_id}", status_code=303)
+
+
+@app.post("/unions/{union_id}/delete")
+async def union_delete(union_id: int):
+    union = dao.get_union(union_id)
+    reg_id = union["register_id"] if union else None
+    dao.delete_union(union_id)
+    return RedirectResponse(f"/registers/{reg_id}" if reg_id else "/registers", status_code=303)
+
+
+# ────────────────────────────────────────────
+#  PAGES: Union Members
+# ────────────────────────────────────────────
+@app.get("/unions/{union_id}/members/new", response_class=HTMLResponse)
+async def member_new(request: Request, union_id: int):
+    union = dao.get_union(union_id)
+    sources = dao.list_sources_for_register(union["register_id"])
+    return _tpl("members/form.html", request,
+                union=union, member=None, sources=sources)
+
+
+@app.post("/unions/{union_id}/members/new")
+async def member_create(
+    request: Request, union_id: int,
+    source_id: int = Form(...),
+    priority: int = Form(0),
+    where_clause: str = Form(""),
+):
+    dao.create_member({
+        "union_id": union_id, "source_id": source_id,
+        "priority": priority, "where_clause": where_clause or None,
+    })
+    return RedirectResponse(f"/unions/{union_id}", status_code=303)
+
+
+@app.get("/members/{mem_id}/edit", response_class=HTMLResponse)
+async def member_edit(request: Request, mem_id: int):
+    member = dao.get_member(mem_id)
+    union = dao.get_union(member["union_id"])
+    sources = dao.list_sources_for_register(union["register_id"])
+    return _tpl("members/form.html", request,
+                union=union, member=member, sources=sources)
+
+
+@app.post("/members/{mem_id}/edit")
+async def member_update(
+    request: Request, mem_id: int,
+    source_id: int = Form(...),
+    priority: int = Form(0),
+    where_clause: str = Form(""),
+):
+    member = dao.get_member(mem_id)
+    dao.update_member(mem_id, {
+        "source_id": source_id, "priority": priority,
+        "where_clause": where_clause or None,
+    })
+    return RedirectResponse(f"/unions/{member['union_id']}", status_code=303)
+
+
+@app.post("/members/{mem_id}/delete")
+async def member_delete(mem_id: int):
+    member = dao.get_member(mem_id)
+    uid = member["union_id"] if member else None
+    dao.delete_member(mem_id)
+    return RedirectResponse(f"/unions/{uid}" if uid else "/registers", status_code=303)
+
+
+# ────────────────────────────────────────────
+#  PAGES: Targets
+# ────────────────────────────────────────────
+@app.get("/registers/{reg_id}/targets/new", response_class=HTMLResponse)
+async def target_new(request: Request, reg_id: int):
+    reg = dao.get_register(reg_id)
+    sources = dao.list_sources_for_register(reg_id)
+    unions = dao.list_unions_for_register(reg_id)
+    return _tpl("targets/form.html", request,
+                register=reg, target=None, sources=sources, unions=unions)
+
+
+@app.post("/registers/{reg_id}/targets/new")
+async def target_create(
+    request: Request, reg_id: int,
+    target_schema: str = Form("public"),
+    target_table: str = Form(...),
+    load_mode: str = Form("upsert"),
+    upsert_keys: str = Form(""),
+    source_id: str = Form(""),
+    union_id: str = Form(""),
+    pre_load_sql: str = Form(""),
+):
+    tid = dao.create_target({
+        "register_id": reg_id,
+        "target_schema": target_schema, "target_table": target_table,
+        "load_mode": load_mode, "upsert_keys": upsert_keys,
+        "source_id": int(source_id) if source_id else None,
+        "union_id": int(union_id) if union_id else None,
+        "pre_load_sql": pre_load_sql or None,
+    })
+    dao.sync_target_table(tid)
+    return RedirectResponse(f"/registers/{reg_id}", status_code=303)
+
+
+@app.get("/targets/{tgt_id}/edit", response_class=HTMLResponse)
+async def target_edit(request: Request, tgt_id: int):
+    target = dao.get_target(tgt_id)
+    reg = dao.get_register(target["register_id"])
+    sources = dao.list_sources_for_register(target["register_id"])
+    unions = dao.list_unions_for_register(target["register_id"])
+    return _tpl("targets/form.html", request,
+                register=reg, target=target, sources=sources, unions=unions)
+
+
+@app.post("/targets/{tgt_id}/edit")
+async def target_update(
+    request: Request, tgt_id: int,
+    target_schema: str = Form("public"),
+    target_table: str = Form(...),
+    load_mode: str = Form("upsert"),
+    upsert_keys: str = Form(""),
+    source_id: str = Form(""),
+    union_id: str = Form(""),
+    pre_load_sql: str = Form(""),
+):
+    target = dao.get_target(tgt_id)
+    dao.update_target(tgt_id, {
+        "target_schema": target_schema, "target_table": target_table,
+        "load_mode": load_mode, "upsert_keys": upsert_keys,
+        "source_id": int(source_id) if source_id else None,
+        "union_id": int(union_id) if union_id else None,
+        "pre_load_sql": pre_load_sql or None,
+    })
+    dao.sync_target_table(tgt_id)
+    return RedirectResponse(f"/registers/{target['register_id']}", status_code=303)
+
+
+@app.post("/targets/{tgt_id}/delete")
+async def target_delete(tgt_id: int):
+    target = dao.get_target(tgt_id)
+    reg_id = target["register_id"] if target else None
+    dao.delete_target(tgt_id)
+    return RedirectResponse(f"/registers/{reg_id}" if reg_id else "/registers", status_code=303)
+
+
+# ────────────────────────────────────────────
+#  API: Sync & 1C Meta (AJAX)
+# ────────────────────────────────────────────
+@app.post("/api/registers/{reg_id}/sync")
+async def api_sync_register(reg_id: int):
+    """Manual sync: ensure all target tables match etl_meta config."""
+    try:
+        dao.sync_all_targets_for_register(reg_id)
+        return JSONResponse({"ok": True})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+@app.post("/api/registers/{reg_id}/discover-recorder-types")
+async def api_discover_recorder_types(reg_id: int):
+    """
+    Auto-discover document types from parent register's MSSQL table.
+    Queries DISTINCT _RecorderTRef, resolves 1C names via API.
+    """
+    try:
+        reg = dao.get_register(reg_id)
+        if not reg or not reg.get("parent_id"):
+            return JSONResponse({"error": "Register has no parent"}, status_code=400)
+
+        # Find parent register's source table
+        parent_sources = dao.list_sources_for_register(reg["parent_id"])
+        if not parent_sources:
+            return JSONResponse({"error": "Parent register has no sources"}, status_code=400)
+
+        mssql_table = parent_sources[0]["mssql_table"]  # e.g. _AccumRg17844
+
+        # Query MSSQL for distinct recorder types
+        type_numbers = mssql_client.query_distinct_recorder_types(mssql_table)
+
+        # Resolve 1C names + discover VT tables via search API
+        doc_info = onec_client.discover_document_with_vt(type_numbers)
+
+        doc_types = []
+        for n in type_numbers:
+            info = doc_info.get(n, {})
+            doc_types.append({
+                "type_int": n,
+                "mssql_table": f"_Document{n}",
+                "onec_name": info.get("onec_name"),
+                "vt_tables": info.get("vt_tables", []),
+            })
+
+        # Auto-set join keys: parent.recorder (_RecorderRRef) = child.id_ref (_IDRRef)
+        dao.update_register_join_keys(reg_id, parent_join_key="recorder", child_join_key="id_ref")
+
+        # Auto-save recorder_type → document name mapping
+        type_map = {}
+        for dt in doc_types:
+            type_map[str(dt["type_int"])] = {
+                "mssql_table": dt["mssql_table"],
+                "onec_name": dt.get("onec_name"),
+            }
+        # Save on child register (sales_positions)
+        dao.update_register_type_map(reg_id, type_map)
+        # Save on parent register too (sales) — for recorder_type_lookup transform
+        if reg.get("parent_id"):
+            dao.update_register_type_map(reg["parent_id"], type_map)
+
+        parent_reg = dao.get_register(reg["parent_id"])
+        parent_code = parent_reg["code"] if parent_reg else "parent"
+
+        return JSONResponse({
+            "ok": True,
+            "parent_table": mssql_table,
+            "doc_types": doc_types,
+            "join": {
+                "parent_join_key": "recorder",
+                "child_join_key": "id_ref",
+                "parent_code": parent_code,
+                "child_code": reg["code"],
+            },
+            "type_map": type_map,
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/registers/{reg_id}/batch-document-sources")
+async def api_batch_document_sources(request: Request, reg_id: int):
+    """Batch-create document sources from a list of document types."""
+    try:
+        body = await request.json()
+        doc_types = body.get("doc_types", [])
+
+        if not doc_types:
+            return JSONResponse({"error": "doc_types required"}, status_code=400)
+
+        # Resolve field structures from 1C API for ALL tables (documents + VT)
+        all_api_names = []
+        for dt in doc_types:
+            all_api_names.append(f"Document{dt['type_int']}")
+            for vt in dt.get("vt_tables", []):
+                api_name = vt["mssql_table"].lstrip("_").replace("_VT", ".VT")  # Document476.VT13626
+                all_api_names.append(api_name)
+
+        field_map = {}
+        if all_api_names:
+            structures = onec_client.get_structure(all_api_names)
+            for s in structures:
+                field_map[s.get("table_name_sql", "")] = s.get("fields", [])
+
+        # Attach fields to doc_types and enrich with MSSQL column types
+        for dt in doc_types:
+            doc_api_name = f"Document{dt['type_int']}"
+            dt["fields"] = field_map.get(doc_api_name, [])
+            # Get MSSQL types for this document table
+            try:
+                col_types = mssql_client.get_column_types(dt["mssql_table"])
+                _enrich_fields_with_mssql_types(dt["fields"], col_types)
+            except Exception:
+                pass
+            for vt in dt.get("vt_tables", []):
+                api_name = vt["mssql_table"].lstrip("_").replace("_VT", ".VT")
+                vt["fields"] = field_map.get(api_name, [])
+                try:
+                    vt_col_types = mssql_client.get_column_types(vt["mssql_table"])
+                    _enrich_fields_with_mssql_types(vt["fields"], vt_col_types)
+                except Exception:
+                    pass
+
+        result = dao.batch_create_document_sources(reg_id, doc_types)
+        return JSONResponse({"ok": True, **result})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ────────────────────────────────────────────
+#  API: Retail (incremental change detection)
+# ────────────────────────────────────────────
+@app.get("/api/retail/tables")
+async def api_retail_tables():
+    """List tables in retail DB (for register form dropdown)."""
+    try:
+        tables = dao.get_retail_tables()
+        return JSONResponse({"tables": tables})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/retail/columns/{table}")
+async def api_retail_columns(table: str):
+    """Get columns for a retail table."""
+    try:
+        cols = dao.get_retail_columns(table)
+        return JSONResponse({"columns": cols})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/registers/{reg_id}/retail-changes")
+async def api_retail_changes(reg_id: int, since: str = Query("")):
+    """Preview changed records from retail DB for a register."""
+    try:
+        reg = dao.get_register(reg_id)
+        if not reg:
+            return JSONResponse({"error": "Register not found"}, status_code=404)
+        if not reg.get("retail_table") or not reg.get("retail_uid_column"):
+            return JSONResponse({"error": "retail_table/retail_uid_column not configured"}, status_code=400)
+
+        changes = dao.get_retail_changes(
+            reg["retail_table"],
+            reg["retail_uid_column"],
+            since if since else None,
+        )
+        return JSONResponse({
+            "ok": True,
+            "count": len(changes),
+            "retail_table": reg["retail_table"],
+            "uid_column": reg["retail_uid_column"],
+            "changes": [{"uid": str(c["uid"]), "updated_at": str(c["updated_at"])} for c in changes],
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ────────────────────────────────────────────
+#  API: 1C Meta (AJAX)
+# ────────────────────────────────────────────
+@app.get("/api/1c/search")
+async def api_1c_search(q: str = Query("")):
+    results = onec_client.search_1c(q)
+    return JSONResponse(results)
+
+
+@app.get("/api/1c/structure")
+async def api_1c_structure(table: str = Query("")):
+    tables = [t.strip() for t in table.split(",") if t.strip()]
+    results = onec_client.get_structure(tables)
+    return JSONResponse(results)
+
+
+# Quick-add source from 1C (AJAX, from register detail page)
+@app.post("/api/registers/{reg_id}/quick-source")
+async def api_quick_source(request: Request, reg_id: int):
+    body = await request.json()
+    onec_name = body.get("onec_name", "")
+    table_name_sql = body.get("table_name_sql", "")
+    source_type = body.get("source_type", "header")
+    source_code = body.get("source_code", "")
+    parent_source_id = body.get("parent_source_id") or None
+    join_type = body.get("join_type") or None
+    join_key_source = body.get("join_key_source") or None
+    join_key_parent = body.get("join_key_parent") or None
+
+    if not table_name_sql:
+        return JSONResponse({"error": "table_name_sql required"}, status_code=400)
+
+    # Auto-generate source_code from onec_name if not provided
+    if not source_code:
+        source_code = onec_name.replace(".", "_").replace(" ", "_").lower() if onec_name else table_name_sql.lower()
+
+    # Fetch fields from 1C API
+    fields_list = []
+    if onec_name:
+        structs = onec_client.get_structure([onec_name])
+        if structs and structs[0].get("fields"):
+            fields_list = structs[0]["fields"]
+
+    sid = dao.create_source({
+        "register_id": reg_id,
+        "source_code": source_code,
+        "source_type": source_type,
+        "mssql_schema": "dbo",
+        "mssql_table": table_name_sql,
+        "onec_name": onec_name or None,
+        "parent_source_id": int(parent_source_id) if parent_source_id else None,
+        "join_type": join_type,
+        "join_key_source": join_key_source,
+        "join_key_parent": join_key_parent,
+        "fields_cache": fields_list or None,
+    })
+    # Auto-create mappings for system fields from 1C
+    auto_count = 0
+    if fields_list:
+        auto_count = dao.auto_create_mappings(sid, fields_list)
+    return JSONResponse({"ok": True, "id": sid, "auto_mappings": auto_count})
+
+
+# ================================================================
+#  COLUMN BUILDER — unified target schema mapping
+# ================================================================
+
+@app.get("/api/registers/{reg_id}/column-builder")
+async def api_column_builder(reg_id: int):
+    """
+    Return all sources for this register with their fields_cache
+    and existing mappings, for the Column Builder UI.
+    """
+    sources = dao.list_sources_for_register(reg_id)
+    result = []
+    for s in sources:
+        fields_cache = s.get("fields_cache") or []
+        if isinstance(fields_cache, str):
+            fields_cache = json.loads(fields_cache)
+        # Get existing mappings for this source
+        mappings = dao.list_mappings_for_source(s["id"])
+        result.append({
+            "id": s["id"],
+            "source_code": s["source_code"],
+            "source_type": s["source_type"],
+            "mssql_table": s["mssql_table"],
+            "onec_name": s.get("onec_name"),
+            "fields": fields_cache,
+            "mappings": [
+                {
+                    "id": m["id"],
+                    "source_column": m["source_column"],
+                    "target_column": m["target_column"],
+                    "target_type": m.get("target_type"),
+                    "transform_type": m.get("transform_type"),
+                    "is_expression": m.get("is_expression", False),
+                    "onec_name": m.get("onec_name"),
+                }
+                for m in mappings
+            ],
+        })
+
+    # Also return existing target columns (union output_columns)
+    unions = dao.list_unions_for_register(reg_id)
+    existing_target_cols = []
+    if unions:
+        u = dao.get_union(unions[0]["id"])
+        if u and u.get("output_columns"):
+            existing_target_cols = u["output_columns"]
+
+    return JSONResponse({
+        "sources": result,
+        "existing_target_columns": existing_target_cols,
+    })
+
+
+@app.get("/api/sources/{source_id}/fields")
+async def api_source_fields(source_id: int):
+    """Return fields for a source — from cache or 1C API."""
+    src = dao.get_source(source_id)
+    if not src:
+        return JSONResponse({"error": "Source not found"}, status_code=404)
+
+    fields = src.get("fields_cache") or []
+    if isinstance(fields, str):
+        fields = json.loads(fields)
+
+    # If cache empty, try fetching from 1C + MSSQL types
+    if not fields:
+        # Convert MSSQL name to 1C API name: _Document476_VT13626 → Document476.VT13626
+        api_name = (src.get("mssql_table") or "").lstrip("_")
+        api_name = api_name.replace("_VT", ".VT")  # VT separator is dot in 1C API
+        if api_name:
+            structs = onec_client.get_structure([api_name])
+            if structs and structs[0].get("fields"):
+                fields = structs[0]["fields"]
+
+    # Enrich with MSSQL types if not already present
+    has_types = fields and any(f.get("mssql_type") for f in fields)
+    if fields and not has_types:
+        try:
+            col_types = mssql_client.get_column_types(src.get("mssql_table", ""))
+            _enrich_fields_with_mssql_types(fields, col_types)
+        except Exception:
+            pass
+        # Save enriched cache
+        dao.update_source_fields_cache(source_id, fields)
+
+    return JSONResponse({"source_id": source_id, "fields": fields})
+
+
+@app.post("/api/registers/{reg_id}/add-target-column")
+async def api_add_target_column(request: Request, reg_id: int):
+    """
+    Add a target column across multiple sources.
+    Body: {
+        "target_column": "nomenclature",
+        "target_type": "uuid",
+        "transform_type": "binary_to_uuid",
+        "mappings": [
+            {"source_id": 10, "source_column": "_Fld17845", "onec_name": "Номенклатура"},
+            {"source_id": 11, "source_column": "_Fld20001", "onec_name": "Номенклатура"},
+        ]
+    }
+    """
+    try:
+        body = await request.json()
+        target_column = body.get("target_column", "").strip()
+        target_type = body.get("target_type") or None
+        transform_type = body.get("transform_type") or None
+        source_mappings = body.get("mappings", [])
+
+        if not target_column:
+            return JSONResponse({"error": "target_column required"}, status_code=400)
+
+        # Pre-fetch MSSQL types per source for auto-detection
+        source_col_types = {}
+        for sm in source_mappings:
+            sid = sm["source_id"]
+            if sid not in source_col_types:
+                src = dao.get_source(sid)
+                if src and src.get("mssql_table"):
+                    try:
+                        source_col_types[sid] = mssql_client.get_column_types(src["mssql_table"])
+                    except Exception:
+                        source_col_types[sid] = {}
+                else:
+                    source_col_types[sid] = {}
+
+        created = []
+        for sm in source_mappings:
+            src_col = sm.get("source_column", "").strip()
+            if not src_col:
+                continue
+            # Auto-detect type and transform from MSSQL if not explicitly set
+            m_target_type = target_type
+            m_transform = transform_type
+            col_info = source_col_types.get(sm["source_id"], {}).get(src_col)
+            if col_info:
+                auto_type, auto_transform = _resolve_mssql_type(col_info["data_type"], col_info.get("max_length"))
+                if not m_target_type or m_target_type == "varchar":
+                    m_target_type = auto_type
+                if not m_transform:
+                    m_transform = auto_transform
+
+            mid = dao.create_mapping({
+                "source_id": sm["source_id"],
+                "source_column": src_col,
+                "target_column": target_column,
+                "target_type": m_target_type,
+                "transform_type": m_transform,
+                "onec_name": sm.get("onec_name") or None,
+            })
+            created.append({"mapping_id": mid, "source_id": sm["source_id"]})
+
+        # Update union output_columns
+        unions = dao.list_unions_for_register(reg_id)
+        if unions:
+            u = dao.get_union(unions[0]["id"])
+            if u:
+                oc = u.get("output_columns") or []
+                if target_column not in oc:
+                    oc.append(target_column)
+                    dao.update_union(unions[0]["id"], {
+                        "union_code": u["union_code"],
+                        "description": u.get("description"),
+                        "output_columns": oc,
+                    })
+
+        # Sync target table — also ensure column exists even if source isn't a union member
+        targets = dao.list_targets_for_register(reg_id)
+        for t in targets:
+            dao.sync_target_table(t["id"])
+            # Ensure column exists (sync only checks union members, not VT sources)
+            dao.ensure_target_column(t["id"], target_column, target_type)
+
+        return JSONResponse({"ok": True, "created": created})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.delete("/api/registers/{reg_id}/target-column/{col_name}")
+async def api_delete_target_column(reg_id: int, col_name: str):
+    """Remove a target column from all sources of this register."""
+    try:
+        sources = dao.list_sources_for_register(reg_id)
+        deleted = 0
+        for s in sources:
+            mappings = dao.list_mappings_for_source(s["id"])
+            for m in mappings:
+                if m["target_column"] == col_name:
+                    dao.delete_mapping(m["id"])
+                    deleted += 1
+
+        # Remove from union output_columns
+        unions = dao.list_unions_for_register(reg_id)
+        if unions:
+            u = dao.get_union(unions[0]["id"])
+            if u:
+                oc = u.get("output_columns") or []
+                if col_name in oc:
+                    oc.remove(col_name)
+                    dao.update_union(unions[0]["id"], {
+                        "union_code": u["union_code"],
+                        "description": u.get("description"),
+                        "output_columns": oc,
+                    })
+
+        return JSONResponse({"ok": True, "deleted": deleted})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/registers/{reg_id}/rename-column")
+async def api_rename_column(request: Request, reg_id: int):
+    """Rename a target column across all sources, union output_columns, and target table."""
+    try:
+        body = await request.json()
+        old_name = body.get("old_name", "").strip()
+        new_name = body.get("new_name", "").strip()
+        if not old_name or not new_name:
+            return JSONResponse({"error": "old_name and new_name required"}, status_code=400)
+        if old_name == new_name:
+            return JSONResponse({"ok": True, "renamed": 0})
+
+        # Rename in all mappings
+        sources = dao.list_sources_for_register(reg_id)
+        renamed = 0
+        for s in sources:
+            mappings = dao.list_mappings_for_source(s["id"])
+            for m in mappings:
+                if m["target_column"] == old_name:
+                    dao.update_mapping(m["id"], {
+                        "source_column": m["source_column"],
+                        "target_column": new_name,
+                        "target_type": m.get("target_type"),
+                        "transform_type": m.get("transform_type"),
+                        "is_expression": m.get("is_expression", False),
+                        "onec_name": m.get("onec_name"),
+                    })
+                    renamed += 1
+
+        # Rename in union output_columns
+        unions = dao.list_unions_for_register(reg_id)
+        if unions:
+            u = dao.get_union(unions[0]["id"])
+            if u:
+                oc = u.get("output_columns") or []
+                if old_name in oc:
+                    oc = [new_name if c == old_name else c for c in oc]
+                    dao.update_union(unions[0]["id"], {
+                        "union_code": u["union_code"],
+                        "description": u.get("description"),
+                        "output_columns": oc,
+                    })
+
+        # Rename actual column in target table
+        targets = dao.list_targets_for_register(reg_id)
+        for t in targets:
+            tgt = dao.get_target(t["id"])
+            if tgt:
+                schema = tgt.get("target_schema", "public")
+                table = tgt.get("target_table", "")
+                if table:
+                    try:
+                        conn = dao.get_conn()
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                f'ALTER TABLE "{schema}"."{table}" RENAME COLUMN "{old_name}" TO "{new_name}"'
+                            )
+                        conn.commit()
+                        conn.close()
+                    except Exception:
+                        pass  # Column may not exist yet
+
+        return JSONResponse({"ok": True, "renamed": renamed})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/registers/{reg_id}/auto-transforms")
+async def api_auto_transforms(reg_id: int):
+    """Auto-set target_type and transform_type for all mappings based on MSSQL column types."""
+    try:
+        sources = dao.list_sources_for_register(reg_id)
+        updated = 0
+        for src in sources:
+            # Get MSSQL column types for this source
+            mssql_table = src.get("mssql_table", "")
+            if not mssql_table:
+                continue
+            try:
+                col_types = mssql_client.get_column_types(mssql_table)
+            except Exception:
+                continue
+
+            mappings = dao.list_mappings_for_source(src["id"])
+            for m in mappings:
+                if m.get("is_expression"):
+                    continue
+                source_col = m.get("source_column", "")
+                info = col_types.get(source_col)
+                if not info:
+                    continue
+                target_type, transform = _resolve_mssql_type(info["data_type"], info.get("max_length"))
+                # Update if different
+                if target_type != m.get("target_type") or transform != m.get("transform_type"):
+                    dao.update_mapping(m["id"], {
+                        "source_column": m["source_column"],
+                        "target_column": m["target_column"],
+                        "target_type": target_type,
+                        "transform_type": transform,
+                        "is_expression": m.get("is_expression", False),
+                        "onec_name": m.get("onec_name"),
+                    })
+                    updated += 1
+
+        # Sync targets
+        targets = dao.list_targets_for_register(reg_id)
+        for t in targets:
+            dao.sync_target_table(t["id"])
+
+        return JSONResponse({"ok": True, "updated": updated})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/registers/{reg_id}/sql-preview")
+async def api_sql_preview(reg_id: int):
+    """Generate SQL preview for the register's pipeline."""
+    try:
+        sources = dao.list_sources_for_register(reg_id)
+        unions = dao.list_unions_for_register(reg_id)
+        targets = dao.list_targets_for_register(reg_id)
+
+        lines = []
+        lines.append(f"-- ETL Pipeline for register {reg_id}")
+        lines.append("")
+
+        if not sources:
+            return JSONResponse({"sql": "-- No sources configured"})
+
+        # Build SELECT per source
+        source_sqls = []
+        for src in sources:
+            mappings = dao.list_mappings_for_source(src["id"])
+            if not mappings:
+                continue
+            active_mappings = [m for m in mappings if m.get("is_active", True)]
+            if not active_mappings:
+                continue
+
+            cols = []
+            for m in active_mappings:
+                if m.get("is_expression"):
+                    cols.append(f"  {m['source_column']} AS [{m['target_column']}]")
+                elif m.get("transform_type"):
+                    cols.append(f"  {m['source_column']} AS [{m['target_column']}]  -- {m['transform_type']}")
+                else:
+                    cols.append(f"  {m['source_column']} AS [{m['target_column']}]")
+
+            table = src["mssql_table"] if src["mssql_table"].startswith("_") else f"_{src['mssql_table']}"
+            select = f"SELECT\n" + ",\n".join(cols) + f"\nFROM [dbo].[{table}]"
+
+            if src.get("where_clause"):
+                select += f"\nWHERE {src['where_clause']}"
+
+            onec_comment = f"  -- {src.get('onec_name', '')}" if src.get('onec_name') else ""
+            source_sqls.append(f"-- Source: {src['source_code']}{onec_comment}\n{select}")
+
+        if unions and len(source_sqls) > 1:
+            lines.append("-- UNION ALL query")
+            lines.append("\n\nUNION ALL\n\n".join(source_sqls))
+        else:
+            lines.extend(source_sqls)
+
+        if targets:
+            t = targets[0]
+            lines.append(f"\n-- Target: {t['target_schema']}.{t['target_table']}")
+            lines.append(f"-- Mode: {t['load_mode']}")
+            if t.get("upsert_keys"):
+                lines.append(f"-- Upsert keys: {', '.join(t['upsert_keys'])}")
+
+        return JSONResponse({"sql": "\n".join(lines)})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ────────────────────────────────────────────
+if __name__ == "__main__":
+    uvicorn.run("app:app", host="0.0.0.0", port=5555, reload=True)

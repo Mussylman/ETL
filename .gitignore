@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# Airflow
+logs/
+airflow.cfg
+airflow-*.log
+airflow-*.err
+airflow-*.out
+airflow-*.pid
+scheduler.log
+webserver_config.py
+
+# Database dumps
+*.dump
+*.sql.gz
+
+# IDE
+.vscode/
+.idea/
+
+# Obsidian app config (not the vault content)
+.obsidian/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env / secrets
+.env
+.env.local
+
+# Claude
+.claude/
+
+# Temp
+*.tmp
+*.bak

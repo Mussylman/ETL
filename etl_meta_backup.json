@@ -1,0 +1,69 @@
+{
+  "registers": [
+    {
+      "id": 1,
+      "code": "sales",
+      "name": "История продаж",
+      "description": "Объединённые данные продаж из ЧекККМ, Реализации и Возвратов",
+      "default_mode": "incremental",
+      "retail_table": "sales",
+      "retail_uid_column": "document_uid",
+      "is_active": true,
+      "created_at": "2026-02-02T09:56:54.599679",
+      "updated_at": "2026-03-17T06:24:29.482632"
+    }
+  ],
+  "register_sources": [
+    {
+      "id": 16,
+      "register_id": 1,
+      "source_code": "sale_header",
+      "source_type": "header",
+      "mssql_schema": "dbo",
+      "mssql_table": "AccumRg17844",
+      "parent_source_id": null,
+      "join_type": null,
+      "join_key_source": null,
+      "join_key_parent": null,
+      "where_clause": null,
+      "priority": 0,
+      "is_active": true,
+      "created_at": "2026-03-17T06:33:06.004685",
+      "onec_name": "РегистрНакопления.Продажи"
+    }
+  ],
+  "column_mappings": [
+    {
+      "id": 30,
+      "source_id": 16,
+      "source_column": "Period",
+      "is_expression": false,
+      "target_column": "period",
+      "target_type": "timestamp",
+      "transform_type": "fix_year",
+      "transform_params": null,
+      "default_value": null,
+      "is_nullable": true,
+      "is_active": true,
+      "created_at": "2026-03-17T06:39:58.205074"
+    },
+    {
+      "id": 29,
+      "source_id": 16,
+      "source_column": "Recorder",
+      "is_expression": false,
+      "target_column": "recorder",
+      "target_type": null,
+      "transform_type": "binary_to_uuid",
+      "transform_params": null,
+      "default_value": "None",
+      "is_nullable": true,
+      "is_active": true,
+      "created_at": "2026-03-17T06:34:04.115122"
+    }
+  ],
+  "source_unions": [],
+  "source_union_members": [],
+  "register_targets": [],
+  "load_history": []
+}

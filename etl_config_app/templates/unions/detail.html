@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% set active_nav = "registers" %}
+
+{% block title %}{{ union.union_code }} — ETL Config{% endblock %}
+
+{% block breadcrumb %}
+    <li><a href="/registers">Registers</a></li>
+    <li><a href="/registers/{{ union.register_id }}">{{ union.register_code }}</a></li>
+    <li class="active">{{ union.union_code }}</li>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h2>{{ union.union_code }}</h2>
+        {% if union.description %}<p class="text-muted" style="margin:4px 0 0">{{ union.description }}</p>{% endif %}
+    </div>
+    <div class="btn-group">
+        <a href="/unions/{{ union.id }}/edit" class="btn btn-secondary">Edit Union</a>
+        <button class="btn btn-danger" onclick="showDeleteModal('/unions/{{ union.id }}/delete', '{{ union.union_code }}')">Delete</button>
+    </div>
+</div>
+
+{% if union.output_columns %}
+<div class="card mb-4">
+    <div class="card-body">
+        <div class="info-item">
+            <label>Output Columns</label>
+            <div class="value mono">{{ union.output_columns | join(', ') }}</div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Members -->
+<div class="card">
+    <div class="card-header">
+        <h3>Members <span class="tab-count">{{ members|length }}</span></h3>
+        <a href="/unions/{{ union.id }}/members/new" class="btn btn-primary btn-sm">+ Add Member</a>
+    </div>
+    {% if members %}
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Source</th>
+                    <th>MSSQL Table</th>
+                    <th>Priority</th>
+                    <th>WHERE</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for m in members %}
+                <tr>
+                    <td style="font-weight:600">{{ m.source_code }}</td>
+                    <td class="text-mono">{{ m.mssql_table }}</td>
+                    <td>{{ m.priority }}</td>
+                    <td class="text-mono text-muted">{{ m.where_clause or '—' }}</td>
+                    <td>
+                        <div class="btn-group">
+                            <a href="/members/{{ m.id }}/edit" class="btn btn-secondary btn-sm">Edit</a>
+                            <button class="btn btn-danger btn-sm" onclick="showDeleteModal('/members/{{ m.id }}/delete', '{{ m.source_code }}')">Del</button>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <p>No members in this union yet.</p>
+        <a href="/unions/{{ union.id }}/members/new" class="btn btn-primary btn-sm">+ Add Member</a>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block modals %}
+<div id="deleteModal" class="modal-backdrop">
+    <div class="modal">
+        <h3>Confirm Delete</h3>
+        <p>Are you sure you want to delete <strong class="delete-name"></strong>?</p>
+        <form method="POST" action="">
+            <div class="btn-group">
+                <button type="button" class="btn btn-secondary" onclick="hideDeleteModal()">Cancel</button>
+                <button type="submit" class="btn btn-danger">Delete</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

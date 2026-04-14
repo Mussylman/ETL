@@ -1,0 +1,227 @@
+from typing import List, Union, Optional
+from airflow.providers.postgres.hooks.postgres import PostgresHook
+import pandas as pd
+
+
+class Loaders:
+    """
+    Загрузчик данных в PostgreSQL.
+
+    Поддерживаемые режимы:
+      - insert  : простой INSERT (для первичной загрузки)
+      - upsert  : INSERT ... ON CONFLICT (для инкрементала)
+      - replace : DELETE + INSERT (для полной перезагрузки)
+    """
+
+    def __init__(self, dst_conn_id: str = "postgre_test_base"):
+        self.dst_conn_id = dst_conn_id
+
+    def _normalize_datetimes(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Конвертирует datetime64 в python datetime."""
+        df = df.copy()
+        for col in df.select_dtypes(include=["datetime64[ns]"]).columns:
+            df[col] = df[col].apply(lambda x: x.to_pydatetime() if pd.notnull(x) else None)
+        return df
+
+    def _normalize_uuids(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Конвертирует UUID в строки для PostgreSQL."""
+        df = df.copy()
+        for col in df.columns:
+            sample = df[col].dropna().head(1)
+            if not sample.empty:
+                from uuid import UUID
+                if isinstance(sample.iloc[0], UUID):
+                    df[col] = df[col].apply(lambda x: str(x) if x else None)
+        return df
+
+    def _prepare_df(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Подготовка DataFrame для загрузки."""
+        df = self._normalize_datetimes(df)
+        df = self._normalize_uuids(df)
+        return df
+
+    # ======================================================================
+    #  INSERT (простая вставка)
+    # ======================================================================
+    def insert_only(self, df: pd.DataFrame, table_name: str, batch_size: int = 3000):
+        """Простой INSERT без обработки конфликтов."""
+        if df.empty:
+            print(f"INSERT: no data for {table_name}")
+            return 0
+
+        pg = PostgresHook(postgres_conn_id=self.dst_conn_id)
+        df = self._prepare_df(df)
+
+        pg.insert_rows(
+            table=table_name,
+            rows=df.itertuples(index=False, name=None),
+            target_fields=list(df.columns),
+            commit_every=batch_size,
+        )
+
+        print(f"INSERT: {len(df)} rows -> {table_name}")
+        return len(df)
+
+    # ======================================================================
+    #  UPSERT с одним ключом (legacy)
+    # ======================================================================
+    def upsert_by_key(self, df: pd.DataFrame, table_name: str, key_column: str):
+        """UPSERT по одному ключу (обратная совместимость)."""
+        return self.upsert_by_keys(df, table_name, [key_column])
+
+    # ======================================================================
+    #  UPSERT с составным ключом (НОВОЕ)
+    # ======================================================================
+    def upsert_by_keys(
+        self,
+        df: pd.DataFrame,
+        table_name: str,
+        key_columns: Union[str, List[str]],
+        batch_size: int = 1000,
+    ) -> int:
+        """
+        UPSERT по одному или нескольким ключам.
+
+        Args:
+            df: DataFrame с данными
+            table_name: целевая таблица
+            key_columns: колонка или список колонок для ON CONFLICT
+            batch_size: размер батча для commit
+
+        Returns:
+            Количество обработанных строк
+        """
+        if df.empty:
+            print(f"UPSERT: no data for {table_name}")
+            return 0
+
+        # Нормализуем key_columns в список
+        if isinstance(key_columns, str):
+            key_columns = [key_columns]
+
+        # Проверяем наличие ключевых колонок
+        for key in key_columns:
+            if key not in df.columns:
+                raise ValueError(f"Key column '{key}' not found in DataFrame")
+
+        pg = PostgresHook(postgres_conn_id=self.dst_conn_id)
+        df = self._prepare_df(df)
+
+        columns = list(df.columns)
+        update_columns = [c for c in columns if c not in key_columns]
+
+        # Формируем SQL
+        cols_sql = ", ".join([f'"{c}"' for c in columns])
+        placeholders = ", ".join([f"%({c})s" for c in columns])
+
+        # ON CONFLICT для составного ключа
+        conflict_cols = ", ".join([f'"{k}"' for k in key_columns])
+
+        # SET clause для UPDATE
+        if update_columns:
+            set_clause = ", ".join([f'"{c}" = EXCLUDED."{c}"' for c in update_columns])
+            sql = f"""
+                INSERT INTO {table_name} ({cols_sql})
+                VALUES ({placeholders})
+                ON CONFLICT ({conflict_cols})
+                DO UPDATE SET {set_clause};
+            """
+        else:
+            # Если нет колонок для обновления (только ключи) — DO NOTHING
+            sql = f"""
+                INSERT INTO {table_name} ({cols_sql})
+                VALUES ({placeholders})
+                ON CONFLICT ({conflict_cols})
+                DO NOTHING;
+            """
+
+        rows = df.to_dict(orient="records")
+
+        with pg.get_conn() as conn:
+            with conn.cursor() as cur:
+                for i, r in enumerate(rows):
+                    cur.execute(sql, r)
+                    if (i + 1) % batch_size == 0:
+                        conn.commit()
+                conn.commit()
+
+        print(f"UPSERT: {len(rows)} rows -> {table_name} (keys: {key_columns})")
+        return len(rows)
+
+    # ======================================================================
+    #  REPLACE (DELETE + INSERT)
+    # ======================================================================
+    def replace_all(
+        self,
+        df: pd.DataFrame,
+        table_name: str,
+        where_clause: Optional[str] = None,
+    ) -> int:
+        """
+        Полная замена данных: DELETE + INSERT.
+
+        Args:
+            df: DataFrame с данными
+            table_name: целевая таблица
+            where_clause: условие для DELETE (если None — очищает всю таблицу)
+
+        Returns:
+            Количество вставленных строк
+        """
+        if df.empty:
+            print(f"REPLACE: no data for {table_name}")
+            return 0
+
+        pg = PostgresHook(postgres_conn_id=self.dst_conn_id)
+
+        # DELETE
+        if where_clause:
+            delete_sql = f"DELETE FROM {table_name} WHERE {where_clause}"
+        else:
+            delete_sql = f"TRUNCATE TABLE {table_name}"
+
+        with pg.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(delete_sql)
+            conn.commit()
+
+        # INSERT
+        return self.insert_only(df, table_name)
+
+    # ======================================================================
+    #  Универсальный метод load() для ETLEngine
+    # ======================================================================
+    def load(
+        self,
+        df: pd.DataFrame,
+        table_name: str,
+        mode: str = "upsert",
+        upsert_keys: Optional[List[str]] = None,
+        where_clause: Optional[str] = None,
+    ) -> int:
+        """
+        Универсальный метод загрузки.
+
+        Args:
+            df: DataFrame с данными
+            table_name: целевая таблица
+            mode: режим загрузки ('insert', 'upsert', 'replace')
+            upsert_keys: ключи для upsert
+            where_clause: условие для replace
+
+        Returns:
+            Количество обработанных строк
+        """
+        if mode == "insert":
+            return self.insert_only(df, table_name)
+
+        elif mode == "upsert":
+            if not upsert_keys:
+                raise ValueError("upsert_keys required for 'upsert' mode")
+            return self.upsert_by_keys(df, table_name, upsert_keys)
+
+        elif mode == "replace":
+            return self.replace_all(df, table_name, where_clause)
+
+        else:
+            raise ValueError(f"Unknown load mode: {mode}")

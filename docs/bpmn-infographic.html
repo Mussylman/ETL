@@ -1,0 +1,1078 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ETL Platform — BPMN Infographic</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: #0a0e1a;
+    color: #e0e6ed;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  .hero {
+    text-align: center;
+    padding: 60px 40px 40px;
+    position: relative;
+  }
+  .hero::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: radial-gradient(ellipse at 50% 0%, rgba(99,102,241,0.15) 0%, transparent 70%);
+    pointer-events: none;
+  }
+  .hero h1 {
+    font-size: 42px;
+    font-weight: 800;
+    background: linear-gradient(135deg, #818cf8, #c084fc, #f472b6);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 12px;
+    letter-spacing: -1px;
+  }
+  .hero .subtitle {
+    font-size: 18px;
+    color: #8892a4;
+    font-weight: 400;
+  }
+  .hero .date {
+    margin-top: 8px;
+    font-size: 13px;
+    color: #4a5568;
+  }
+
+  .stats {
+    display: flex;
+    justify-content: center;
+    gap: 40px;
+    padding: 30px 0;
+    flex-wrap: wrap;
+  }
+  .stat {
+    text-align: center;
+  }
+  .stat .num {
+    font-size: 36px;
+    font-weight: 800;
+    background: linear-gradient(135deg, #60a5fa, #818cf8);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .stat .label {
+    font-size: 12px;
+    color: #6b7a8d;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-top: 4px;
+  }
+
+  .bpmn-section {
+    padding: 20px 40px 60px;
+    max-width: 1500px;
+    margin: 0 auto;
+  }
+  .section-title {
+    font-size: 14px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: #6366f1;
+    margin-bottom: 30px;
+    font-weight: 600;
+  }
+
+  .pool {
+    position: relative;
+    margin-bottom: 2px;
+    display: flex;
+    min-height: 140px;
+  }
+  .pool-label {
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    transform: rotate(180deg);
+    background: linear-gradient(180deg, var(--pool-color), var(--pool-color-dark));
+    color: #fff;
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 1px;
+    padding: 16px 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    border-radius: 12px 0 0 12px;
+    text-transform: uppercase;
+  }
+  .pool-content {
+    flex: 1;
+    background: var(--pool-bg);
+    border: 1px solid var(--pool-border);
+    border-left: none;
+    border-radius: 0 12px 12px 0;
+    padding: 24px 30px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    position: relative;
+    overflow: visible;
+  }
+
+  .event-start {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    border: 3px solid #34d399;
+    background: rgba(52,211,153,0.1);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .event-start::after {
+    content: '';
+    width: 12px; height: 12px;
+    background: #34d399;
+    border-radius: 50%;
+  }
+  .event-end {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    border: 4px solid #f87171;
+    background: rgba(248,113,113,0.1);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .event-end::after {
+    content: '';
+    width: 10px; height: 10px;
+    background: #f87171;
+    border-radius: 50%;
+  }
+  .event-timer {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    border: 3px solid #fbbf24;
+    background: rgba(251,191,36,0.1);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+  }
+
+  .task {
+    background: var(--task-bg, rgba(99,102,241,0.08));
+    border: 1.5px solid var(--task-border, rgba(99,102,241,0.3));
+    border-radius: 10px;
+    padding: 12px 18px;
+    font-size: 13px;
+    font-weight: 500;
+    position: relative;
+    max-width: 200px;
+    line-height: 1.4;
+    transition: all 0.2s;
+    cursor: default;
+  }
+  .task:hover {
+    border-color: var(--task-border-hover, rgba(99,102,241,0.6));
+    transform: translateY(-2px);
+    box-shadow: 0 4px 20px var(--task-shadow, rgba(99,102,241,0.15));
+  }
+  .task .icon {
+    margin-right: 6px;
+    font-size: 15px;
+  }
+  .task-label {
+    font-size: 10px;
+    color: #6b7a8d;
+    display: block;
+    margin-top: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .gateway {
+    width: 36px; height: 36px;
+    background: rgba(251,191,36,0.1);
+    border: 2px solid #fbbf24;
+    transform: rotate(45deg);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .gateway span {
+    transform: rotate(-45deg);
+    font-size: 16px;
+    font-weight: 800;
+    color: #fbbf24;
+  }
+
+  .arrow {
+    color: #4a5568;
+    font-size: 20px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+  }
+  .arrow-label {
+    font-size: 10px;
+    color: #6b7a8d;
+    display: block;
+    text-align: center;
+    margin-top: -4px;
+  }
+
+  .data-store {
+    background: rgba(14,165,233,0.06);
+    border: 1.5px solid rgba(14,165,233,0.25);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 12px;
+    font-weight: 500;
+    color: #7dd3fc;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .data-store .db-icon {
+    font-size: 16px;
+  }
+
+  .pool-analyst {
+    --pool-color: #8b5cf6;
+    --pool-color-dark: #6d28d9;
+    --pool-bg: rgba(139,92,246,0.03);
+    --pool-border: rgba(139,92,246,0.12);
+  }
+  .pool-config {
+    --pool-color: #6366f1;
+    --pool-color-dark: #4338ca;
+    --pool-bg: rgba(99,102,241,0.03);
+    --pool-border: rgba(99,102,241,0.12);
+  }
+  .pool-airflow {
+    --pool-color: #0ea5e9;
+    --pool-color-dark: #0369a1;
+    --pool-bg: rgba(14,165,233,0.03);
+    --pool-border: rgba(14,165,233,0.12);
+  }
+  .pool-etl {
+    --pool-color: #10b981;
+    --pool-color-dark: #047857;
+    --pool-bg: rgba(16,185,129,0.03);
+    --pool-border: rgba(16,185,129,0.12);
+  }
+  .pool-data {
+    --pool-color: #f59e0b;
+    --pool-color-dark: #b45309;
+    --pool-bg: rgba(245,158,11,0.03);
+    --pool-border: rgba(245,158,11,0.12);
+  }
+
+  .details-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    gap: 24px;
+    padding: 20px 40px 60px;
+    max-width: 1500px;
+    margin: 0 auto;
+  }
+  .detail-card {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 16px;
+    padding: 28px;
+    transition: all 0.3s;
+  }
+  .detail-card:hover {
+    border-color: rgba(99,102,241,0.2);
+    background: rgba(99,102,241,0.03);
+  }
+  .detail-card h3 {
+    font-size: 16px;
+    font-weight: 700;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .detail-card h3 .badge {
+    font-size: 11px;
+    font-weight: 600;
+    background: rgba(99,102,241,0.15);
+    color: #a5b4fc;
+    padding: 3px 10px;
+    border-radius: 20px;
+  }
+  .detail-card .flow {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .flow-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .flow-step .step-num {
+    min-width: 24px; height: 24px;
+    background: rgba(99,102,241,0.15);
+    color: #a5b4fc;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .flow-step code {
+    background: rgba(99,102,241,0.1);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    color: #c4b5fd;
+  }
+
+  .transform-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    margin-top: 12px;
+  }
+  .transform-table th {
+    text-align: left;
+    color: #6b7a8d;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-size: 10px;
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+  .transform-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+    color: #b8c5d3;
+  }
+  .transform-table .type-from {
+    color: #fbbf24;
+    font-family: 'Courier New', monospace;
+    font-weight: 600;
+  }
+  .transform-table .type-to {
+    color: #34d399;
+    font-family: 'Courier New', monospace;
+    font-weight: 600;
+  }
+  .transform-table .arrow-cell {
+    color: #4a5568;
+    text-align: center;
+  }
+
+  .infra-map {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+  }
+  .infra-node {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px;
+    padding: 16px;
+    flex: 1;
+    min-width: 140px;
+  }
+  .infra-node .node-title {
+    font-weight: 700;
+    font-size: 13px;
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .infra-node .node-detail {
+    font-size: 11px;
+    color: #6b7a8d;
+    line-height: 1.6;
+  }
+  .infra-node .node-detail code {
+    background: rgba(99,102,241,0.1);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 10px;
+    color: #c4b5fd;
+  }
+
+  .modes {
+    display: flex;
+    gap: 12px;
+    margin-top: 12px;
+    flex-wrap: wrap;
+  }
+  .mode-card {
+    flex: 1;
+    min-width: 130px;
+    padding: 14px;
+    border-radius: 10px;
+    text-align: center;
+  }
+  .mode-card.full {
+    background: rgba(99,102,241,0.08);
+    border: 1px solid rgba(99,102,241,0.2);
+  }
+  .mode-card.incr {
+    background: rgba(16,185,129,0.08);
+    border: 1px solid rgba(16,185,129,0.2);
+  }
+  .mode-card.consist {
+    background: rgba(251,191,36,0.08);
+    border: 1px solid rgba(251,191,36,0.2);
+  }
+  .mode-card .mode-name {
+    font-size: 13px;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .mode-card .mode-desc {
+    font-size: 11px;
+    color: #8892a4;
+    line-height: 1.4;
+  }
+  .mode-card .mode-icon {
+    font-size: 22px;
+    margin-bottom: 6px;
+  }
+
+  .sep {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(99,102,241,0.2), transparent);
+    margin: 40px auto;
+    max-width: 600px;
+  }
+
+  .annotation {
+    background: rgba(251,191,36,0.06);
+    border-left: 3px solid #fbbf24;
+    padding: 8px 14px;
+    font-size: 12px;
+    color: #d4a017;
+    border-radius: 0 6px 6px 0;
+    margin-top: 8px;
+    line-height: 1.5;
+  }
+
+  .subprocess {
+    border: 2px dashed rgba(99,102,241,0.2);
+    border-radius: 12px;
+    padding: 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    position: relative;
+  }
+  .subprocess-label {
+    position: absolute;
+    top: -10px;
+    left: 16px;
+    background: var(--pool-bg, #0a0e1a);
+    padding: 0 8px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #6b7a8d;
+  }
+
+  .legend {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    padding: 20px 40px;
+    max-width: 1500px;
+    margin: 0 auto;
+    justify-content: center;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: #6b7a8d;
+  }
+  .legend-circle {
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    border: 2px solid;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .legend-rect {
+    width: 24px; height: 16px;
+    border-radius: 4px;
+    border: 1.5px solid;
+  }
+  .legend-diamond {
+    width: 16px; height: 16px;
+    border: 2px solid #fbbf24;
+    transform: rotate(45deg);
+  }
+
+  .v-connector {
+    display: flex;
+    justify-content: center;
+    padding: 0;
+    height: 4px;
+  }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <h1>ETL Platform</h1>
+  <div class="subtitle">1C (MSSQL) &rarr; PostgreSQL &mdash; Apache Airflow + FastAPI Configurator</div>
+  <div class="date">BPMN Model &mdash; 14 апреля 2026</div>
+</div>
+
+<div class="stats">
+  <div class="stat">
+    <div class="num">4</div>
+    <div class="label">Базы данных</div>
+  </div>
+  <div class="stat">
+    <div class="num">3</div>
+    <div class="label">Режима загрузки</div>
+  </div>
+  <div class="stat">
+    <div class="num">6</div>
+    <div class="label">Таблиц etl_meta</div>
+  </div>
+  <div class="stat">
+    <div class="num">50+</div>
+    <div class="label">API эндпоинтов</div>
+  </div>
+  <div class="stat">
+    <div class="num">3</div>
+    <div class="label">ETL движка</div>
+  </div>
+  <div class="stat">
+    <div class="num">5</div>
+    <div class="label">Интеграций</div>
+  </div>
+</div>
+
+<div class="sep"></div>
+
+<div class="bpmn-section">
+  <div class="section-title">BPMN &mdash; Основной процесс загрузки данных</div>
+
+  <!-- Pool 1: Analyst -->
+  <div class="pool pool-analyst">
+    <div class="pool-label" style="--pool-color: #8b5cf6; --pool-color-dark: #6d28d9;">Аналитик</div>
+    <div class="pool-content" style="--pool-bg: rgba(139,92,246,0.03); --pool-border: rgba(139,92,246,0.12);">
+      <div class="event-start"></div>
+      <div class="arrow">&rarr;</div>
+      <div class="task" style="--task-bg: rgba(139,92,246,0.08); --task-border: rgba(139,92,246,0.3);">
+        <span class="icon">&#128100;</span> Открывает конфигуратор
+        <span class="task-label">localhost:5555</span>
+      </div>
+      <div class="arrow">&rarr;</div>
+      <div class="task" style="--task-bg: rgba(139,92,246,0.08); --task-border: rgba(139,92,246,0.3);">
+        <span class="icon">&#128203;</span> Создаёт регистр
+        <span class="task-label">имя, код, режим</span>
+      </div>
+      <div class="arrow">&rarr;</div>
+      <div class="task" style="--task-bg: rgba(139,92,246,0.08); --task-border: rgba(139,92,246,0.3);">
+        <span class="icon">&#128270;</span> Добавляет источник
+        <span class="task-label">таблица MSSQL</span>
+      </div>
+      <div class="arrow">&rarr;</div>
+      <div class="task" style="--task-bg: rgba(139,92,246,0.08); --task-border: rgba(139,92,246,0.3);">
+        <span class="icon">&#9881;</span> Настраивает маппинг колонок
+        <span class="task-label">Column Builder</span>
+      </div>
+      <div class="arrow">&rarr;</div>
+      <div class="task" style="--task-bg: rgba(139,92,246,0.08); --task-border: rgba(139,92,246,0.3);">
+        <span class="icon">&#127919;</span> Создаёт target
+        <span class="task-label">upsert keys, режим</span>
+      </div>
+      <div class="arrow">&rarr;</div>
+      <div class="event-end"></div>
+    </div>
+  </div>
+
+  <div class="v-connector">
+    <div style="color: #4a5568; font-size: 14px;">&#8595; &nbsp;сохраняет конфигурацию &nbsp;&#8595;</div>
+  </div>
+
+  <!-- Pool 2: Configurator -->
+  <div class="pool pool-config">
+    <div class="pool-label" style="--pool-color: #6366f1; --pool-color-dark: #4338ca;">Конфигуратор</div>
+    <div class="pool-content" style="--pool-bg: rgba(99,102,241,0.03); --pool-border: rgba(99,102,241,0.12);">
+      <div class="task" style="--task-bg: rgba(99,102,241,0.08); --task-border: rgba(99,102,241,0.3);">
+        <span class="icon">&#128268;</span> Запрос к 1С API
+        <span class="task-label">HTTP meta endpoint</span>
+      </div>
+      <div class="arrow">&rarr;</div>
+      <div class="task" style="--task-bg: rgba(99,102,241,0.08); --task-border: rgba(99,102,241,0.3);">
+        <span class="icon">&#128300;</span> Инспекция MSSQL схемы
+        <span class="task-label">INFORMATION_SCHEMA</span>
+      </div>
+      <div class="arrow">&rarr;</div>
+      <div class="task" style="--task-bg: rgba(99,102,241,0.08); --task-border: rgba(99,102,241,0.3);">
+        <span class="icon">&#9889;</span> Авто-определение типов
+        <span class="task-label">binary &rarr; uuid/int/bool</span>
+      </div>
+      <div class="arrow">&rarr;</div>
+      <div class="data-store">
+        <span class="db-icon">&#128451;</span> etl_meta (PostgreSQL)
+        <br>registers, sources, mappings, targets, unions
+      </div>
+    </div>
+  </div>
+
+  <div class="v-connector">
+    <div style="color: #4a5568; font-size: 14px;">&#8595; &nbsp;читает конфигурацию &nbsp;&#8595;</div>
+  </div>
+
+  <!-- Pool 3: Airflow -->
+  <div class="pool pool-airflow">
+    <div class="pool-label" style="--pool-color: #0ea5e9; --pool-color-dark: #0369a1;">Airflow</div>
+    <div class="pool-content" style="--pool-bg: rgba(14,165,233,0.03); --pool-border: rgba(14,165,233,0.12);">
+      <div class="event-timer">&#9201;</div>
+      <div class="arrow">
+        <div>
+          &rarr;
+          <span class="arrow-label">cron</span>
+        </div>
+      </div>
+      <div class="gateway"><span>X</span></div>
+      <div class="arrow">
+        <div>
+          &rarr;
+          <span class="arrow-label">режим?</span>
+        </div>
+      </div>
+      <div class="task" style="--task-bg: rgba(14,165,233,0.08); --task-border: rgba(14,165,233,0.3);">
+        <span class="icon">&#128260;</span> Full Period
+        <span class="task-label">полная перезагрузка</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px;">
+        <div class="task" style="--task-bg: rgba(16,185,129,0.08); --task-border: rgba(16,185,129,0.3);">
+          <span class="icon">&#9650;</span> Incremental
+          <span class="task-label">каждые 5 мин</span>
+        </div>
+        <div class="task" style="--task-bg: rgba(251,191,36,0.08); --task-border: rgba(251,191,36,0.3);">
+          <span class="icon">&#9989;</span> Consistency
+          <span class="task-label">каждые 4 часа</span>
+        </div>
+      </div>
+      <div class="arrow">&rarr;</div>
+      <div class="task" style="--task-bg: rgba(14,165,233,0.08); --task-border: rgba(14,165,233,0.3);">
+        <span class="icon">&#128640;</span> Запуск ETL Engine
+        <span class="task-label">DAG task</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="v-connector">
+    <div style="color: #4a5568; font-size: 14px;">&#8595; &nbsp;вызывает движок &nbsp;&#8595;</div>
+  </div>
+
+  <!-- Pool 4: ETL Engine -->
+  <div class="pool pool-etl">
+    <div class="pool-label" style="--pool-color: #10b981; --pool-color-dark: #047857;">ETL Engine</div>
+    <div class="pool-content" style="--pool-bg: rgba(16,185,129,0.03); --pool-border: rgba(16,185,129,0.12);">
+
+      <div class="subprocess" style="--pool-bg: rgba(16,185,129,0.02);">
+        <div class="subprocess-label">Extract</div>
+        <div class="task" style="--task-bg: rgba(16,185,129,0.08); --task-border: rgba(16,185,129,0.25);">
+          <span class="icon">&#128229;</span> QueryBuilder: генерация SQL
+          <span class="task-label">SELECT / JOIN / UNION</span>
+        </div>
+        <div class="arrow">&rarr;</div>
+        <div class="task" style="--task-bg: rgba(16,185,129,0.08); --task-border: rgba(16,185,129,0.25);">
+          <span class="icon">&#128230;</span> StorageConnector: чтение MSSQL
+          <span class="task-label">pandas DataFrame</span>
+        </div>
+      </div>
+
+      <div class="arrow">&rarr;</div>
+
+      <div class="subprocess" style="--pool-bg: rgba(16,185,129,0.02);">
+        <div class="subprocess-label">Transform</div>
+        <div class="task" style="--task-bg: rgba(251,191,36,0.08); --task-border: rgba(251,191,36,0.25);">
+          <span class="icon">&#128256;</span> Binary: UUID / int / bool
+        </div>
+        <div class="arrow">&rarr;</div>
+        <div class="task" style="--task-bg: rgba(251,191,36,0.08); --task-border: rgba(251,191,36,0.25);">
+          <span class="icon">&#128197;</span> Dates: 4025 &rarr; 2025
+        </div>
+        <div class="arrow">&rarr;</div>
+        <div class="task" style="--task-bg: rgba(251,191,36,0.08); --task-border: rgba(251,191,36,0.25);">
+          <span class="icon">&#128290;</span> Cast + etl_loaded_at
+        </div>
+      </div>
+
+      <div class="arrow">&rarr;</div>
+
+      <div class="subprocess" style="--pool-bg: rgba(16,185,129,0.02);">
+        <div class="subprocess-label">Load</div>
+        <div class="task" style="--task-bg: rgba(59,130,246,0.08); --task-border: rgba(59,130,246,0.25);">
+          <span class="icon">&#128190;</span> INSERT / UPSERT / REPLACE
+          <span class="task-label">PostgreSQL target</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="v-connector">
+    <div style="color: #4a5568; font-size: 14px;">&#8595; &nbsp;читает / пишет &nbsp;&#8595;</div>
+  </div>
+
+  <!-- Pool 5: Data Stores -->
+  <div class="pool pool-data">
+    <div class="pool-label" style="--pool-color: #f59e0b; --pool-color-dark: #b45309;">Хранилища</div>
+    <div class="pool-content" style="--pool-bg: rgba(245,158,11,0.03); --pool-border: rgba(245,158,11,0.12); gap: 24px;">
+      <div class="data-store" style="border-color: rgba(251,191,36,0.3);">
+        <span class="db-icon">&#128454;</span>
+        <div>
+          <strong>MSSQL 1C</strong><br>
+          <span style="font-size:10px; color:#8892a4;">10.10.1.61:1433 / UPP_JAN</span><br>
+          <span style="font-size:10px; color:#6b7a8d;">Документы, регистры, справочники</span>
+        </div>
+      </div>
+      <div class="arrow" style="font-size:28px;">&#10132;</div>
+      <div class="data-store" style="border-color: rgba(16,185,129,0.3);">
+        <span class="db-icon">&#128451;</span>
+        <div>
+          <strong>PostgreSQL Target</strong><br>
+          <span style="font-size:10px; color:#8892a4;">10.10.1.142:5432 / test</span><br>
+          <span style="font-size:10px; color:#6b7a8d;">public + etl_meta схемы</span>
+        </div>
+      </div>
+      <div class="data-store" style="border-color: rgba(14,165,233,0.3);">
+        <span class="db-icon">&#128451;</span>
+        <div>
+          <strong>bd_retail</strong><br>
+          <span style="font-size:10px; color:#8892a4;">10.10.1.142:5432</span><br>
+          <span style="font-size:10px; color:#6b7a8d;">Change detection</span>
+        </div>
+      </div>
+      <div class="data-store" style="border-color: rgba(139,92,246,0.3);">
+        <span class="db-icon">&#127760;</span>
+        <div>
+          <strong>1C Meta API</strong><br>
+          <span style="font-size:10px; color:#8892a4;">192.168.18.224:8090</span><br>
+          <span style="font-size:10px; color:#6b7a8d;">Структура полей</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="legend">
+  <div class="legend-item">
+    <div class="legend-circle" style="border-color: #34d399;"><div style="width:6px;height:6px;background:#34d399;border-radius:50%;"></div></div>
+    Начальное событие
+  </div>
+  <div class="legend-item">
+    <div class="legend-circle" style="border-color: #f87171; border-width:3px;"><div style="width:5px;height:5px;background:#f87171;border-radius:50%;"></div></div>
+    Конечное событие
+  </div>
+  <div class="legend-item">
+    <div class="legend-circle" style="border-color: #fbbf24;">&#9201;</div>
+    Таймер
+  </div>
+  <div class="legend-item">
+    <div class="legend-rect" style="border-color: rgba(99,102,241,0.4); background: rgba(99,102,241,0.08);"></div>
+    Задача
+  </div>
+  <div class="legend-item">
+    <div class="legend-diamond"></div>
+    Шлюз (XOR)
+  </div>
+  <div class="legend-item">
+    <div class="legend-rect" style="border-color: rgba(14,165,233,0.4); background: rgba(14,165,233,0.06); border-style: dashed;"></div>
+    Подпроцесс
+  </div>
+  <div class="legend-item">
+    <div class="legend-rect" style="border-color: rgba(14,165,233,0.4); background: rgba(14,165,233,0.06);"></div>
+    Хранилище данных
+  </div>
+</div>
+
+<div class="sep"></div>
+
+<div class="details-grid">
+
+  <div class="detail-card">
+    <h3>&#9881; Три режима загрузки <span class="badge">ETL Core</span></h3>
+    <div class="modes">
+      <div class="mode-card full">
+        <div class="mode-icon">&#128260;</div>
+        <div class="mode-name">Full Period</div>
+        <div class="mode-desc">Полная перезагрузка по диапазону дат. INSERT ONLY. Для первичной настройки.</div>
+      </div>
+      <div class="mode-card incr">
+        <div class="mode-icon">&#9650;</div>
+        <div class="mode-name">Incremental</div>
+        <div class="mode-desc">Каждые 5 мин. DataChecker находит изменения через bd_retail. UPSERT.</div>
+      </div>
+      <div class="mode-card consist">
+        <div class="mode-icon">&#9989;</div>
+        <div class="mode-name">Consistency</div>
+        <div class="mode-desc">Каждые 4 часа. Проверка целостности: нет ли пропущенных записей.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="detail-card">
+    <h3>&#128256; Трансформации <span class="badge">Автоматически</span></h3>
+    <table class="transform-table">
+      <thead>
+        <tr><th>MSSQL тип</th><th></th><th>PostgreSQL тип</th><th>Функция</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="type-from">binary(16)</td>
+          <td class="arrow-cell">&rarr;</td>
+          <td class="type-to">uuid</td>
+          <td>binary_to_uuid</td>
+        </tr>
+        <tr>
+          <td class="type-from">binary(4)</td>
+          <td class="arrow-cell">&rarr;</td>
+          <td class="type-to">integer</td>
+          <td>binary_to_int</td>
+        </tr>
+        <tr>
+          <td class="type-from">binary(1)</td>
+          <td class="arrow-cell">&rarr;</td>
+          <td class="type-to">boolean</td>
+          <td>binary_to_bool</td>
+        </tr>
+        <tr>
+          <td class="type-from">datetime</td>
+          <td class="arrow-cell">&rarr;</td>
+          <td class="type-to">timestamp</td>
+          <td>fix_year (4025&rarr;2025)</td>
+        </tr>
+        <tr>
+          <td class="type-from">nvarchar</td>
+          <td class="arrow-cell">&rarr;</td>
+          <td class="type-to">varchar</td>
+          <td>cast</td>
+        </tr>
+        <tr>
+          <td class="type-from">numeric</td>
+          <td class="arrow-cell">&rarr;</td>
+          <td class="type-to">decimal</td>
+          <td>cast</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="annotation" style="margin-top:12px;">
+      + binary_fields_raw (JSONB) &mdash; оригинальные бинарные значения для аудита
+    </div>
+  </div>
+
+  <div class="detail-card">
+    <h3>&#128100; Путь аналитика <span class="badge">No Code</span></h3>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="step-num">1</div>
+        <div>Открывает конфигуратор <code>:5555</code></div>
+      </div>
+      <div class="flow-step">
+        <div class="step-num">2</div>
+        <div>Создаёт <strong>регистр</strong> &mdash; логическая группа данных</div>
+      </div>
+      <div class="flow-step">
+        <div class="step-num">3</div>
+        <div>Добавляет <strong>источник</strong> &mdash; таблица MSSQL из 1С</div>
+      </div>
+      <div class="flow-step">
+        <div class="step-num">4</div>
+        <div><strong>Column Builder</strong> авто-определяет типы и трансформации</div>
+      </div>
+      <div class="flow-step">
+        <div class="step-num">5</div>
+        <div>Создаёт <strong>target</strong> с режимом загрузки и ключами</div>
+      </div>
+      <div class="flow-step">
+        <div class="step-num">6</div>
+        <div>Система сама генерирует SQL, трансформирует, загружает</div>
+      </div>
+    </div>
+    <div class="annotation">
+      Union, Target, Sync &mdash; скрытая механика, не показывается пользователю
+    </div>
+  </div>
+
+  <div class="detail-card">
+    <h3>&#128451; Схема etl_meta <span class="badge">Source of Truth</span></h3>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="step-num" style="background:rgba(139,92,246,0.15); color:#c4b5fd;">R</div>
+        <div><strong>registers</strong> &mdash; реестр: имя, код, режим загрузки по умолчанию</div>
+      </div>
+      <div class="flow-step">
+        <div class="step-num" style="background:rgba(14,165,233,0.15); color:#7dd3fc;">S</div>
+        <div><strong>register_sources</strong> &mdash; таблицы MSSQL (header / detail / standalone)</div>
+      </div>
+      <div class="flow-step">
+        <div class="step-num" style="background:rgba(251,191,36,0.15); color:#fbbf24;">M</div>
+        <div><strong>column_mappings</strong> &mdash; source_col &rarr; target_col + transform</div>
+      </div>
+      <div class="flow-step">
+        <div class="step-num" style="background:rgba(16,185,129,0.15); color:#34d399;">U</div>
+        <div><strong>source_unions</strong> + <strong>members</strong> &mdash; UNION нескольких источников</div>
+      </div>
+      <div class="flow-step">
+        <div class="step-num" style="background:rgba(244,114,182,0.15); color:#f472b6;">T</div>
+        <div><strong>register_targets</strong> &mdash; PostgreSQL таблица, upsert_keys, pre_load_sql</div>
+      </div>
+      <div class="flow-step">
+        <div class="step-num" style="background:rgba(99,102,241,0.15); color:#a5b4fc;">H</div>
+        <div><strong>load_history</strong> &mdash; аудит каждой загрузки</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="detail-card" style="grid-column: 1 / -1;">
+    <h3>&#127959; Инфраструктура <span class="badge">5 сервисов</span></h3>
+    <div class="infra-map">
+      <div class="infra-node">
+        <div class="node-title" style="color: #fbbf24;">&#128454; MSSQL 1C</div>
+        <div class="node-detail">
+          <code>10.10.1.61:1433</code><br>
+          DB: UPP_JAN<br>
+          Документы, регистры, справочники 1С
+        </div>
+      </div>
+      <div class="infra-node">
+        <div class="node-title" style="color: #34d399;">&#128451; PostgreSQL</div>
+        <div class="node-detail">
+          <code>10.10.1.142:5432</code><br>
+          DB: test (etl_meta + public)<br>
+          DB: bd_retail (change detect)
+        </div>
+      </div>
+      <div class="infra-node">
+        <div class="node-title" style="color: #818cf8;">&#127760; 1C Meta API</div>
+        <div class="node-detail">
+          <code>192.168.18.224:8090</code><br>
+          /NikitaBase/hs/meta<br>
+          Структура полей + русские имена
+        </div>
+      </div>
+      <div class="infra-node">
+        <div class="node-title" style="color: #0ea5e9;">&#9992; Airflow</div>
+        <div class="node-detail">
+          <code>localhost:8080</code><br>
+          LocalExecutor<br>
+          DAGs: gfk, users, orders
+        </div>
+      </div>
+      <div class="infra-node">
+        <div class="node-title" style="color: #c084fc;">&#9881; Конфигуратор</div>
+        <div class="node-detail">
+          <code>localhost:5555</code><br>
+          FastAPI + Jinja2<br>
+          50+ эндпоинтов CRUD
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="detail-card">
+    <h3>&#128279; Header-Detail JOIN <span class="badge">1C Pattern</span></h3>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="step-num">H</div>
+        <div><strong>Header</strong>: <code>_Document476</code> (ЧекККМ)</div>
+      </div>
+      <div class="flow-step">
+        <div class="step-num">D</div>
+        <div><strong>Detail</strong>: <code>_Document476_VT13626</code> (Товары)</div>
+      </div>
+      <div class="flow-step">
+        <div class="step-num">J</div>
+        <div><strong>JOIN</strong>: <code>d._Document476_IDRRef = h._IDRRef</code></div>
+      </div>
+      <div class="flow-step">
+        <div class="step-num">L</div>
+        <div>Header &rarr; UPSERT, Detail &rarr; DELETE + INSERT</div>
+      </div>
+    </div>
+    <div class="annotation">
+      1С хранит документы в парах: шапка + табличная часть (VT)
+    </div>
+  </div>
+
+  <div class="detail-card">
+    <h3>&#128279; Другие интеграции <span class="badge">DAGs</span></h3>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="step-num" style="background: rgba(251,191,36,0.15); color: #fbbf24;">&#9201;</div>
+        <div><strong>GFK Report</strong> &mdash; ежедневно в 7:00, CSV &rarr; MSSQL</div>
+      </div>
+      <div class="flow-step">
+        <div class="step-num" style="background: rgba(16,185,129,0.15); color: #34d399;">&#9201;</div>
+        <div><strong>Google Sheets</strong> &mdash; ежедневно в 6:00, sync dim-таблиц &rarr; MSSQL</div>
+      </div>
+      <div class="flow-step">
+        <div class="step-num" style="background: rgba(14,165,233,0.15); color: #7dd3fc;">&#9201;</div>
+        <div><strong>Orders Check</strong> &mdash; ежедневно в 7:00, PostgreSQL &rarr; Telegram</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="detail-card">
+    <h3>&#128640; Три движка ETL <span class="badge">Эволюция</span></h3>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="step-num" style="background: rgba(248,113,113,0.15); color: #f87171;">1</div>
+        <div><strong>ETLCore</strong> (Legacy) &mdash; хардкод таблиц, прямой вызов</div>
+      </div>
+      <div class="flow-step">
+        <div class="step-num" style="background: rgba(251,191,36,0.15); color: #fbbf24;">2</div>
+        <div><strong>SalesETL</strong> (Специализированный) &mdash; header + detail пара</div>
+      </div>
+      <div class="flow-step">
+        <div class="step-num" style="background: rgba(16,185,129,0.15); color: #34d399;">3</div>
+        <div><strong>ETLEngine</strong> (Универсальный) &mdash; config-driven, UNION, pre-load SQL. <em>Рекомендуемый</em></div>
+      </div>
+    </div>
+    <div class="annotation">
+      Эволюция: хардкод &rarr; специализация &rarr; конфигурация. Вся новая работа через ETLEngine.
+    </div>
+  </div>
+
+</div>
+
+<div class="sep"></div>
+
+<div style="text-align:center; padding: 20px 40px 60px; color: #4a5568; font-size: 12px;">
+  ETL Platform BPMN Infographic &mdash; Generated 2026-04-14 &mdash; Apache Airflow + FastAPI
+</div>
+
+</body>
+</html>

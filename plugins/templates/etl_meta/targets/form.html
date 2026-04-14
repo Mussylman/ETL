@@ -1,0 +1,41 @@
+{% extends 'etl_meta/base.html' %}
+{% from 'etl_meta/_macros.html' import field %}
+
+{% block breadcrumb %}
+    <li><a href="{{ url_for('RegisterView.list') }}">Registers</a></li>
+    <li><a href="{{ url_for('RegisterView.detail', id=register.id) }}">{{ register.code }}</a></li>
+    <li class="active">{{ 'Edit Target' if target else 'New Target' }}</li>
+{% endblock %}
+
+{% block page_content %}
+<div class="row">
+    <div class="col-md-8">
+        <h3>{{ 'Edit Target' if target else 'New Target' }}</h3>
+        <form method="POST">
+            {{ field("target_schema", "Target Schema", target.target_schema if target else "public") }}
+            {{ field("target_table", "Target Table", target.target_table if target else "", required=true,
+                     help="PostgreSQL table name (e.g. sales, sales_positions)") }}
+            {{ field("load_mode", "Load Mode", target.load_mode if target else "upsert", type="select",
+                     options=[("upsert", "upsert"), ("insert", "insert"), ("replace", "replace")]) }}
+            {{ field("upsert_keys", "Upsert Keys", (target.upsert_keys|join(', ') if target and target.upsert_keys else ""),
+                     help="Comma-separated list of key columns for upsert") }}
+
+            <hr>
+            <h4>Data Source <small>(choose one)</small></h4>
+
+            {{ field("source_id", "Source (direct)", target.source_id if target else "", type="select",
+                     options=sources, help="Single source") }}
+            {{ field("union_id", "Union", target.union_id if target else "", type="select",
+                     options=unions, help="Or a UNION of multiple sources") }}
+
+            <hr>
+            {{ field("pre_load_sql", "Pre-load SQL", target.pre_load_sql if target else "", type="textarea",
+                     help="DuckDB SQL applied to DataFrame before loading. Use __df__ as table name.", rows=4) }}
+
+            <hr>
+            <button type="submit" class="btn btn-primary">Save</button>
+            <a href="{{ url_for('RegisterView.detail', id=register.id) }}" class="btn btn-default">Cancel</a>
+        </form>
+    </div>
+</div>
+{% endblock %}
