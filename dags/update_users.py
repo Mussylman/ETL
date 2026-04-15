@@ -24,7 +24,7 @@ def update_dim_user_name():
         df = pd.read_csv(url)
         df.columns = ['email', 'employee', 'division', 'division_id']
         df['created_at'] = pd.Timestamp.now(tz=local_tz)
-        df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
+        df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
 
         cursor.execute("DELETE FROM dim_user_name")
         conn.commit()
@@ -69,7 +69,7 @@ def update_dim_asp_products():
         df["max_asp"] = df["max_asp"].astype(str).str.replace(r"\s+", "", regex=True)
 
         # Trim
-        df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
+        df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
 
         # ===== 📌 Преобразуем ДАТЫ =====
         df["start_date"] = df["start_date"].apply(lambda x: datetime.strptime(x, "%d.%m.%Y").date() if isinstance(x, str) and x.strip() else None)

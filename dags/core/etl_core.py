@@ -1,3 +1,17 @@
+"""
+DEPRECATED: Используйте ETLEngine вместо ETLCore.
+
+ETLEngine читает конфигурацию из etl_meta схемы (через ETL Config App),
+поддерживает UNION, JOIN, column mappings и все transform types.
+
+Migration path:
+    # Было:
+    etl = ETLCore(mssql_table="_AccumRg17844", target_table="sales", ...)
+    # Стало:
+    etl = ETLEngine(register_code="sales", mode="full_period", ...)
+"""
+
+import warnings
 from typing import Optional, List
 
 from .extract.data_checker import DataChecker
@@ -8,7 +22,8 @@ from .load.loaders import Loaders
 
 class ETLCore:
     """
-    Универсальный ETL-оркестратор для таблиц 1С → Postgres.
+    DEPRECATED: Универсальный ETL-оркестратор для таблиц 1С → Postgres.
+    Используйте ETLEngine для новых регистров.
 
     Поддерживаемые режимы:
       - full_period  : полная загрузка по периоду из 1С (_Period)
@@ -18,7 +33,7 @@ class ETLCore:
 
     def __init__(
         self,
-        mssql_table: str,                 # исходная таблица 1С, напр. '_AccumRg17844'
+        mssql_table: str,
         target_table: str,                # целевая таблица в Postgres, напр. 'sales_register'
         mode: str = "full_period",        # full_period / incremental / consistency
 
@@ -37,6 +52,11 @@ class ETLCore:
         mssql_key_column: str = "_RecorderRRef",   # ключ в 1С (binary(16))
         target_key_column: str = "Регистратор",    # ключ в целевой таблице Postgres
     ):
+        warnings.warn(
+            "ETLCore is deprecated. Use ETLEngine(register_code=...) instead.",
+            DeprecationWarning, stacklevel=2,
+        )
+
         self.mssql_table = mssql_table
         self.target_table = target_table
         self.mode = mode

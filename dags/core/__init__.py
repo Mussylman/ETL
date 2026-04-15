@@ -16,7 +16,7 @@ Core ETL Module.
 """
 
 from .etl_engine import ETLEngine
-from .etl_core import ETLCore  # legacy
+from .etl_core import ETLCore  # legacy — deprecated, use ETLEngine
 from .sales_etl import SalesETL
 
 from .config import (
@@ -29,17 +29,14 @@ from .config import (
     ColumnMapping,
 )
 from .builder import QueryBuilder
-from .extract import StorageConnector, DataChecker, TableInspector
+from .extract import StorageConnector, DataChecker
 from .transform import TransformUtils
 from .load import Loaders
 
 __all__ = [
-    # Main
     "ETLEngine",
-    "ETLCore",  # legacy
+    "ETLCore",
     "SalesETL",
-
-    # Config
     "ConfigLoader",
     "RegisterConfig",
     "SourceConfig",
@@ -47,12 +44,9 @@ __all__ = [
     "UnionConfig",
     "UnionMember",
     "ColumnMapping",
-
-    # Components
     "QueryBuilder",
     "StorageConnector",
     "DataChecker",
-    "TableInspector",
     "TransformUtils",
     "Loaders",
 ]

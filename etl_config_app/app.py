@@ -924,6 +924,121 @@ async def api_column_builder(reg_id: int):
     })
 
 
+@app.get("/api/registers/{reg_id}/common-fields")
+async def api_common_fields(reg_id: int):
+    """
+    Aggregate fields by 1C name across all sources.
+    Returns fields sorted by how many sources have them.
+    """
+    sources = dao.list_sources_for_register(reg_id)
+    # Collect existing mappings to mark already-mapped fields
+    existing_mapped = set()
+    for s in sources:
+        for m in dao.list_mappings_for_source(s["id"]):
+            if not m.get("is_expression"):
+                existing_mapped.add((s["id"], m["source_column"].lower()))
+
+    # Aggregate by 1C field name
+    field_map = {}  # onec_name → {sources: [...], target_type, transform}
+    for s in sources:
+        fields_cache = s.get("fields_cache") or []
+        if isinstance(fields_cache, str):
+            fields_cache = json.loads(fields_cache)
+        for f in fields_cache:
+            onec_name = f.get("field_name", "")
+            if not onec_name:
+                continue
+            mssql_col = f.get("mssql_column") or ("_" + f.get("field_name_sql", ""))
+            is_mapped = (s["id"], mssql_col.lower()) in existing_mapped
+
+            if onec_name not in field_map:
+                field_map[onec_name] = {
+                    "onec_name": onec_name,
+                    "target_type": f.get("target_type", "text"),
+                    "transform_type": f.get("transform_type"),
+                    "sources": [],
+                    "mapped_count": 0,
+                }
+            field_map[onec_name]["sources"].append({
+                "source_id": s["id"],
+                "source_code": s["source_code"],
+                "onec_name_src": s.get("onec_name", ""),
+                "source_type": s["source_type"],
+                "mssql_column": mssql_col,
+                "field_name_sql": f.get("field_name_sql", ""),
+                "is_mapped": is_mapped,
+            })
+            if is_mapped:
+                field_map[onec_name]["mapped_count"] += 1
+
+    # Sort: most common first, then alphabetical
+    fields = sorted(field_map.values(), key=lambda x: (-len(x["sources"]), x["onec_name"]))
+
+    return JSONResponse({
+        "fields": fields,
+        "total_sources": len(sources),
+    })
+
+
+@app.post("/api/registers/{reg_id}/batch-add-columns")
+async def api_batch_add_columns(request: Request, reg_id: int):
+    """
+    Batch-add multiple target columns at once.
+    Body: { "columns": [{"onec_name": "Номенклатура", "target_column": "nomenclature",
+            "target_type": "uuid", "transform_type": "binary_to_uuid",
+            "sources": [{"source_id": 1, "mssql_column": "_Fld123"}] }, ...] }
+    """
+    try:
+        body = await request.json()
+        columns = body.get("columns", [])
+        created = 0
+        for col in columns:
+            target_col = col["target_column"]
+            target_type = col.get("target_type", "text")
+            transform = col.get("transform_type")
+            for src in col.get("sources", []):
+                dao.create_mapping({
+                    "source_id": src["source_id"],
+                    "source_column": src["mssql_column"],
+                    "target_column": target_col,
+                    "target_type": target_type,
+                    "transform_type": transform,
+                    "onec_name": col.get("onec_name"),
+                })
+                created += 1
+
+        # Sync union output_columns and target
+        _sync_union_and_target(reg_id)
+
+        return JSONResponse({"ok": True, "created": created})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+def _sync_union_and_target(reg_id: int):
+    """After adding columns, sync union output_columns and target table."""
+    # Collect all unique target_columns from all sources
+    sources = dao.list_sources_for_register(reg_id)
+    all_target_cols = set()
+    for s in sources:
+        for m in dao.list_mappings_for_source(s["id"]):
+            all_target_cols.add(m["target_column"])
+
+    # Update union output_columns
+    unions = dao.list_unions_for_register(reg_id)
+    for u in unions:
+        dao.update_union(u["id"], {
+            "union_code": u["union_code"],
+            "description": u.get("description"),
+            "output_columns": sorted(all_target_cols),
+        })
+
+    # Sync target tables
+    targets = dao.list_targets_for_register(reg_id)
+    for t in targets:
+        dao.sync_target_table(t["id"])
+
+
 @app.get("/api/sources/{source_id}/fields")
 async def api_source_fields(source_id: int):
     """Return fields for a source — from cache or 1C API."""

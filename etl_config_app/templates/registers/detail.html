@@ -193,71 +193,30 @@
 
 <!-- ═══════════ Columns Tab ═══════════ -->
 <div id="tab-columns" class="tab-panel" data-tab-group="main">
+    <!-- Existing mapped columns -->
     <div class="card">
         <div class="card-header">
             <h3><span class="card-icon">&#9776;</span> Целевые колонки</h3>
-            <button id="cb_load_btn" class="btn btn-secondary btn-sm" onclick="cbLoadSources()">Загрузить</button>
+            <button id="cb_load_btn" class="btn btn-primary btn-sm" onclick="cbLoadAll()">Загрузить</button>
         </div>
-        <!-- Existing columns rendered here -->
         <div id="cb_existing"></div>
     </div>
 
-    <!-- Add column form -->
+    <!-- Common fields picker -->
     <div class="card">
         <div class="card-header">
-            <h3><span class="card-icon">+</span> Добавить целевую колонку</h3>
+            <h3><span class="card-icon">+</span> Доступные поля из источников</h3>
+            <div class="btn-group">
+                <input type="text" id="cb_field_search" placeholder="Поиск..." oninput="cbFilterFields()"
+                       style="padding:4px 10px;font-size:12px;border:1px solid var(--warm-300,#d5d0ca);border-radius:var(--radius-sm,5px);width:200px;background:var(--bg,#fff)">
+            </div>
         </div>
-        <div class="card-body">
-            <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr">
-                <div class="form-group" style="margin-bottom:8px">
-                    <label>Целевая колонка <span style="color:var(--red-500)">*</span></label>
-                    <input type="text" id="cb_target_col" placeholder="напр. nomenclature" style="font-family:'JetBrains Mono',monospace;font-size:12px">
-                </div>
-                <div class="form-group" style="margin-bottom:8px">
-                    <label>Тип</label>
-                    <select id="cb_target_type">
-                        <option value="uuid">uuid</option>
-                        <option value="varchar" selected>varchar</option>
-                        <option value="text">text</option>
-                        <option value="integer">integer</option>
-                        <option value="bigint">bigint</option>
-                        <option value="numeric">numeric</option>
-                        <option value="boolean">boolean</option>
-                        <option value="timestamp">timestamp</option>
-                        <option value="date">date</option>
-                        <option value="bytea">bytea</option>
-                    </select>
-                </div>
-                <div class="form-group" style="margin-bottom:8px">
-                    <label>Преобразование</label>
-                    <select id="cb_transform">
-                        <option value="">-- нет --</option>
-                        <option value="binary_auto">binary_auto</option>
-                        <option value="fix_year">fix_year</option>
-                        <option value="cast">cast</option>
-                    </select>
-                </div>
-            </div>
-
-            <!-- Source mapping table -->
-            <div id="cb_sources_table" style="margin-top:8px;display:none">
-                <div style="border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">
-                    <table style="font-size:13px">
-                        <thead>
-                            <tr>
-                                <th style="width:200px">Источник</th>
-                                <th style="width:140px">Имя 1С</th>
-                                <th>Колонка источника</th>
-                            </tr>
-                        </thead>
-                        <tbody id="cb_sources_tbody"></tbody>
-                    </table>
-                </div>
-            </div>
-
-            <div style="margin-top:12px">
-                <button id="cb_save_btn" class="btn btn-primary btn-sm" onclick="cbSaveColumn()" style="display:none">Сохранить колонку</button>
-            </div>
+        <div id="cb_fields_list">
+            <div class="empty-state" style="padding:24px"><p>Нажмите "Загрузить" чтобы увидеть поля</p></div>
+        </div>
+        <div id="cb_batch_bar" style="display:none;padding:12px 18px;border-top:1px solid var(--border,#e8e5e1);display:flex;align-items:center;gap:12px">
+            <button class="btn btn-primary btn-sm" onclick="cbBatchAdd()">Добавить выбранные</button>
+            <span id="cb_selected_count" style="font-size:12px;color:var(--text-2,#57534e)">0 выбрано</span>
         </div>
     </div>
 </div>
@@ -611,138 +570,30 @@ document.addEventListener('click', function(e) {
     }
 });
 
-function cbLoadSources() {
+let cbCommonFields = [];
+
+function cbLoadAll() {
     const btn = document.getElementById('cb_load_btn');
     btn.innerHTML = '<span class="spinner"></span> Загрузка...';
     btn.disabled = true;
 
-    fetch('/api/registers/' + REG_ID + '/column-builder')
-    .then(r => r.json())
-    .then(data => {
-        cbSources = data.sources || [];
-        const emptyFieldSources = cbSources.filter(s => !s.fields || s.fields.length === 0);
-        if (emptyFieldSources.length > 0) {
-            const promises = emptyFieldSources.map(s =>
-                fetch('/api/sources/' + s.id + '/fields').then(r => r.json()).then(d => { s.fields = d.fields || []; }).catch(() => {})
-            );
-            Promise.all(promises).then(() => {
-                cbRenderSourcesTable();
-                cbRenderExisting();
-                btn.textContent = 'Обновить'; btn.disabled = false;
-                document.getElementById('cb_save_btn').style.display = '';
-            });
-        } else {
-            cbRenderSourcesTable();
-            cbRenderExisting();
-            btn.textContent = 'Обновить'; btn.disabled = false;
-            document.getElementById('cb_save_btn').style.display = '';
-        }
+    // Load both: existing mappings + common fields
+    Promise.all([
+        fetch('/api/registers/' + REG_ID + '/column-builder').then(r => r.json()),
+        fetch('/api/registers/' + REG_ID + '/common-fields').then(r => r.json()),
+    ])
+    .then(([cbData, cfData]) => {
+        cbSources = cbData.sources || [];
+        cbCommonFields = cfData.fields || [];
+        cbRenderExisting();
+        cbRenderFields();
+        btn.textContent = 'Обновить';
+        btn.disabled = false;
     })
-    .catch(err => { alert('Error: ' + err); btn.textContent = 'Загрузить'; btn.disabled = false; });
+    .catch(err => { alert('Ошибка: ' + err); btn.textContent = 'Загрузить'; btn.disabled = false; });
 }
 
-function cbRenderSourcesTable() {
-    const tbody = document.getElementById('cb_sources_tbody');
-    tbody.innerHTML = '';
-    if (cbSources.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="3" class="text-secondary" style="padding:16px">Источники не найдены</td></tr>';
-        document.getElementById('cb_sources_table').style.display = 'block';
-        return;
-    }
-
-    cbSources.forEach(src => {
-        const tr = document.createElement('tr');
-        const fields = src.fields || [];
-        let options = '<option value="" data-onec="" data-target-type="" data-transform="">-- пропустить --</option>';
-        fields.forEach(f => {
-            const sqlCol = f.mssql_column || ('_' + f.field_name_sql);
-            const mssqlType = f.mssql_type || '';
-            const mssqlLen = f.mssql_length || '';
-            const typeTag = mssqlType ? ' [' + mssqlType + (mssqlLen ? '(' + mssqlLen + ')' : '') + ']' : '';
-            const display = f.field_name + ' (' + f.field_name_sql + ')' + typeTag;
-            options += '<option value="' + sqlCol + '"'
-                + ' data-onec="' + (f.field_name || '') + '"'
-                + ' data-target-type="' + (f.target_type || '') + '"'
-                + ' data-transform="' + (f.transform_type || '') + '"'
-                + '>' + display + '</option>';
-        });
-
-        const isVT = src.source_type === 'detail';
-        const label = src.onec_name
-            ? '<span class="fw-600">' + src.onec_name + '</span><br><span class="text-mono-sm text-secondary">' + src.source_code + '</span>'
-            : '<span class="text-mono" style="font-size:12px">' + src.source_code + '</span>';
-        const vtBadge = isVT ? ' <span class="badge badge-detail" style="font-size:9px">VT</span>' : '';
-
-        tr.innerHTML = '<td style="vertical-align:top;padding-top:12px">' + label + vtBadge + '</td>'
-            + '<td class="cb-onec-preview text-secondary" style="font-size:12px;vertical-align:top;padding-top:12px">--</td>'
-            + '<td><select class="cb-field-select" data-source-id="' + src.id + '" onchange="cbFieldChanged(this)" style="width:100%;padding:6px 8px;border:1px solid var(--gray-300);border-radius:var(--radius-sm);font-size:12px;background:var(--bg-surface)">' + options + '</select></td>';
-        tbody.appendChild(tr);
-    });
-    document.getElementById('cb_sources_table').style.display = 'block';
-}
-
-function cbFieldChanged(sel) {
-    const opt = sel.options[sel.selectedIndex];
-    const onecName = opt.getAttribute('data-onec') || '--';
-    const targetType = opt.getAttribute('data-target-type') || '';
-    const transform = opt.getAttribute('data-transform') || '';
-    sel.closest('tr').querySelector('.cb-onec-preview').textContent = onecName;
-
-    if (targetType) {
-        const typeSelect = document.getElementById('cb_target_type');
-        const transformSelect = document.getElementById('cb_transform');
-        if (typeSelect.value === 'varchar' || typeSelect.value === targetType) typeSelect.value = targetType;
-        if (!transformSelect.value || transformSelect.value === transform) transformSelect.value = transform;
-    }
-}
-
-function cbSaveColumn() {
-    const targetCol = document.getElementById('cb_target_col').value.trim();
-    if (!targetCol) { alert('Введите имя целевой колонки'); return; }
-
-    const targetType = document.getElementById('cb_target_type').value;
-    const transform = document.getElementById('cb_transform').value;
-
-    const mappings = [];
-    document.querySelectorAll('.cb-field-select').forEach(sel => {
-        if (sel.value) {
-            const opt = sel.options[sel.selectedIndex];
-            mappings.push({
-                source_id: parseInt(sel.dataset.sourceId),
-                source_column: sel.value,
-                onec_name: opt.getAttribute('data-onec') || null,
-            });
-        }
-    });
-
-    if (mappings.length === 0) { alert('Выберите хотя бы одну колонку источника'); return; }
-
-    const btn = document.getElementById('cb_save_btn');
-    btn.innerHTML = '<span class="spinner"></span> Сохранение...';
-    btn.disabled = true;
-
-    fetch('/api/registers/' + REG_ID + '/add-target-column', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ target_column: targetCol, target_type: targetType, transform_type: transform, mappings: mappings }),
-    })
-    .then(r => r.json())
-    .then(data => {
-        if (data.ok) {
-            document.getElementById('cb_target_col').value = '';
-            document.querySelectorAll('.cb-field-select').forEach(sel => {
-                sel.value = '';
-                sel.closest('tr').querySelector('.cb-onec-preview').textContent = '--';
-            });
-            cbLoadSources();
-        } else {
-            alert('Error: ' + (data.error || 'unknown'));
-        }
-        btn.textContent = 'Сохранить колонку'; btn.disabled = false;
-    })
-    .catch(err => { alert('Save failed: ' + err); btn.textContent = 'Сохранить колонку'; btn.disabled = false; });
-}
-
+// ── Existing target columns ──
 function cbRenderExisting() {
     const container = document.getElementById('cb_existing');
     if (!cbSources || cbSources.length === 0) { container.innerHTML = ''; return; }
@@ -752,59 +603,167 @@ function cbRenderExisting() {
         (src.mappings || []).forEach(m => {
             if (m.is_expression) return;
             if (!colMap[m.target_column]) colMap[m.target_column] = {type: m.target_type, transform: m.transform_type, onec_name: null, sources: []};
-            // Берём первое непустое имя 1С из маппингов
             if (m.onec_name && !colMap[m.target_column].onec_name) colMap[m.target_column].onec_name = m.onec_name;
-            colMap[m.target_column].sources.push({
-                source_id: src.id,
-                source_code: src.source_code,
-                onec_name_src: src.onec_name,
-            });
+            colMap[m.target_column].sources.push({ source_id: src.id });
         });
     });
 
     const cols = Object.keys(colMap);
     if (cols.length === 0) {
-        container.innerHTML = '<div class="empty-state" style="padding:24px"><p>Целевые колонки ещё не определены. Добавьте ниже.</p></div>';
+        container.innerHTML = '<div class="empty-state" style="padding:24px"><p>Целевые колонки ещё не определены. Выберите поля ниже.</p></div>';
         return;
     }
 
-    // Header
-    let html = '<div style="padding:6px 16px;background:var(--gray-50);border-bottom:1px solid var(--border);display:grid;grid-template-columns:200px 80px 100px 1fr 40px;gap:8px;font-size:11px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.3px">'
-        + '<span>Колонка</span><span>Тип</span><span>Преобразование</span><span>Покрытие</span><span></span>'
-        + '</div>';
+    let html = '<div style="padding:6px 16px;border-bottom:1px solid var(--border);display:grid;grid-template-columns:180px 140px 80px 110px 1fr 36px;gap:8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:.5px">'
+        + '<span>Колонка</span><span>Имя 1С</span><span>Тип</span><span>Преобразование</span><span>Покрытие</span><span></span></div>';
 
     cols.forEach(col => {
         const info = colMap[col];
         const mappedIds = new Set(info.sources.map(s => s.source_id));
-        // Build coverage dots
         let coverage = '';
         cbSources.forEach(src => {
+            const short = (src.onec_name || src.source_code).replace('Документ.','');
             if (mappedIds.has(src.id)) {
-                coverage += '<span class="coverage-dot mapped" title="' + (src.onec_name || src.source_code) + '">&#10003;</span>';
+                coverage += '<span class="coverage-dot mapped" title="' + short + '">&#10003;</span>';
             } else {
-                coverage += '<span class="coverage-dot unmapped" title="' + (src.onec_name || src.source_code) + '">&#9675;</span>';
+                coverage += '<span class="coverage-dot unmapped" title="' + short + '">&#9675;</span>';
             }
         });
 
-        const onecLabel = info.onec_name ? '<br><span style="font-weight:400;font-family:Inter,sans-serif;font-size:11px;color:var(--brand-600)">' + info.onec_name + '</span>' : '';
-        html += '<div class="cb-row">'
-            + '<span class="col-name" style="cursor:pointer" title="Нажмите для переименования" onclick="cbStartRename(this, \'' + col + '\')">' + col + onecLabel + '</span>'
+        html += '<div class="cb-row" style="grid-template-columns:180px 140px 80px 110px 1fr 36px">'
+            + '<span class="col-name" style="cursor:pointer" title="Нажмите для переименования" onclick="cbStartRename(this, \'' + col + '\')">' + col + '</span>'
+            + '<span style="font-size:11px;color:var(--accent)">' + (info.onec_name || '--') + '</span>'
             + '<span class="col-type">' + (info.type || '--') + '</span>'
             + '<span class="col-transform">' + (info.transform || '--') + '</span>'
             + '<span class="col-coverage">' + coverage + '</span>'
-            + '<button class="btn btn-ghost btn-xs" onclick="cbDeleteColumn(\'' + col + '\')" title="Удалить колонку" style="color:var(--red-500)">&#10005;</button>'
+            + '<button class="btn btn-ghost btn-xs" onclick="cbDeleteColumn(\'' + col + '\')" title="Удалить" style="color:var(--red)">&#10005;</button>'
             + '</div>';
     });
 
     container.innerHTML = html;
 }
 
+// ── Common fields from all sources ──
+function cbRenderFields() {
+    const container = document.getElementById('cb_fields_list');
+    const bar = document.getElementById('cb_batch_bar');
+
+    if (cbCommonFields.length === 0) {
+        container.innerHTML = '<div class="empty-state" style="padding:24px"><p>Поля не найдены. Добавьте источники.</p></div>';
+        bar.style.display = 'none';
+        return;
+    }
+
+    // Split: unmapped fields vs fully mapped
+    const unmapped = cbCommonFields.filter(f => f.mapped_count < f.sources.length);
+    const fullyMapped = cbCommonFields.filter(f => f.mapped_count >= f.sources.length && f.mapped_count > 0);
+
+    let html = '<div style="padding:6px 16px;border-bottom:1px solid var(--border);display:grid;grid-template-columns:32px 1fr 90px 120px 100px;gap:8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:.5px">'
+        + '<span></span><span>Имя 1С</span><span>Тип</span><span>Преобразование</span><span>Источники</span></div>';
+
+    unmapped.forEach((f, i) => {
+        const allMapped = f.sources.every(s => s.is_mapped);
+        const targetCol = f.onec_name.toLowerCase()
+            .replace(/[а-яё]/gi, c => {
+                const map = {'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'yo','ж':'zh','з':'z','и':'i','й':'y','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u','ф':'f','х':'h','ц':'ts','ч':'ch','ш':'sh','щ':'sch','ъ':'','ы':'y','ь':'','э':'e','ю':'yu','я':'ya',
+                'А':'a','Б':'b','В':'v','Г':'g','Д':'d','Е':'e','Ё':'yo','Ж':'zh','З':'z','И':'i','Й':'y','К':'k','Л':'l','М':'m','Н':'n','О':'o','П':'p','Р':'r','С':'s','Т':'t','У':'u','Ф':'f','Х':'h','Ц':'ts','Ч':'ch','Ш':'sh','Щ':'sch','Ъ':'','Ы':'y','Ь':'','Э':'e','Ю':'yu','Я':'ya'};
+                return map[c] || c;
+            })
+            .replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+
+        const srcCount = f.sources.length;
+        const transform = f.transform_type || '';
+        const targetType = f.target_type || 'text';
+
+        html += '<div class="cb-field-row" data-idx="' + i + '" style="display:grid;grid-template-columns:32px 1fr 90px 120px 100px;gap:8px;align-items:center;padding:9px 16px;border-bottom:1px solid var(--border);transition:background .12s'
+            + (allMapped ? ';opacity:.4' : '') + '">'
+            + '<input type="checkbox" class="cb-field-cb" data-idx="' + i + '"'
+            + ' data-onec="' + f.onec_name + '"'
+            + ' data-target-col="' + targetCol + '"'
+            + ' data-target-type="' + targetType + '"'
+            + ' data-transform="' + transform + '"'
+            + ' onchange="cbUpdateCount()"'
+            + (allMapped ? ' disabled' : '') + '>'
+            + '<span style="font-weight:600">' + f.onec_name + '</span>'
+            + '<span class="text-mono" style="font-size:11px;color:var(--text-2)">' + targetType + '</span>'
+            + '<span class="text-mono" style="font-size:11px;color:var(--purple-600,#9333ea)">' + (transform || '--') + '</span>'
+            + '<span style="font-size:12px;color:var(--text-2)">'
+            +   '<strong>' + srcCount + '</strong> из ' + cbSources.length
+            +   (allMapped ? ' <span class="badge badge-active" style="font-size:9px">mapped</span>' : '')
+            + '</span>'
+            + '</div>';
+    });
+
+    container.innerHTML = html;
+    bar.style.display = 'flex';
+    cbUpdateCount();
+}
+
+function cbFilterFields() {
+    const q = document.getElementById('cb_field_search').value.toLowerCase();
+    document.querySelectorAll('.cb-field-row').forEach(row => {
+        const name = row.querySelector('span[style*="font-weight"]').textContent.toLowerCase();
+        row.style.display = name.includes(q) ? '' : 'none';
+    });
+}
+
+function cbUpdateCount() {
+    const count = document.querySelectorAll('.cb-field-cb:checked').length;
+    document.getElementById('cb_selected_count').textContent = count + ' выбрано';
+}
+
+function cbBatchAdd() {
+    const checked = document.querySelectorAll('.cb-field-cb:checked');
+    if (checked.length === 0) { alert('Выберите хотя бы одно поле'); return; }
+
+    const columns = [];
+    checked.forEach(cb => {
+        const idx = parseInt(cb.dataset.idx);
+        const f = cbCommonFields[idx];
+        columns.push({
+            onec_name: f.onec_name,
+            target_column: cb.dataset.targetCol,
+            target_type: cb.dataset.targetType,
+            transform_type: cb.dataset.transform || null,
+            sources: f.sources.filter(s => !s.is_mapped).map(s => ({
+                source_id: s.source_id,
+                mssql_column: s.mssql_column,
+            })),
+        });
+    });
+
+    const btn = event.target;
+    btn.innerHTML = '<span class="spinner"></span> Добавление ' + columns.length + ' колонок...';
+    btn.disabled = true;
+
+    fetch('/api/registers/' + REG_ID + '/batch-add-columns', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({columns: columns}),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) {
+            cbLoadAll();
+        } else {
+            alert('Ошибка: ' + (data.error || 'unknown'));
+            btn.textContent = 'Добавить выбранные';
+            btn.disabled = false;
+        }
+    })
+    .catch(err => {
+        alert('Ошибка: ' + err);
+        btn.textContent = 'Добавить выбранные';
+        btn.disabled = false;
+    });
+}
+
+// ── Rename & Delete ──
 function cbStartRename(el, oldName) {
-    // Replace span with input
     const input = document.createElement('input');
     input.type = 'text';
     input.value = oldName;
-    input.style.cssText = 'font-family:JetBrains Mono,monospace;font-size:12px;font-weight:600;padding:2px 6px;border:1px solid var(--brand-500);border-radius:var(--radius-xs);outline:none;width:160px;box-shadow:var(--shadow-focus)';
+    input.style.cssText = 'font-family:JetBrains Mono,monospace;font-size:12px;font-weight:600;padding:2px 6px;border:1px solid var(--accent);border-radius:var(--radius-xs);outline:none;width:160px;box-shadow:var(--shadow-focus)';
     input.onblur = function() { cbFinishRename(this, oldName); };
     input.onkeydown = function(e) {
         if (e.key === 'Enter') { e.preventDefault(); this.blur(); }
@@ -817,27 +776,15 @@ function cbStartRename(el, oldName) {
 
 function cbFinishRename(input, oldName) {
     const newName = input.value.trim();
-    if (!newName || newName === oldName) {
-        // Revert — just reload
-        cbLoadSources();
-        return;
-    }
-    // Call API
+    if (!newName || newName === oldName) { cbLoadAll(); return; }
     fetch('/api/registers/' + REG_ID + '/rename-column', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({old_name: oldName, new_name: newName}),
     })
     .then(r => r.json())
-    .then(data => {
-        if (data.ok) {
-            cbLoadSources();
-        } else {
-            alert(data.error || 'Ошибка переименования');
-            cbLoadSources();
-        }
-    })
-    .catch(err => { alert('Ошибка: ' + err); cbLoadSources(); });
+    .then(() => cbLoadAll())
+    .catch(err => { alert('Ошибка: ' + err); cbLoadAll(); });
 }
 
 function cbDeleteColumn(colName) {
@@ -845,7 +792,7 @@ function cbDeleteColumn(colName) {
     fetch('/api/registers/' + REG_ID + '/target-column/' + encodeURIComponent(colName), {method: 'DELETE'})
     .then(r => r.json())
     .then(data => {
-        if (data.ok) cbLoadSources();
+        if (data.ok) cbLoadAll();
         else alert('Error: ' + (data.error || 'unknown'));
     })
     .catch(err => alert('Failed: ' + err));

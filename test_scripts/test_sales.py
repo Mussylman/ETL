@@ -1,11 +1,25 @@
+"""
+Test script: загрузка данных из 1С MSSQL в PostgreSQL.
+Использует core transform/binary для конвертации.
+"""
+import sys
+sys.path.insert(0, '/home/dev/airflow/dags')
+
 from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
 from airflow.providers.postgres.hooks.postgres import PostgresHook
-from sqlalchemy import create_engine, text
 from datetime import datetime
 import pandas as pd
 from uuid import UUID
 from decimal import Decimal
-from datetime import datetime
+
+# Используем core модули вместо дубликатов
+from core.transform.binary import binary_to_uuid, binary_to_hex, process_binary_auto
+
+# Алиасы для обратной совместимости
+convert_idrref_1c_to_guid = binary_to_uuid
+bytes_to_hex_string = binary_to_hex
+def process_binary_value(col_name, value):
+    return process_binary_auto(value)
 
 def prepare_value(value):
     if isinstance(value, UUID):
@@ -13,50 +27,9 @@ def prepare_value(value):
     elif isinstance(value, Decimal):
         return float(value)
     elif isinstance(value, datetime):
-        return value  # datetime нормально адаптируется
+        return value
     else:
         return value
-# Функция для конвертации binary(16) → UUID
-def convert_idrref_1c_to_guid(idrref_bytes: bytes) -> UUID:
-    if len(idrref_bytes) != 16:
-        raise ValueError("Expected 16 bytes")
-
-    part1 = idrref_bytes[8:16][::-1]
-    full_bytes = part1 + idrref_bytes[0:8]
-
-    time_low = full_bytes[0:4][::-1]
-    time_mid = full_bytes[4:6][::-1]
-    time_hi_version = full_bytes[6:8][::-1]
-    rest = full_bytes[8:]
-
-    final = time_low + time_mid + time_hi_version + rest
-    return UUID(bytes=final)
-
-
-def bytes_to_hex_string(b: bytes) -> str:
-    return '0x' + b.hex().upper()
-
-
-
-def process_binary_value(col_name: str, value: bytes) -> any:
-    """
-    Обрабатывает бинарные значения в зависимости от их длины:
-    - 16 байт: UUID
-    - 4 байта: int
-    - 1 байт: bool
-    Остальные возвращаются без изменений.
-    """
-    try:
-        if len(value) == 16:
-            return convert_idrref_1c_to_guid(value)
-        elif len(value) == 4:
-            return int.from_bytes(value, byteorder='little')
-        elif len(value) == 1:
-            return value != b'\x00'
-        else:
-            return value
-    except Exception:
-        return None
 
 def insert_to_postgres_from_dicts(rows: list[dict], table_name: str, pg_conn_id: str):
     """
