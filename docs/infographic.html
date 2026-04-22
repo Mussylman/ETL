@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ETL Platform — Архитектура и предложения</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Nunito', sans-serif;
+    background: #f5f3f0;
+    color: #1c1917;
+    padding: 40px 20px;
+  }
+
+  .page {
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  /* ── Header ── */
+  .header {
+    text-align: center;
+    margin-bottom: 48px;
+  }
+
+  .header h1 {
+    font-size: 36px;
+    font-weight: 800;
+    letter-spacing: -1px;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, #2563eb, #0891b2);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .header p {
+    font-size: 16px;
+    color: #57534e;
+    font-weight: 600;
+  }
+
+  /* ── Section titles ── */
+  .section-title {
+    font-size: 22px;
+    font-weight: 800;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .section-title .num {
+    width: 32px; height: 32px;
+    background: #2563eb;
+    color: #fff;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 15px;
+    font-weight: 800;
+    flex-shrink: 0;
+  }
+
+  /* ── Pipeline ── */
+  .pipeline {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    margin-bottom: 48px;
+    position: relative;
+  }
+
+  .pipeline-step {
+    flex: 1;
+    background: #fff;
+    border-radius: 12px;
+    padding: 24px 20px;
+    text-align: center;
+    position: relative;
+    border: 1px solid #e8e5e1;
+    box-shadow: 0 2px 8px rgba(28,25,23,.06);
+    transition: transform .2s;
+  }
+
+  .pipeline-step:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 8px 24px rgba(28,25,23,.1);
+  }
+
+  .pipeline-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 48px;
+    flex-shrink: 0;
+    font-size: 24px;
+    color: #2563eb;
+    font-weight: 800;
+  }
+
+  .step-icon {
+    font-size: 36px;
+    margin-bottom: 10px;
+    display: block;
+  }
+
+  .step-label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #a8a29e;
+    margin-bottom: 4px;
+  }
+
+  .step-name {
+    font-size: 17px;
+    font-weight: 800;
+    margin-bottom: 6px;
+  }
+
+  .step-details {
+    font-size: 12px;
+    color: #57534e;
+    line-height: 1.5;
+  }
+
+  .step-details code {
+    background: #f5f3f0;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+  }
+
+  .step-color-blue { border-top: 3px solid #2563eb; }
+  .step-color-green { border-top: 3px solid #16a34a; }
+  .step-color-purple { border-top: 3px solid #9333ea; }
+  .step-color-amber { border-top: 3px solid #d97706; }
+  .step-color-cyan { border-top: 3px solid #0891b2; }
+
+  /* ── Transform detail ── */
+  .transform-box {
+    background: #fff;
+    border: 1px solid #e8e5e1;
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 48px;
+    box-shadow: 0 2px 8px rgba(28,25,23,.06);
+  }
+
+  .transform-box h3 {
+    font-size: 15px;
+    font-weight: 700;
+    margin-bottom: 16px;
+    color: #9333ea;
+  }
+
+  .transform-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 10px;
+  }
+
+  .transform-item {
+    background: #faf5ff;
+    border: 1px solid #f3e8ff;
+    border-radius: 8px;
+    padding: 10px 14px;
+  }
+
+  .transform-item .t-name {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    font-weight: 600;
+    color: #9333ea;
+  }
+
+  .transform-item .t-desc {
+    font-size: 11px;
+    color: #57534e;
+    margin-top: 3px;
+  }
+
+  /* ── Problem ── */
+  .problem {
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 48px;
+  }
+
+  .problem h3 {
+    font-size: 16px;
+    font-weight: 800;
+    color: #dc2626;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .problem p {
+    font-size: 14px;
+    color: #57534e;
+    line-height: 1.6;
+    margin-bottom: 12px;
+  }
+
+  .problem pre {
+    background: #1c1917;
+    color: #e8e5e1;
+    padding: 16px;
+    border-radius: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    line-height: 1.6;
+    overflow-x: auto;
+    margin-top: 12px;
+  }
+
+  .problem pre .kw { color: #60a5fa; }
+  .problem pre .cm { color: #6b7280; }
+  .problem pre .fn { color: #34d399; }
+
+  /* ── Proposals ── */
+  .proposals {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin-bottom: 48px;
+  }
+
+  .proposal {
+    background: #fff;
+    border-radius: 12px;
+    border: 1px solid #e8e5e1;
+    overflow: hidden;
+    box-shadow: 0 2px 8px rgba(28,25,23,.06);
+    transition: transform .2s, box-shadow .2s;
+  }
+
+  .proposal:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 8px 24px rgba(28,25,23,.1);
+  }
+
+  .proposal-header {
+    padding: 20px 24px;
+    color: #fff;
+    position: relative;
+  }
+
+  .proposal-header .badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    background: rgba(255,255,255,.2);
+    margin-bottom: 8px;
+  }
+
+  .proposal-header h3 {
+    font-size: 18px;
+    font-weight: 800;
+    margin-bottom: 4px;
+  }
+
+  .proposal-header p {
+    font-size: 12px;
+    opacity: .85;
+  }
+
+  .proposal-1 .proposal-header { background: linear-gradient(135deg, #2563eb, #1d4ed8); }
+  .proposal-2 .proposal-header { background: linear-gradient(135deg, #9333ea, #7c3aed); }
+
+  .proposal-body {
+    padding: 20px 24px;
+  }
+
+  .proposal-body h4 {
+    font-size: 13px;
+    font-weight: 700;
+    color: #57534e;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    margin-bottom: 10px;
+  }
+
+  .proposal-body ul {
+    list-style: none;
+    padding: 0;
+    margin-bottom: 16px;
+  }
+
+  .proposal-body li {
+    padding: 6px 0;
+    font-size: 13px;
+    color: #44403c;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    line-height: 1.4;
+  }
+
+  .proposal-body li::before {
+    content: '→';
+    color: #a8a29e;
+    flex-shrink: 0;
+    font-weight: 700;
+  }
+
+  .proposal-code {
+    background: #f5f3f0;
+    border-radius: 8px;
+    padding: 14px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    line-height: 1.6;
+    color: #44403c;
+    overflow-x: auto;
+  }
+
+  .pros-cons {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-top: 16px;
+  }
+
+  .pro, .con {
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .pro {
+    background: #f0fdf4;
+    border: 1px solid #dcfce7;
+    color: #15803d;
+  }
+
+  .con {
+    background: #fef2f2;
+    border: 1px solid #fee2e2;
+    color: #dc2626;
+  }
+
+  .pro strong, .con strong {
+    display: block;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    margin-bottom: 4px;
+  }
+
+  /* ── Flow diagram ── */
+  .flow {
+    background: #fff;
+    border: 1px solid #e8e5e1;
+    border-radius: 12px;
+    padding: 24px;
+    margin-top: 16px;
+  }
+
+  .flow-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 0;
+    font-size: 13px;
+  }
+
+  .flow-box {
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-weight: 700;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .flow-box.src { background: #dbeafe; color: #1d4ed8; }
+  .flow-box.transform { background: #faf5ff; color: #9333ea; }
+  .flow-box.target { background: #f0fdf4; color: #15803d; }
+  .flow-box.bi { background: #fef3c7; color: #92400e; }
+
+  .flow-arrow {
+    color: #d1d5db;
+    font-weight: 800;
+  }
+
+  /* ── Footer ── */
+  .footer {
+    text-align: center;
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid #e8e5e1;
+    font-size: 12px;
+    color: #a8a29e;
+  }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    .pipeline { flex-direction: column; }
+    .pipeline-arrow { width: auto; height: 32px; transform: rotate(90deg); }
+    .proposals { grid-template-columns: 1fr; }
+    .pros-cons { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- Header -->
+  <div class="header">
+    <h1>ETL Platform</h1>
+    <p>Загрузка данных из 1С в PostgreSQL для Power BI аналитики</p>
+  </div>
+
+  <!-- Section 1: Pipeline -->
+  <div class="section-title">
+    <span class="num">1</span>
+    Как работает система
+  </div>
+
+  <div class="pipeline">
+    <div class="pipeline-step step-color-blue">
+      <span class="step-icon">🏢</span>
+      <div class="step-label">Источник</div>
+      <div class="step-name">1С (MSSQL)</div>
+      <div class="step-details">
+        Регистры накопления<br>
+        Документы + табличные части<br>
+        <code>_AccumRg17844</code> <code>_Document476</code>
+      </div>
+    </div>
+
+    <div class="pipeline-arrow">→</div>
+
+    <div class="pipeline-step step-color-cyan">
+      <span class="step-icon">⚙️</span>
+      <div class="step-label">Конфигуратор</div>
+      <div class="step-name">ETL Config App</div>
+      <div class="step-details">
+        Выбор таблиц и колонок<br>
+        Типы, трансформации<br>
+        <code>:5555</code> веб-интерфейс
+      </div>
+    </div>
+
+    <div class="pipeline-arrow">→</div>
+
+    <div class="pipeline-step step-color-purple">
+      <span class="step-icon">🔄</span>
+      <div class="step-label">Обработка</div>
+      <div class="step-name">ETL Engine</div>
+      <div class="step-details">
+        Конвертация binary → UUID<br>
+        Даты 4025 → 2025<br>
+        UNION ALL документов
+      </div>
+    </div>
+
+    <div class="pipeline-arrow">→</div>
+
+    <div class="pipeline-step step-color-green">
+      <span class="step-icon">🗄️</span>
+      <div class="step-label">Хранилище</div>
+      <div class="step-name">PostgreSQL</div>
+      <div class="step-details">
+        Готовые таблицы<br>
+        Upsert по ключам<br>
+        <code>public.sales_positions</code>
+      </div>
+    </div>
+
+    <div class="pipeline-arrow">→</div>
+
+    <div class="pipeline-step step-color-amber">
+      <span class="step-icon">📊</span>
+      <div class="step-label">Визуализация</div>
+      <div class="step-name">Power BI</div>
+      <div class="step-details">
+        Дашборды и отчёты<br>
+        Готовые данные<br>
+        Без тяжёлых мер
+      </div>
+    </div>
+  </div>
+
+  <!-- Transforms -->
+  <div class="transform-box">
+    <h3>Текущие трансформации (автоматические)</h3>
+    <div class="transform-grid">
+      <div class="transform-item">
+        <div class="t-name">binary_to_uuid</div>
+        <div class="t-desc">binary(16) → UUID формат 1С</div>
+      </div>
+      <div class="transform-item">
+        <div class="t-name">binary_to_int</div>
+        <div class="t-desc">binary(4) → integer (TRef)</div>
+      </div>
+      <div class="transform-item">
+        <div class="t-name">binary_to_bool</div>
+        <div class="t-desc">binary(1) → true/false</div>
+      </div>
+      <div class="transform-item">
+        <div class="t-name">fix_year</div>
+        <div class="t-desc">4025 → 2025 (даты 1С)</div>
+      </div>
+      <div class="transform-item">
+        <div class="t-name">recorder_type_lookup</div>
+        <div class="t-desc">TRef → "ЧекККМ" (название)</div>
+      </div>
+      <div class="transform-item" style="border:2px dashed #d97706;background:#fffbeb">
+        <div class="t-name" style="color:#d97706">??? нужно решение</div>
+        <div class="t-desc">Вычисляемые бизнес-колонки</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Problem -->
+  <div class="section-title">
+    <span class="num" style="background:#dc2626">!</span>
+    Проблема: вычисляемые колонки
+  </div>
+
+  <div class="problem">
+    <h3>⚠️ Сложная бизнес-логика при загрузке</h3>
+    <p>
+      Есть колонки (например <strong>sales_with_vat</strong>), которые зависят от типа документа,
+      даты, полей шапки И табличной части. В 1С это был CASE WHEN запрос.
+      <strong>Если считать в Power BI — визуалка тормозит.</strong>
+      Нужно считать при загрузке.
+    </p>
+    <p>Пример логики из 1С:</p>
+    <pre><span class="kw">ВЫБОР</span>
+  <span class="kw">КОГДА</span> Период >= <span class="fn">2022-10-12</span> И ОтправитьВАБМ = ИСТИНА
+    <span class="kw">ТОГДА ВЫБОР</span>
+      <span class="kw">КОГДА</span> Регистратор <span class="kw">ССЫЛКА</span> Документ.<span class="fn">РеализацияТоваровУслуг</span>
+          И СуммаБонусами > 0
+        <span class="kw">ТОГДА</span> Списанные + Стоимость
+      <span class="kw">КОГДА</span> Регистратор <span class="kw">ССЫЛКА</span> Документ.<span class="fn">ВозвратТоваров</span>
+        <span class="kw">ТОГДА</span> <span class="fn">-1</span> * Списанные + Стоимость
+      <span class="kw">КОГДА</span> Регистратор <span class="kw">ССЫЛКА</span> Документ.<span class="fn">ЧекККМ</span> И Продажа
+        <span class="kw">ТОГДА</span> Списанные + Стоимость
+      <span class="kw">ИНАЧЕ</span> Стоимость
+    <span class="kw">КОНЕЦ</span>
+  <span class="kw">ИНАЧЕ</span> Стоимость
+<span class="kw">КОНЕЦ</span></pre>
+  </div>
+
+  <!-- Proposals -->
+  <div class="section-title">
+    <span class="num">2</span>
+    Два варианта решения
+  </div>
+
+  <div class="proposals">
+    <!-- Proposal 1 -->
+    <div class="proposal proposal-1">
+      <div class="proposal-header">
+        <div class="badge">Вариант 1</div>
+        <h3>SQL Запросник</h3>
+        <p>Аналитик пишет SQL выражение в конфигураторе</p>
+      </div>
+      <div class="proposal-body">
+        <h4>Как работает</h4>
+        <ul>
+          <li>На странице source — поле "SQL выражение"</li>
+          <li>Аналитик пишет CASE WHEN на диалекте MSSQL</li>
+          <li>ETL Engine подставляет в SELECT запрос</li>
+          <li>Для каждого типа документа — своё выражение</li>
+        </ul>
+
+        <div class="proposal-code">
+<strong>В конфигураторе (для doc_476 ЧекККМ):</strong>
+
+target: sales_with_vat
+type: expression
+
+CASE
+  WHEN _Date_Time >= '4022-10-12'
+    AND h._Fld_SendABM = 0x01
+    AND h._Fld_BonusAmount > 0
+  THEN ISNULL(vt._Fld_Written, 0)
+       + _Fld17853
+  ELSE _Fld17853
+END
+        </div>
+
+        <div class="pros-cons">
+          <div class="pro">
+            <strong>Плюсы</strong>
+            Аналитики знают SQL<br>
+            Гибко — любая логика<br>
+            Не нужен Python
+          </div>
+          <div class="con">
+            <strong>Минусы</strong>
+            Для каждого документа свой CASE<br>
+            Сложные выражения трудно отлаживать<br>
+            Нужно знать MSSQL имена полей
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Proposal 2 -->
+    <div class="proposal proposal-2">
+      <div class="proposal-header">
+        <div class="badge">Вариант 2</div>
+        <h3>Custom Transform</h3>
+        <p>Python-функция, выбирается в маппинге как transform</p>
+      </div>
+      <div class="proposal-body">
+        <h4>Как работает</h4>
+        <ul>
+          <li>Разработчик пишет Python-функцию один раз</li>
+          <li>Регистрирует как новый transform type</li>
+          <li>Аналитик в конфигураторе выбирает из списка</li>
+          <li>ETL Engine применяет функцию к каждой строке</li>
+        </ul>
+
+        <div class="proposal-code">
+<strong>Python функция (один раз):</strong>
+
+def sales_with_vat(row, params):
+    cost = row.get("cost", 0)
+    bonus = row.get("bonus_written", 0)
+    doc_type = row.get("doc_type", "")
+
+    if row["date"] >= 2022-10-12
+       and row["send_to_abm"]:
+        if "Возврат" in doc_type:
+            return -1 * bonus + cost
+        elif bonus > 0:
+            return bonus + cost
+    return cost
+
+<strong>В конфигураторе:</strong>
+transform: custom:sales_with_vat
+        </div>
+
+        <div class="pros-cons">
+          <div class="pro">
+            <strong>Плюсы</strong>
+            Логика в одном месте<br>
+            Легко тестировать (unit tests)<br>
+            Аналитик просто выбирает из списка
+          </div>
+          <div class="con">
+            <strong>Минусы</strong>
+            Нужен Python-разработчик<br>
+            Новая функция = деплой<br>
+            Медленнее чем SQL (row-by-row)
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Flow comparison -->
+  <div class="section-title">
+    <span class="num">3</span>
+    Сравнение потоков данных
+  </div>
+
+  <div class="flow">
+    <div style="font-size:13px;font-weight:700;margin-bottom:12px;color:#57534e">Вариант 1 — SQL Запросник:</div>
+    <div class="flow-row">
+      <span class="flow-box src">MSSQL запрос с CASE WHEN</span>
+      <span class="flow-arrow">→</span>
+      <span class="flow-box transform">binary/date конвертация</span>
+      <span class="flow-arrow">→</span>
+      <span class="flow-box target">PostgreSQL (готово)</span>
+      <span class="flow-arrow">→</span>
+      <span class="flow-box bi">Power BI</span>
+    </div>
+
+    <div style="font-size:13px;font-weight:700;margin:20px 0 12px;color:#57534e">Вариант 2 — Custom Transform:</div>
+    <div class="flow-row">
+      <span class="flow-box src">MSSQL сырые данные</span>
+      <span class="flow-arrow">→</span>
+      <span class="flow-box transform">binary/date + Python функция</span>
+      <span class="flow-arrow">→</span>
+      <span class="flow-box target">PostgreSQL (готово)</span>
+      <span class="flow-arrow">→</span>
+      <span class="flow-box bi">Power BI</span>
+    </div>
+  </div>
+
+  <div class="footer">
+    ETL Platform &middot; DataPipe v2.0 &middot; Для обсуждения с командой дата-аналитиков
+  </div>
+
+</div>
+</body>
+</html>

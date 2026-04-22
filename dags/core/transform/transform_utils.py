@@ -22,6 +22,7 @@ from .binary import (
 )
 from .dates import fix_year, parse_1c_date
 from .cast import cast
+from .custom import apply_custom, CUSTOM_TRANSFORMS
 
 
 class TransformUtils:
@@ -204,12 +205,19 @@ class TransformUtils:
             if col in df.columns and col not in column_transforms:
                 df[col] = df[col].apply(process_binary_auto)
 
-        # 2. Применение конфигурируемых трансформаций
+        # 2. Применение конфигурируемых трансформаций (column-level)
+        custom_columns = {}
         for col, config in column_transforms.items():
+            transform_type = config.get("type")
+
+            # custom_python обрабатывается отдельно (row-level)
+            if transform_type == "custom_python":
+                custom_columns[col] = config
+                continue
+
             if col not in df.columns:
                 continue
 
-            transform_type = config.get("type")
             transform_params = config.get("params")
 
             if transform_type:
@@ -224,7 +232,31 @@ class TransformUtils:
                     df[col] = df[col].apply(fix_year)
                     df[col] = pd.to_datetime(df[col], errors="coerce")
 
-        # 4. Добавляем etl_loaded_at
+        # 4. Вычисляемые колонки (row-level custom_python)
+        if custom_columns:
+            df = self._apply_custom_transforms(df, custom_columns)
+
+        # 5. Добавляем etl_loaded_at
         df["etl_loaded_at"] = loaded_at
 
+        return df
+
+    def _apply_custom_transforms(
+        self,
+        df: pd.DataFrame,
+        custom_columns: Dict[str, Dict],
+    ) -> pd.DataFrame:
+        """
+        Применяет custom_python трансформации (row-level).
+
+        Каждая функция получает строку как dict и возвращает значение.
+        """
+        for col, config in custom_columns.items():
+            func_name = (config.get("params") or {}).get("function")
+            if not func_name:
+                continue
+            df[col] = df.apply(
+                lambda row, fn=func_name: apply_custom(fn, row.to_dict()),
+                axis=1,
+            )
         return df

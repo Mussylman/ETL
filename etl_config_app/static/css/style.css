@@ -1195,3 +1195,160 @@ textarea {
     .topbar { padding: 0 16px; }
     .cb-row { grid-template-columns: 1fr; }
 }
+
+/* ═══════════════════════════════════════════
+   KANBAN
+   ═══════════════════════════════════════════ */
+.kbn-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 12px;
+    padding: 16px;
+    min-height: 400px;
+}
+.kbn-col {
+    background: var(--warm-100, #f5f2ee);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    display: flex;
+    flex-direction: column;
+    min-height: 200px;
+    transition: background .15s;
+}
+.kbn-col-over {
+    background: var(--brand-50, #eff6ff);
+    border-color: var(--brand-400, #60a5fa);
+}
+.kbn-col-unassigned { background: var(--amber-50, #fffbeb); }
+.kbn-col-dim { background: var(--blue-50, #eff6ff); }
+.kbn-col-fact { background: var(--green-50, #f0fdf4); }
+.kbn-col-head {
+    padding: 10px 14px;
+    font-weight: 700;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    color: var(--text-2);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.kbn-count {
+    background: var(--bg, #fff);
+    color: var(--text-2);
+    font-size: 11px;
+    padding: 1px 8px;
+    border-radius: 10px;
+    font-weight: 600;
+}
+.kbn-col-body {
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex: 1;
+}
+.kbn-empty {
+    padding: 20px;
+    text-align: center;
+    color: var(--text-3);
+    font-size: 12px;
+}
+.kbn-card {
+    background: var(--bg, #fff);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 8px 10px;
+    cursor: grab;
+    position: relative;
+    transition: transform .1s, box-shadow .1s;
+    font-size: 12px;
+}
+.kbn-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0,0,0,.06);
+}
+.kbn-card:active { cursor: grabbing; }
+.kbn-card-locked {
+    cursor: not-allowed;
+    background: var(--warm-100, #f5f2ee);
+    opacity: .85;
+}
+.kbn-card-locked:hover { transform: none; box-shadow: none; }
+.kbn-card-error {
+    border-color: var(--red-400, #f87171);
+    background: var(--red-50, #fef2f2);
+}
+.kbn-card-computed {
+    border-left: 3px solid var(--purple-500, #a855f7);
+}
+.kbn-card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 3px;
+}
+.kbn-card-name {
+    font-weight: 600;
+    color: var(--text-1);
+    word-break: break-word;
+}
+.kbn-card-meta {
+    font-size: 11px;
+    color: var(--text-2);
+    margin-bottom: 4px;
+}
+.kbn-card-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+.kbn-badge {
+    font-size: 9px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .3px;
+}
+.kbn-badge-header { background: var(--blue-100, #dbeafe); color: var(--blue-700, #1d4ed8); }
+.kbn-badge-detail { background: var(--green-100, #dcfce7); color: var(--green-700, #15803d); }
+.kbn-badge-accum  { background: var(--amber-100, #fef3c7); color: var(--amber-700, #b45309); }
+.kbn-badge-computed { background: var(--purple-100, #f3e8ff); color: var(--purple-700, #7e22ce); }
+.kbn-badge-transform { background: var(--warm-200, #e7e5e4); color: var(--text-2); }
+.kbn-card-err {
+    margin-top: 4px;
+    padding: 3px 6px;
+    background: var(--red-100, #fee2e2);
+    color: var(--red-700, #b91c1c);
+    border-radius: var(--radius-sm);
+    font-size: 10px;
+}
+.kbn-card-func {
+    margin-top: 4px;
+    font-size: 10px;
+    color: var(--purple-600, #9333ea);
+    font-family: 'JetBrains Mono', monospace;
+}
+.kbn-card-x {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    background: transparent;
+    border: none;
+    color: var(--text-3);
+    cursor: pointer;
+    padding: 2px 6px;
+    font-size: 11px;
+    border-radius: 4px;
+}
+.kbn-card-x:hover {
+    background: var(--red-100, #fee2e2);
+    color: var(--red-600, #dc2626);
+}
+
+@media (max-width: 900px) {
+    .kbn-grid { grid-template-columns: 1fr; }
+}

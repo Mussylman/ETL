@@ -204,10 +204,11 @@ class ConfigLoader:
         """Загрузка целевых таблиц."""
         sql = """
             SELECT id, target_schema, target_table, union_id, source_id,
-                   load_mode, upsert_keys, pre_load_sql, is_active
+                   load_mode, upsert_keys, pre_load_sql, post_load_sql,
+                   include_columns, priority, is_active
             FROM etl_meta.register_targets
             WHERE register_id = %s AND is_active = TRUE
-            ORDER BY id
+            ORDER BY priority, id
         """
         df = hook.get_pandas_df(sql, parameters=[register_id])
 
@@ -220,6 +221,13 @@ class ConfigLoader:
             elif hasattr(upsert_keys, 'tolist'):
                 upsert_keys = upsert_keys.tolist()
 
+            # Handle include_columns
+            include_columns = row.get("include_columns")
+            if include_columns is None or (isinstance(include_columns, float) and pd.isna(include_columns)):
+                include_columns = []
+            elif hasattr(include_columns, 'tolist'):
+                include_columns = include_columns.tolist()
+
             targets.append(TargetConfig(
                 id=int(row["id"]),
                 target_schema=row["target_schema"] if pd.notna(row["target_schema"]) else "public",
@@ -229,6 +237,10 @@ class ConfigLoader:
                 load_mode=row["load_mode"] if pd.notna(row["load_mode"]) else "upsert",
                 upsert_keys=upsert_keys,
                 pre_load_sql=row["pre_load_sql"] if pd.notna(row["pre_load_sql"]) else None,
+                post_load_sql=row["post_load_sql"] if pd.notna(row.get("post_load_sql")) else None,
+                include_columns=include_columns,
+                priority=int(row["priority"]) if pd.notna(row.get("priority")) else 0,
+                target_role=row["target_role"] if pd.notna(row.get("target_role")) else None,
                 is_active=bool(row["is_active"]) if pd.notna(row["is_active"]) else True,
             ))
 

@@ -272,8 +272,9 @@ async def source_detail(request: Request, src_id: int):
     if not source:
         return RedirectResponse("/registers", status_code=302)
     mappings = dao.list_mappings_for_source(src_id)
+    targets = dao.list_targets_for_register(source["register_id"])
     return _tpl("sources/detail.html", request,
-                source=source, mappings=mappings)
+                source=source, mappings=mappings, targets=targets)
 
 
 @app.get("/sources/{src_id}/edit", response_class=HTMLResponse)
@@ -903,6 +904,7 @@ async def api_column_builder(reg_id: int):
                     "target_column": m["target_column"],
                     "target_type": m.get("target_type"),
                     "transform_type": m.get("transform_type"),
+                    "transform_params": m.get("transform_params"),
                     "is_expression": m.get("is_expression", False),
                     "onec_name": m.get("onec_name"),
                 }
@@ -1016,9 +1018,11 @@ async def api_batch_add_columns(request: Request, reg_id: int):
 
 
 def _sync_union_and_target(reg_id: int):
-    """After adding columns, sync union output_columns and target table."""
-    # Collect all unique target_columns from all sources
+    """After adding columns, sync union output_columns, target tables, and include_columns."""
     sources = dao.list_sources_for_register(reg_id)
+    targets = dao.list_targets_for_register(reg_id)
+
+    # Collect all unique target_columns
     all_target_cols = set()
     for s in sources:
         for m in dao.list_mappings_for_source(s["id"]):
@@ -1033,8 +1037,38 @@ def _sync_union_and_target(reg_id: int):
             "output_columns": sorted(all_target_cols),
         })
 
+    # Auto-fill include_columns by source_type → target_role
+    dim_target = next((t for t in targets if t.get("target_role") == "dimension"), None)
+    fact_target = next((t for t in targets if t.get("target_role") == "fact"), None)
+
+    if dim_target or fact_target:
+        dim_cols = set(dim_target.get("include_columns") or []) if dim_target else set()
+        fact_cols = set(fact_target.get("include_columns") or []) if fact_target else set()
+
+        for s in sources:
+            mappings = dao.list_mappings_for_source(s["id"])
+            for m in mappings:
+                col = m["target_column"]
+                if m.get("transform_type") == "custom_python":
+                    continue  # computed → manual
+                if s["source_type"] == "header" and dim_target:
+                    dim_cols.add(col)
+                elif s["source_type"] == "detail" and fact_target:
+                    fact_cols.add(col)
+                # standalone → keep existing manual assignment
+
+        if dim_target:
+            dao.execute(
+                f"UPDATE {dao.SCHEMA}.register_targets SET include_columns=%s WHERE id=%s",
+                [sorted(dim_cols) if dim_cols else None, dim_target["id"]]
+            )
+        if fact_target:
+            dao.execute(
+                f"UPDATE {dao.SCHEMA}.register_targets SET include_columns=%s WHERE id=%s",
+                [sorted(fact_cols) if fact_cols else None, fact_target["id"]]
+            )
+
     # Sync target tables
-    targets = dao.list_targets_for_register(reg_id)
     for t in targets:
         dao.sync_target_table(t["id"])
 
@@ -1337,6 +1371,9 @@ async def api_sql_preview(reg_id: int):
 
             cols = []
             for m in active_mappings:
+                if m.get("transform_type") == "custom_python":
+                    cols.append(f"  -- [computed] {m['target_column']}  (custom_python)")
+                    continue
                 if m.get("is_expression"):
                     cols.append(f"  {m['source_column']} AS [{m['target_column']}]")
                 elif m.get("transform_type"):
@@ -1369,6 +1406,207 @@ async def api_sql_preview(reg_id: int):
         return JSONResponse({"sql": "\n".join(lines)})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ═══════════════ Custom Python Transforms ═══════════════
+
+@app.get("/api/custom-transforms")
+async def api_custom_transforms():
+    """Список доступных custom python функций."""
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'dags'))
+    from core.transform.custom import get_registry
+    return JSONResponse(get_registry())
+
+
+@app.post("/api/registers/{reg_id}/add-computed-column")
+async def api_add_computed_column(reg_id: int, request: Request):
+    """Добавить вычисляемую колонку (custom_python) ко всем источникам."""
+    data = await request.json()
+    func_name = data.get("function")
+    target_column = data.get("target_column", func_name)
+    target_type = data.get("target_type", "decimal")
+
+    if not func_name:
+        return JSONResponse({"error": "function is required"}, status_code=400)
+
+    # Загружаем реестр функций для проверки uses_columns
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'dags'))
+    from core.transform.custom import CUSTOM_TRANSFORMS
+
+    func_entry = CUSTOM_TRANSFORMS.get(func_name)
+    if not func_entry:
+        return JSONResponse({"error": f"Функция '{func_name}' не найдена"}, status_code=400)
+
+    # Проверяем что все uses_columns есть в маппингах регистра
+    sources = dao.list_sources_for_register(reg_id)
+    if not sources:
+        return JSONResponse({"error": "Нет источников"}, status_code=400)
+
+    existing_targets = set()
+    for src in sources:
+        for m in dao.list_mappings_for_source(src["id"]):
+            if m.get("target_column"):
+                existing_targets.add(m["target_column"])
+
+    required = func_entry["uses_columns"]
+    missing = [col for col in required if col not in existing_targets]
+
+    if missing:
+        return JSONResponse({
+            "error": "Не хватает колонок: " + ", ".join(missing),
+            "missing_columns": missing,
+        }, status_code=400)
+
+    # Всё ок — создаём маппинг на первом источнике
+    first_source = sources[0]
+    transform_params = json.dumps({"function": func_name}, ensure_ascii=False)
+
+    dao.create_mapping({
+        "source_id": first_source["id"],
+        "source_column": f"__computed__{func_name}",
+        "target_column": target_column,
+        "target_type": target_type,
+        "transform_type": "custom_python",
+        "transform_params": transform_params,
+        "is_expression": False,
+        "is_nullable": True,
+    })
+
+    return JSONResponse({"ok": True, "target_column": target_column})
+
+
+@app.delete("/api/registers/{reg_id}/computed-column/{col_name}")
+async def api_delete_computed_column(reg_id: int, col_name: str):
+    """Удалить вычисляемую колонку."""
+    sources = dao.list_sources_for_register(reg_id)
+    deleted = 0
+    for src in sources:
+        mappings = dao.list_mappings_for_source(src["id"])
+        for m in mappings:
+            if m["target_column"] == col_name and m.get("transform_type") == "custom_python":
+                dao.delete_mapping(m["id"])
+                deleted += 1
+    return JSONResponse({"ok": True, "deleted": deleted})
+
+
+@app.post("/api/targets/{tgt_id}/include-columns")
+async def api_set_include_columns(tgt_id: int, request: Request):
+    """Установить include_columns для target."""
+    data = await request.json()
+    cols = data.get("include_columns")  # list of column names or None
+    target = dao.get_target(tgt_id)
+    if not target:
+        return JSONResponse({"error": "target not found"}, status_code=404)
+    dao.execute(
+        f"UPDATE {dao.SCHEMA}.register_targets SET include_columns=%s WHERE id=%s",
+        [cols if cols else None, tgt_id]
+    )
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/registers/{reg_id}/assign-column-target")
+async def api_assign_column_target(reg_id: int, request: Request):
+    """
+    Назначить колонку конкретному target-у.
+    Body: {"column": "date", "target_id": 5}
+    target_id = null → убрать из всех (не хранить)
+    target_id = "all" → добавить во все
+    """
+    data = await request.json()
+    col_name = data.get("column")
+    target_id = data.get("target_id")
+
+    if not col_name:
+        return JSONResponse({"error": "column is required"}, status_code=400)
+
+    targets = dao.list_targets_for_register(reg_id)
+
+    for t in targets:
+        current = t.get("include_columns") or []
+        tid = t["id"]
+
+        if target_id == "all":
+            if col_name not in current:
+                current.append(col_name)
+        elif target_id and int(target_id) == tid:
+            if col_name not in current:
+                current.append(col_name)
+        else:
+            current = [c for c in current if c != col_name]
+
+        dao.execute(
+            f"UPDATE {dao.SCHEMA}.register_targets SET include_columns=%s WHERE id=%s",
+            [current if current else None, tid]
+        )
+
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/registers/{reg_id}/column-targets")
+async def api_column_targets(reg_id: int):
+    """
+    Карта: какая колонка в какой target.
+    Авто-определение по source_type:
+      header → dimension target, detail → fact target,
+      standalone/computed → из include_columns (ручной выбор).
+    Returns: {targets: [...], column_map: {col: {targets: [...], auto: bool}}}
+    """
+    targets = dao.list_targets_for_register(reg_id)
+    sources = dao.list_sources_for_register(reg_id)
+
+    # Find dim/fact targets by role
+    dim_target = next((t for t in targets if t.get("target_role") == "dimension"), None)
+    fact_target = next((t for t in targets if t.get("target_role") == "fact"), None)
+
+    # Build column map
+    col_map = {}
+
+    # 1. Auto-assign by source_type
+    for src in sources:
+        mappings = dao.list_mappings_for_source(src["id"])
+        for m in mappings:
+            col = m["target_column"]
+            if m.get("transform_type") == "custom_python":
+                continue  # computed → manual below
+
+            if src["source_type"] == "header" and dim_target:
+                col_map[col] = {"targets": [dim_target["id"]], "auto": True}
+            elif src["source_type"] == "detail" and fact_target:
+                col_map[col] = {"targets": [fact_target["id"]], "auto": True}
+            # standalone → check include_columns (manual)
+            elif src["source_type"] == "standalone":
+                if col not in col_map:
+                    # Find from include_columns
+                    assigned = []
+                    for t in targets:
+                        if col in (t.get("include_columns") or []):
+                            assigned.append(t["id"])
+                    col_map[col] = {"targets": assigned, "auto": False}
+
+    # 2. Computed columns → manual
+    for src in sources:
+        for m in dao.list_mappings_for_source(src["id"]):
+            if m.get("transform_type") == "custom_python":
+                col = m["target_column"]
+                assigned = []
+                for t in targets:
+                    if col in (t.get("include_columns") or []):
+                        assigned.append(t["id"])
+                col_map[col] = {"targets": assigned, "auto": False}
+
+    return JSONResponse({
+        "targets": [
+            {"id": t["id"], "target_table": t["target_table"],
+             "target_schema": t.get("target_schema", "public"),
+             "priority": t.get("priority", 0),
+             "target_role": t.get("target_role"),
+             "include_columns": t.get("include_columns") or []}
+            for t in targets
+        ],
+        "column_map": col_map,
+    })
 
 
 # ────────────────────────────────────────────

@@ -74,6 +74,10 @@ class TargetConfig:
     load_mode: str  # 'insert', 'upsert', 'replace'
     upsert_keys: List[str] = field(default_factory=list)
     pre_load_sql: Optional[str] = None
+    post_load_sql: Optional[str] = None
+    include_columns: List[str] = field(default_factory=list)
+    priority: int = 0
+    target_role: Optional[str] = None  # 'dimension' or 'fact'
     is_active: bool = True
 
     # Источник данных (один из двух)

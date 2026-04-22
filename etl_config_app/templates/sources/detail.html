@@ -54,6 +54,9 @@
                     <th>Целевая колонка</th>
                     <th>Тип</th>
                     <th>Преобразование</th>
+                    {% if source.source_type in ('standalone', 'header') and targets|length > 1 %}
+                    <th>Таблица</th>
+                    {% endif %}
                     <th>Статус</th>
                     <th style="width:60px"></th>
                 </tr>
@@ -69,6 +72,18 @@
                     </td>
                     <td class="text-secondary">{{ m.target_type or '--' }}</td>
                     <td>{% if m.transform_type %}<span class="badge badge-info" style="font-size:10px">{{ m.transform_type }}</span>{% else %}--{% endif %}</td>
+                    {% if source.source_type in ('standalone', 'header') and targets|length > 1 %}
+                    <td>
+                        <select class="src-target-select" data-col="{{ m.target_column }}" onchange="assignColTarget(this)"
+                                style="font-size:11px;padding:2px 6px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg)">
+                            <option value="">не хранить</option>
+                            {% for t in targets %}
+                            <option value="{{ t.id }}">{{ t.target_table }}</option>
+                            {% endfor %}
+                            <option value="all">оба</option>
+                        </select>
+                    </td>
+                    {% endif %}
                     <td>
                         <form method="POST" action="/mappings/{{ m.id }}/toggle" style="display:inline">
                             {% if m.is_active %}
@@ -273,5 +288,45 @@ function deleteMapping(mappingId, name) {
     .then(() => location.reload())
     .catch(err => alert('Ошибка: ' + err));
 }
+
+// ── Target assignment for standalone sources ──
+function assignColTarget(selectEl) {
+    const col = selectEl.dataset.col;
+    const val = selectEl.value;
+    const targetId = val === 'all' ? 'all' : (val ? parseInt(val) : null);
+    fetch('/api/registers/{{ source.register_id }}/assign-column-target', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({column: col, target_id: targetId})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (!data.ok) alert('Ошибка: ' + (data.error || ''));
+    })
+    .catch(err => alert('Ошибка: ' + err));
+}
+
+// Load current assignments on page load
+{% if source.source_type in ('standalone', 'header') and targets|length > 1 %}
+(function() {
+    fetch('/api/registers/{{ source.register_id }}/column-targets')
+    .then(r => r.json())
+    .then(data => {
+        const colMap = data.column_map || {};
+        document.querySelectorAll('.src-target-select').forEach(sel => {
+            const col = sel.dataset.col;
+            const entry = colMap[col];
+            if (!entry) return;
+            const assigned = entry.targets || [];
+            const targets = data.targets || [];
+            if (targets.length > 1 && assigned.length === targets.length) {
+                sel.value = 'all';
+            } else if (assigned.length === 1) {
+                sel.value = assigned[0];
+            }
+        });
+    });
+})();
+{% endif %}
 </script>
 {% endblock %}

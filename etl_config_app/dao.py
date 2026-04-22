@@ -588,11 +588,15 @@ def create_target(data: dict) -> int:
     uk = data.get("upsert_keys", [])
     if isinstance(uk, str):
         uk = [k.strip() for k in uk.split(",") if k.strip()]
+    ic = data.get("include_columns") or None
+    if isinstance(ic, str):
+        ic = [c.strip() for c in ic.split(",") if c.strip()]
     sql = f"""
         INSERT INTO {SCHEMA}.register_targets
             (register_id, target_schema, target_table,
-             union_id, source_id, load_mode, upsert_keys, pre_load_sql)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+             union_id, source_id, load_mode, upsert_keys,
+             pre_load_sql, post_load_sql, include_columns, priority, target_role)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
     """
     return insert_returning(sql, [
         data["register_id"],
@@ -600,6 +604,10 @@ def create_target(data: dict) -> int:
         data.get("union_id") or None, data.get("source_id") or None,
         data.get("load_mode", "upsert"), uk,
         data.get("pre_load_sql") or None,
+        data.get("post_load_sql") or None,
+        ic,
+        data.get("priority", 0),
+        data.get("target_role") or None,
     ])
 
 
@@ -617,11 +625,17 @@ def update_target(target_id: int, data: dict):
         new_table = data["target_table"]
         _sync_real_table(old_schema, old_table, new_schema, new_table)
 
+    ic = data.get("include_columns") or None
+    if isinstance(ic, str):
+        ic = [c.strip() for c in ic.split(",") if c.strip()]
+
     sql = f"""
         UPDATE {SCHEMA}.register_targets SET
             target_schema=%s, target_table=%s,
             union_id=%s, source_id=%s,
-            load_mode=%s, upsert_keys=%s, pre_load_sql=%s
+            load_mode=%s, upsert_keys=%s,
+            pre_load_sql=%s, post_load_sql=%s,
+            include_columns=%s, priority=%s, target_role=%s
         WHERE id=%s
     """
     execute(sql, [
@@ -629,6 +643,10 @@ def update_target(target_id: int, data: dict):
         data.get("union_id") or None, data.get("source_id") or None,
         data.get("load_mode", "upsert"), uk,
         data.get("pre_load_sql") or None,
+        data.get("post_load_sql") or None,
+        ic,
+        data.get("priority", 0),
+        data.get("target_role") or None,
         target_id,
     ])
 

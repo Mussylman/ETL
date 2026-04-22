@@ -60,6 +60,10 @@ date: 2026-04-10
 - `load_mode`: upsert / insert / replace
 - `upsert_keys` (TEXT[])
 - `pre_load_sql` — DuckDB агрегация перед загрузкой
+- `post_load_sql` — SQL после загрузки (resolve FK, cleanup)
+- `include_columns` (TEXT[]) — подмножество колонок df для этой target (split dim/fact)
+- `priority` (int) — порядок загрузки targets одного регистра (меньше → раньше)
+- `target_role` — `dimension` / `fact` / NULL (назначение таблицы при split)
 
 ### load_history
 История загрузок.
@@ -83,3 +87,5 @@ register_targets N──1 register_sources
 ## Ссылки
 - [[ETL Config App управляет конфигурацией на порту 5555]]
 - [[Union объединяет документы в одну витрину]]
+- [[Split dim-fact по priority и include_columns]]
+- [[Custom Python Transform для вычисляемых колонок]]

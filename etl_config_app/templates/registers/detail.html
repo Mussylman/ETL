@@ -197,7 +197,12 @@
     <div class="card">
         <div class="card-header">
             <h3><span class="card-icon">&#9776;</span> Целевые колонки</h3>
-            <button id="cb_load_btn" class="btn btn-primary btn-sm" onclick="cbLoadAll()">Загрузить</button>
+            <div class="btn-group">
+                <button id="cb_view_list" class="btn btn-ghost btn-sm" onclick="cbSetView('list')" title="Список">≡</button>
+                <button id="cb_view_kanban" class="btn btn-secondary btn-sm" onclick="cbSetView('kanban')" title="Канбан">▦</button>
+                <button class="btn btn-ghost btn-sm" onclick="cbAutoAssign()" title="Авто-распределить">⚡ Авто</button>
+                <button id="cb_load_btn" class="btn btn-primary btn-sm" onclick="cbLoadAll()">Загрузить</button>
+            </div>
         </div>
         <div id="cb_existing"></div>
     </div>
@@ -562,6 +567,9 @@ function batchCreateDocumentSources() {
 // ── Column Builder ──
 let cbSources = [];
 let cbLoaded = false;
+let cbTargets = [];
+let cbColumnMap = {};
+let cbView = localStorage.getItem('cb_view') || 'kanban';
 
 document.addEventListener('click', function(e) {
     if (e.target.matches('[data-tab="tab-columns"]') && !cbLoaded) {
@@ -571,20 +579,36 @@ document.addEventListener('click', function(e) {
 });
 
 let cbCommonFields = [];
+let cbCustomRegistry = [];
+
+function cbInitView() {
+    const listBtn = document.getElementById('cb_view_list');
+    const kbnBtn = document.getElementById('cb_view_kanban');
+    if (listBtn && kbnBtn) {
+        listBtn.className = cbView === 'list' ? 'btn btn-secondary btn-sm' : 'btn btn-ghost btn-sm';
+        kbnBtn.className = cbView === 'kanban' ? 'btn btn-secondary btn-sm' : 'btn btn-ghost btn-sm';
+    }
+}
+document.addEventListener('DOMContentLoaded', cbInitView);
 
 function cbLoadAll() {
     const btn = document.getElementById('cb_load_btn');
     btn.innerHTML = '<span class="spinner"></span> Загрузка...';
     btn.disabled = true;
 
-    // Load both: existing mappings + common fields
+    // Load: existing mappings + common fields + custom transforms + column-targets
     Promise.all([
         fetch('/api/registers/' + REG_ID + '/column-builder').then(r => r.json()),
         fetch('/api/registers/' + REG_ID + '/common-fields').then(r => r.json()),
+        fetch('/api/custom-transforms').then(r => r.json()),
+        fetch('/api/registers/' + REG_ID + '/column-targets').then(r => r.json()),
     ])
-    .then(([cbData, cfData]) => {
+    .then(([cbData, cfData, ctData, ctgData]) => {
         cbSources = cbData.sources || [];
         cbCommonFields = cfData.fields || [];
+        cbCustomRegistry = ctData || [];
+        cbTargets = ctgData.targets || [];
+        cbColumnMap = ctgData.column_map || {};
         cbRenderExisting();
         cbRenderFields();
         btn.textContent = 'Обновить';
@@ -593,54 +617,364 @@ function cbLoadAll() {
     .catch(err => { alert('Ошибка: ' + err); btn.textContent = 'Загрузить'; btn.disabled = false; });
 }
 
+function cbSetView(view) {
+    cbView = view;
+    localStorage.setItem('cb_view', view);
+    document.getElementById('cb_view_list').className = view === 'list' ? 'btn btn-secondary btn-sm' : 'btn btn-ghost btn-sm';
+    document.getElementById('cb_view_kanban').className = view === 'kanban' ? 'btn btn-secondary btn-sm' : 'btn btn-ghost btn-sm';
+    cbRenderExisting();
+}
+
+// ── Build unified column data ──
+function cbBuildColData() {
+    const colMap = {};
+    const computedCols = [];
+    cbSources.forEach(src => {
+        (src.mappings || []).forEach(m => {
+            if (m.is_expression) return;
+            if (m.transform_type === 'custom_python') {
+                if (!computedCols.find(c => c.target_column === m.target_column)) {
+                    m._source_id = src.id;
+                    m._source_type = src.source_type;
+                    computedCols.push(m);
+                }
+                return;
+            }
+            if (!colMap[m.target_column]) {
+                colMap[m.target_column] = {
+                    type: m.target_type,
+                    transform: m.transform_type,
+                    onec_name: null,
+                    sources: [],
+                    source_types: new Set()
+                };
+            }
+            if (m.onec_name && !colMap[m.target_column].onec_name) colMap[m.target_column].onec_name = m.onec_name;
+            colMap[m.target_column].sources.push({ source_id: src.id });
+            colMap[m.target_column].source_types.add(src.source_type);
+        });
+    });
+    return {colMap, computedCols};
+}
+
 // ── Existing target columns ──
 function cbRenderExisting() {
     const container = document.getElementById('cb_existing');
     if (!cbSources || cbSources.length === 0) { container.innerHTML = ''; return; }
 
-    const colMap = {};
-    cbSources.forEach(src => {
-        (src.mappings || []).forEach(m => {
-            if (m.is_expression) return;
-            if (!colMap[m.target_column]) colMap[m.target_column] = {type: m.target_type, transform: m.transform_type, onec_name: null, sources: []};
-            if (m.onec_name && !colMap[m.target_column].onec_name) colMap[m.target_column].onec_name = m.onec_name;
-            colMap[m.target_column].sources.push({ source_id: src.id });
-        });
-    });
-
+    const {colMap, computedCols} = cbBuildColData();
     const cols = Object.keys(colMap);
-    if (cols.length === 0) {
+
+    if (cols.length === 0 && computedCols.length === 0) {
         container.innerHTML = '<div class="empty-state" style="padding:24px"><p>Целевые колонки ещё не определены. Выберите поля ниже.</p></div>';
         return;
     }
 
-    let html = '<div style="padding:6px 16px;border-bottom:1px solid var(--border);display:grid;grid-template-columns:180px 140px 80px 110px 1fr 36px;gap:8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:.5px">'
-        + '<span>Колонка</span><span>Имя 1С</span><span>Тип</span><span>Преобразование</span><span>Покрытие</span><span></span></div>';
+    if (cbView === 'kanban') {
+        cbRenderKanban(container, colMap, computedCols);
+        return;
+    }
 
-    cols.forEach(col => {
-        const info = colMap[col];
-        const mappedIds = new Set(info.sources.map(s => s.source_id));
-        let coverage = '';
-        cbSources.forEach(src => {
-            const short = (src.onec_name || src.source_code).replace('Документ.','');
-            if (mappedIds.has(src.id)) {
-                coverage += '<span class="coverage-dot mapped" title="' + short + '">&#10003;</span>';
-            } else {
-                coverage += '<span class="coverage-dot unmapped" title="' + short + '">&#9675;</span>';
+    let html = '';
+
+    // Helper: build target dropdown for a column
+    function targetCell(colName) {
+        const entry = cbColumnMap[colName] || {targets: [], auto: false};
+        const assigned = entry.targets || [];
+        const isAuto = entry.auto;
+
+        // Auto → badge (не дропдаун)
+        if (isAuto && assigned.length > 0) {
+            const t = cbTargets.find(x => x.id === assigned[0]);
+            if (t) {
+                const isDim = t.target_role === 'dimension';
+                const color = isDim ? 'var(--blue-600,#2563eb)' : 'var(--green-600,#16a34a)';
+                const bg = isDim ? 'var(--blue-50,#eff6ff)' : 'var(--green-50,#f0fdf4)';
+                return '<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:' + bg + ';color:' + color + ';font-weight:600">' + t.target_table + '</span>';
             }
-        });
+        }
 
-        html += '<div class="cb-row" style="grid-template-columns:180px 140px 80px 110px 1fr 36px">'
-            + '<span class="col-name" style="cursor:pointer" title="Нажмите для переименования" onclick="cbStartRename(this, \'' + col + '\')">' + col + '</span>'
-            + '<span style="font-size:11px;color:var(--accent)">' + (info.onec_name || '--') + '</span>'
-            + '<span class="col-type">' + (info.type || '--') + '</span>'
-            + '<span class="col-transform">' + (info.transform || '--') + '</span>'
-            + '<span class="col-coverage">' + coverage + '</span>'
-            + '<button class="btn btn-ghost btn-xs" onclick="cbDeleteColumn(\'' + col + '\')" title="Удалить" style="color:var(--red)">&#10005;</button>'
-            + '</div>';
-    });
+        // Manual → дропдаун
+        let sel = '<select class="cb-target-select" data-col="' + colName + '" onchange="cbAssignTarget(this)" '
+            + 'style="font-size:11px;padding:2px 6px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg);width:100%">';
+        sel += '<option value=""' + (assigned.length === 0 ? ' selected' : '') + '>не хранить</option>';
+        cbTargets.forEach(t => {
+            const isSelected = assigned.includes(t.id);
+            sel += '<option value="' + t.id + '"' + (isSelected ? ' selected' : '') + '>' + t.target_table + '</option>';
+        });
+        if (cbTargets.length > 1) {
+            const allSelected = cbTargets.every(t => assigned.includes(t.id));
+            sel += '<option value="all"' + (allSelected ? ' selected' : '') + '>оба</option>';
+        }
+        sel += '</select>';
+        return sel;
+    }
+
+    // ── Обычные колонки ──
+    if (cols.length > 0) {
+        html += '<div style="padding:6px 16px;border-bottom:1px solid var(--border);display:grid;grid-template-columns:160px 120px 70px 100px 130px 1fr 36px;gap:8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:.5px">'
+            + '<span>Колонка</span><span>Имя 1С</span><span>Тип</span><span>Преобразование</span><span>Таблица</span><span>Покрытие</span><span></span></div>';
+
+        cols.forEach(col => {
+            const info = colMap[col];
+            const mappedIds = new Set(info.sources.map(s => s.source_id));
+            let coverage = '';
+            cbSources.forEach(src => {
+                const short = (src.onec_name || src.source_code).replace('Документ.','');
+                if (mappedIds.has(src.id)) {
+                    coverage += '<span class="coverage-dot mapped" title="' + short + '">&#10003;</span>';
+                } else {
+                    coverage += '<span class="coverage-dot unmapped" title="' + short + '">&#9675;</span>';
+                }
+            });
+
+            html += '<div class="cb-row" style="grid-template-columns:160px 120px 70px 100px 130px 1fr 36px">'
+                + '<span class="col-name" style="cursor:pointer" title="Нажмите для переименования" onclick="cbStartRename(this, \'' + col + '\')">' + col + '</span>'
+                + '<span style="font-size:11px;color:var(--accent)">' + (info.onec_name || '--') + '</span>'
+                + '<span class="col-type">' + (info.type || '--') + '</span>'
+                + '<span class="col-transform">' + (info.transform || '--') + '</span>'
+                + '<span>' + targetCell(col) + '</span>'
+                + '<span class="col-coverage">' + coverage + '</span>'
+                + '<button class="btn btn-ghost btn-xs" onclick="cbDeleteColumn(\'' + col + '\')" title="Удалить" style="color:var(--red)">&#10005;</button>'
+                + '</div>';
+        });
+    }
+
+    // ── Вычисляемые колонки ──
+    html += '<div style="padding:10px 16px;border-top:2px solid var(--border);border-bottom:1px solid var(--border);display:grid;grid-template-columns:160px 1fr 70px 130px 120px 36px;gap:8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:.5px">'
+        + '<span>&#402; Вычисляемые</span><span>Функция</span><span>Тип</span><span>Таблица</span><span>Использует</span><span></span></div>';
+
+    if (computedCols.length > 0) {
+        computedCols.forEach(m => {
+            const params = typeof m.transform_params === 'string' ? JSON.parse(m.transform_params || '{}') : (m.transform_params || {});
+            const funcName = params.function || '--';
+            const regEntry = cbCustomRegistry.find(r => r.name === funcName);
+            const usesStr = regEntry ? regEntry.uses_columns.join(', ') : '--';
+
+            html += '<div class="cb-row" style="grid-template-columns:160px 1fr 70px 130px 120px 36px">'
+                + '<span class="col-name" style="font-weight:600;color:var(--purple-600,#9333ea)">&#402; ' + m.target_column + '</span>'
+                + '<span class="text-mono" style="font-size:11px">' + funcName + '</span>'
+                + '<span class="col-type">' + (m.target_type || 'float') + '</span>'
+                + '<span>' + targetCell(m.target_column) + '</span>'
+                + '<span style="font-size:11px;color:var(--text-2)">' + usesStr + '</span>'
+                + '<button class="btn btn-ghost btn-xs" onclick="cbDeleteComputed(\'' + m.target_column + '\')" title="Удалить" style="color:var(--red)">&#10005;</button>'
+                + '</div>';
+        });
+    } else {
+        html += '<div style="padding:12px 16px;font-size:12px;color:var(--text-3)">Нет вычисляемых колонок</div>';
+    }
+
+    html += '<div style="padding:8px 16px;border-top:1px solid var(--border)">'
+        + '<button class="btn btn-secondary btn-sm" onclick="cbShowComputedModal()">+ Добавить формулу</button>'
+        + '</div>';
 
     container.innerHTML = html;
+}
+
+// ── Kanban view ──
+function cbRenderKanban(container, colMap, computedCols) {
+    // Group columns by target
+    const groups = {unassigned: [], byTarget: {}};
+    cbTargets.forEach(t => { groups.byTarget[t.id] = []; });
+
+    // Helper for badge
+    function sourceBadge(sourceTypes, isComputed) {
+        if (isComputed) return '<span class="kbn-badge kbn-badge-computed">ƒ custom</span>';
+        const types = Array.from(sourceTypes || []);
+        let html = '';
+        if (types.includes('header')) html += '<span class="kbn-badge kbn-badge-header">header</span>';
+        if (types.includes('detail')) html += '<span class="kbn-badge kbn-badge-detail">VT</span>';
+        if (types.includes('standalone')) html += '<span class="kbn-badge kbn-badge-accum">accum</span>';
+        return html;
+    }
+
+    function isLocked(col, info, isComputed) {
+        // Locked if auto-assigned by source_type (not standalone/computed)
+        const entry = cbColumnMap[col] || {};
+        if (isComputed) return false;
+        if (!entry.auto) return false;
+        const types = Array.from(info.source_types || []);
+        // Only lock if purely header or purely detail
+        if (types.length === 1 && (types[0] === 'header' || types[0] === 'detail')) return true;
+        return false;
+    }
+
+    // Categorize columns
+    Object.keys(colMap).forEach(col => {
+        const info = colMap[col];
+        const entry = cbColumnMap[col] || {targets: []};
+        const card = {col, info, isComputed: false, locked: isLocked(col, info, false), entry};
+        if (entry.targets && entry.targets.length > 0) {
+            entry.targets.forEach(tid => {
+                if (groups.byTarget[tid]) groups.byTarget[tid].push(card);
+            });
+        } else {
+            groups.unassigned.push(card);
+        }
+    });
+
+    computedCols.forEach(m => {
+        const col = m.target_column;
+        const entry = cbColumnMap[col] || {targets: []};
+        const info = {
+            type: m.target_type, transform: 'custom_python',
+            source_types: new Set([m._source_type]),
+        };
+        const params = typeof m.transform_params === 'string' ? JSON.parse(m.transform_params || '{}') : (m.transform_params || {});
+        const regEntry = cbCustomRegistry.find(r => r.name === params.function);
+        const card = {col, info, isComputed: true, computed: m, funcName: params.function, regEntry, locked: false, entry};
+        if (entry.targets && entry.targets.length > 0) {
+            entry.targets.forEach(tid => {
+                if (groups.byTarget[tid]) groups.byTarget[tid].push(card);
+            });
+        } else {
+            groups.unassigned.push(card);
+        }
+    });
+
+    // Error: computed requires missing columns
+    const mappedTargets = new Set(Object.keys(colMap));
+    function computedErrors(card) {
+        if (!card.regEntry) return [];
+        return card.regEntry.uses_columns.filter(c => !mappedTargets.has(c));
+    }
+
+    // Render card
+    function renderCard(card) {
+        const errors = card.isComputed ? computedErrors(card) : [];
+        const hasError = errors.length > 0;
+        let html = '<div class="kbn-card'
+            + (card.locked ? ' kbn-card-locked' : '')
+            + (hasError ? ' kbn-card-error' : '')
+            + (card.isComputed ? ' kbn-card-computed' : '') + '"'
+            + (card.locked ? '' : ' draggable="true" ondragstart="cbDragStart(event)" data-col="' + card.col + '" data-is-computed="' + card.isComputed + '"')
+            + '>';
+        html += '<div class="kbn-card-head">';
+        html += '<span class="kbn-card-name">' + (card.isComputed ? 'ƒ ' : '') + card.col + '</span>';
+        if (card.locked) html += '<span style="font-size:10px;color:var(--text-3)" title="Заблокировано — тип источника">🔒</span>';
+        html += '</div>';
+        html += '<div class="kbn-card-meta">';
+        if (card.info.onec_name) html += '<span style="color:var(--accent)">' + card.info.onec_name + '</span> · ';
+        html += '<span class="text-mono" style="color:var(--text-3)">' + (card.info.type || '--') + '</span>';
+        html += '</div>';
+        html += '<div class="kbn-card-badges">' + sourceBadge(card.info.source_types, card.isComputed);
+        if (card.info.transform && !card.isComputed) html += '<span class="kbn-badge kbn-badge-transform">' + card.info.transform + '</span>';
+        html += '</div>';
+        if (hasError) {
+            html += '<div class="kbn-card-err">Нет колонок: ' + errors.join(', ') + '</div>';
+        }
+        if (card.isComputed) {
+            html += '<div class="kbn-card-func">' + card.funcName + '</div>';
+        }
+        html += '<button class="kbn-card-x" onclick="' + (card.isComputed ? 'cbDeleteComputed' : 'cbDeleteColumn') + '(\'' + card.col + '\')" title="Удалить">&#10005;</button>';
+        html += '</div>';
+        return html;
+    }
+
+    // Build HTML
+    let html = '<div class="kbn-grid">';
+
+    // Column 1: Unassigned
+    html += '<div class="kbn-col kbn-col-unassigned" ondragover="cbDragOver(event)" ondrop="cbDrop(event, \'\')">';
+    html += '<div class="kbn-col-head"><span>Не распределено</span><span class="kbn-count">' + groups.unassigned.length + '</span></div>';
+    html += '<div class="kbn-col-body">';
+    if (groups.unassigned.length === 0) {
+        html += '<div class="kbn-empty">—</div>';
+    } else {
+        groups.unassigned.forEach(c => { html += renderCard(c); });
+    }
+    html += '</div></div>';
+
+    // Columns per target
+    cbTargets.forEach(t => {
+        const isDim = t.target_role === 'dimension';
+        html += '<div class="kbn-col kbn-col-' + (isDim ? 'dim' : 'fact') + '" ondragover="cbDragOver(event)" ondrop="cbDrop(event, \'' + t.id + '\')">';
+        html += '<div class="kbn-col-head"><span>' + t.target_table + '</span><span class="kbn-count">' + groups.byTarget[t.id].length + '</span></div>';
+        html += '<div class="kbn-col-body">';
+        if (groups.byTarget[t.id].length === 0) {
+            html += '<div class="kbn-empty">—</div>';
+        } else {
+            groups.byTarget[t.id].forEach(c => { html += renderCard(c); });
+        }
+        html += '</div></div>';
+    });
+
+    html += '</div>';
+    html += '<div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px">'
+        + '<button class="btn btn-secondary btn-sm" onclick="cbShowComputedModal()">+ Добавить формулу</button>'
+        + '</div>';
+
+    container.innerHTML = html;
+}
+
+// ── Drag & Drop ──
+function cbDragStart(ev) {
+    ev.dataTransfer.setData('col', ev.currentTarget.dataset.col);
+    ev.dataTransfer.setData('is_computed', ev.currentTarget.dataset.isComputed);
+    ev.currentTarget.style.opacity = '0.4';
+}
+
+function cbDragOver(ev) {
+    ev.preventDefault();
+    ev.currentTarget.classList.add('kbn-col-over');
+}
+
+function cbDrop(ev, targetId) {
+    ev.preventDefault();
+    ev.currentTarget.classList.remove('kbn-col-over');
+    const col = ev.dataTransfer.getData('col');
+    if (!col) return;
+
+    const tid = targetId ? parseInt(targetId) : null;
+    fetch('/api/registers/' + REG_ID + '/assign-column-target', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({column: col, target_id: tid})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) cbLoadAll();
+        else alert('Ошибка: ' + (data.error || ''));
+    })
+    .catch(err => alert('Ошибка: ' + err));
+}
+
+// Remove hover highlight when leaving
+document.addEventListener('dragleave', function(e) {
+    if (e.target && e.target.classList && e.target.classList.contains('kbn-col')) {
+        e.target.classList.remove('kbn-col-over');
+    }
+});
+
+// ── Auto assign ──
+function cbAutoAssign() {
+    if (!confirm('Автоматически распределить колонки по типу источника?\n\n- header → dim target\n- VT (detail) → fact target\n- standalone и computed — не трогаются')) return;
+
+    const {colMap, computedCols} = cbBuildColData();
+    const dimTarget = cbTargets.find(t => t.target_role === 'dimension');
+    const factTarget = cbTargets.find(t => t.target_role === 'fact');
+
+    const moves = [];
+    Object.keys(colMap).forEach(col => {
+        const info = colMap[col];
+        const types = Array.from(info.source_types || []);
+        if (types.length === 1) {
+            if (types[0] === 'header' && dimTarget) {
+                moves.push({column: col, target_id: dimTarget.id});
+            } else if (types[0] === 'detail' && factTarget) {
+                moves.push({column: col, target_id: factTarget.id});
+            }
+        }
+    });
+
+    if (moves.length === 0) { alert('Нечего распределять автоматически'); return; }
+
+    Promise.all(moves.map(m =>
+        fetch('/api/registers/' + REG_ID + '/assign-column-target', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(m)
+        }).then(r => r.json())
+    )).then(() => cbLoadAll());
 }
 
 // ── Common fields from all sources ──
@@ -787,6 +1121,26 @@ function cbFinishRename(input, oldName) {
     .catch(err => { alert('Ошибка: ' + err); cbLoadAll(); });
 }
 
+function cbAssignTarget(selectEl) {
+    const col = selectEl.dataset.col;
+    const val = selectEl.value;
+    const targetId = val === 'all' ? 'all' : (val ? parseInt(val) : null);
+
+    fetch('/api/registers/' + REG_ID + '/assign-column-target', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({column: col, target_id: targetId})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (!data.ok) alert('Ошибка: ' + (data.error || ''));
+        // Reload column-targets map
+        fetch('/api/registers/' + REG_ID + '/column-targets').then(r => r.json())
+        .then(ct => { cbColumnMap = ct.column_map || {}; });
+    })
+    .catch(err => alert('Ошибка: ' + err));
+}
+
 function cbDeleteColumn(colName) {
     if (!confirm('Удалить "' + colName + '" из всех источников?')) return;
     fetch('/api/registers/' + REG_ID + '/target-column/' + encodeURIComponent(colName), {method: 'DELETE'})
@@ -797,10 +1151,111 @@ function cbDeleteColumn(colName) {
     })
     .catch(err => alert('Failed: ' + err));
 }
+
+// ── Вычисляемые колонки ──
+function cbDeleteComputed(colName) {
+    if (!confirm('Удалить вычисляемую колонку "' + colName + '"?')) return;
+    fetch('/api/registers/' + REG_ID + '/computed-column/' + encodeURIComponent(colName), {method: 'DELETE'})
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) cbLoadAll();
+        else alert('Ошибка: ' + (data.error || 'unknown'));
+    })
+    .catch(err => alert('Ошибка: ' + err));
+}
+
+function cbShowComputedModal() {
+    const modal = document.getElementById('computedModal');
+    const select = document.getElementById('cm_func_select');
+    select.innerHTML = '<option value="">-- выберите функцию --</option>';
+    cbCustomRegistry.forEach(f => {
+        select.innerHTML += '<option value="' + f.name + '" data-type="' + f.target_type + '" data-uses="' + f.uses_columns.join(', ') + '" data-desc="' + f.description + '">' + f.name + '</option>';
+    });
+    cmSelectFunc();
+    modal.style.display = 'flex';
+}
+
+function cmSelectFunc() {
+    const select = document.getElementById('cm_func_select');
+    const opt = select.selectedOptions[0];
+    if (opt && opt.value) {
+        document.getElementById('cm_col_name').value = opt.value;
+        document.getElementById('cm_col_type').value = opt.dataset.type || 'decimal';
+        document.getElementById('cm_description').textContent = opt.dataset.desc || '';
+        document.getElementById('cm_uses').textContent = opt.dataset.uses || '';
+    } else {
+        document.getElementById('cm_col_name').value = '';
+        document.getElementById('cm_col_type').value = 'decimal';
+        document.getElementById('cm_description').textContent = '';
+        document.getElementById('cm_uses').textContent = '';
+    }
+}
+
+function cmCreate() {
+    const funcName = document.getElementById('cm_func_select').value;
+    const colName = document.getElementById('cm_col_name').value.trim();
+    const colType = document.getElementById('cm_col_type').value.trim();
+    const errDiv = document.getElementById('cm_error');
+    errDiv.style.display = 'none';
+    if (!funcName || !colName) { alert('Выберите функцию и укажите имя колонки'); return; }
+
+    fetch('/api/registers/' + REG_ID + '/add-computed-column', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({function: funcName, target_column: colName, target_type: colType})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) {
+            document.getElementById('computedModal').style.display = 'none';
+            cbLoadAll();
+        } else if (data.missing_columns) {
+            errDiv.innerHTML = 'Сначала добавьте колонки: <strong>' + data.missing_columns.join(', ') + '</strong>';
+            errDiv.style.display = 'block';
+        } else {
+            errDiv.textContent = data.error || 'Неизвестная ошибка';
+            errDiv.style.display = 'block';
+        }
+    })
+    .catch(err => { errDiv.textContent = 'Ошибка: ' + err; errDiv.style.display = 'block'; });
+}
 </script>
 {% endblock %}
 
 {% block modals %}
+<div id="computedModal" class="modal-backdrop" style="display:none">
+    <div class="modal" style="max-width:460px">
+        <h3>Добавить вычисляемую колонку</h3>
+        <div style="display:flex;flex-direction:column;gap:12px;margin:16px 0">
+            <div>
+                <label style="font-size:12px;font-weight:600;color:var(--text-2)">Функция</label>
+                <select id="cm_func_select" onchange="cmSelectFunc()" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13px;background:var(--bg)"></select>
+            </div>
+            <div style="font-size:12px;color:var(--text-2)">
+                <span id="cm_description"></span>
+            </div>
+            <div style="font-size:12px;color:var(--text-3)">
+                Использует колонки: <strong id="cm_uses"></strong>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                <div>
+                    <label style="font-size:12px;font-weight:600;color:var(--text-2)">Имя колонки</label>
+                    <input id="cm_col_name" type="text" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13px;background:var(--bg)">
+                </div>
+                <div>
+                    <label style="font-size:12px;font-weight:600;color:var(--text-2)">Тип</label>
+                    <input id="cm_col_type" type="text" value="decimal" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13px;background:var(--bg)">
+                </div>
+            </div>
+        </div>
+        <div id="cm_error" style="display:none;padding:10px 14px;background:var(--red-50,#fef2f2);border:1px solid var(--red-200,#fecaca);border-radius:var(--radius-sm);color:var(--red-700,#b91c1c);font-size:12px;margin-bottom:8px"></div>
+        <div class="btn-group" style="justify-content:flex-end">
+            <button type="button" class="btn btn-secondary" onclick="document.getElementById('computedModal').style.display='none'">Отмена</button>
+            <button type="button" class="btn btn-primary" onclick="cmCreate()">Создать</button>
+        </div>
+    </div>
+</div>
+
 <div id="deleteModal" class="modal-backdrop">
     <div class="modal">
         <h3>Подтвердите удаление</h3>

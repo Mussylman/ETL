@@ -1,30 +1,33 @@
 ---
-tags: [баг, discover, etl-config]
+tags: [баг, discover, etl-config, решено]
 date: 2026-04-10
+resolved: 2026-04-22
 ---
 # Discover падает с duplicate key при повторном запуске
 
-## Ошибка
+## Статус
+**РЕШЕНО** (подтверждено 2026-04-22 по коду).
+
+## Ошибка (была)
 ```
 duplicate key value violates unique constraint "idx_register_source_code"
 DETAIL: Key (register_id, source_code)=(17, doc_415) already exists.
 ```
 
 ## Причина
-`batch_create_document_sources` в dao.py не проверяет существующие source_code перед INSERT.
+`batch_create_document_sources` в dao.py не проверяла существующие source_code перед INSERT.
 
-## Статус
-TODO — нужен idempotent batch_create: проверять существование перед вставкой, пропускать уже созданные.
-
-## Решение (план)
-В `batch_create_document_sources`:
+## Решение
+`batch_create_document_sources` теперь идемпотентна. В `etl_config_app/dao.py:844-861`:
 ```python
-existing = list_sources_for_register(register_id)
-existing_codes = {s['source_code'] for s in existing}
+existing_sources = {s["source_code"]: s for s in list_sources_for_register(register_id)}
+
 for dt in doc_types:
-    code = f"doc_{dt['type_int']}"
-    if code in existing_codes:
-        continue  # skip
+    ...
+    source_code = f"doc_{type_int}"
+    if source_code in existing_sources:
+        created_sources.append({..., "existed": True})
+        continue
     ...
 ```
 

@@ -117,12 +117,13 @@ class ETLEngine:
         return results
 
     def _get_active_targets(self) -> List[TargetConfig]:
-        """Возвращает список активных целевых таблиц."""
+        """Возвращает список активных целевых таблиц, отсортированных по приоритету."""
         targets = [t for t in self.config.targets if t.is_active]
 
         if self.target_tables:
             targets = [t for t in targets if t.target_table in self.target_tables]
 
+        targets.sort(key=lambda t: t.priority)
         return targets
 
     # ======================================================================
@@ -227,17 +228,30 @@ class ETLEngine:
             column_transforms=column_transforms,
         )
 
-        # 4. Pre-load SQL (агрегация, если задана)
+        # 4. Filter by include_columns (split)
+        if target.include_columns:
+            available = [c for c in target.include_columns if c in df.columns]
+            # Always keep etl_loaded_at
+            if "etl_loaded_at" in df.columns and "etl_loaded_at" not in available:
+                available.append("etl_loaded_at")
+            df = df[available]
+            print(f"Filtered to {len(available)} columns for {target.target_table}")
+
+        # 5. Pre-load SQL (агрегация, дедупликация)
         if target.pre_load_sql:
             df = self._apply_pre_load_sql(df, target.pre_load_sql)
 
-        # 5. Загружаем
+        # 6. Загружаем
         rows = self.loader.load(
             df=df,
             table_name=target.full_table_name,
             mode=target.load_mode,
             upsert_keys=target.upsert_keys,
         )
+
+        # 7. Post-load SQL (resolve FK, cleanup)
+        if target.post_load_sql:
+            self._execute_post_load_sql(target.post_load_sql)
 
         return rows
 
@@ -326,3 +340,10 @@ class ETLEngine:
         result = duckdb.query(pre_load_sql.replace("__df__", "df")).df()
         print(f"Pre-load SQL applied: {len(df)} -> {len(result)} rows")
         return result
+
+    def _execute_post_load_sql(self, post_load_sql: str):
+        """Выполняет SQL после загрузки (resolve FK, cleanup)."""
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+        hook = PostgresHook(postgres_conn_id=self.dst_conn_id)
+        hook.run(post_load_sql)
+        print(f"Post-load SQL executed")
