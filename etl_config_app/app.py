@@ -1602,7 +1602,9 @@ async def api_column_targets(reg_id: int):
              "target_schema": t.get("target_schema", "public"),
              "priority": t.get("priority", 0),
              "target_role": t.get("target_role"),
-             "include_columns": t.get("include_columns") or []}
+             "include_columns": t.get("include_columns") or [],
+             "load_mode": t.get("load_mode", "upsert"),
+             "upsert_keys": t.get("upsert_keys") or []}
             for t in targets
         ],
         "column_map": col_map,

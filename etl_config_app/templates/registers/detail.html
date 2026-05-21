@@ -193,35 +193,51 @@
 
 <!-- ═══════════ Columns Tab ═══════════ -->
 <div id="tab-columns" class="tab-panel" data-tab-group="main">
-    <!-- Existing mapped columns -->
-    <div class="card">
-        <div class="card-header">
-            <h3><span class="card-icon">&#9776;</span> Целевые колонки</h3>
-            <div class="btn-group">
-                <button id="cb_view_list" class="btn btn-ghost btn-sm" onclick="cbSetView('list')" title="Список">≡</button>
-                <button id="cb_view_kanban" class="btn btn-secondary btn-sm" onclick="cbSetView('kanban')" title="Канбан">▦</button>
-                <button class="btn btn-ghost btn-sm" onclick="cbAutoAssign()" title="Авто-распределить">⚡ Авто</button>
-                <button id="cb_load_btn" class="btn btn-primary btn-sm" onclick="cbLoadAll()">Загрузить</button>
-            </div>
+
+    <!-- Board toolbar -->
+    <div class="board-head" id="cb_toolbar" style="margin-bottom:12px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <span class="overline">Распределение</span>
+            <span id="cb_stats" style="font-size:12px;color:var(--fg2)">—</span>
         </div>
-        <div id="cb_existing"></div>
+        <div class="btn-group">
+            <div class="view-toggle" role="tablist" aria-label="Вид">
+                <button id="cb_view_pipeline" class="is-active" onclick="cbSetView('pipeline')" title="Пайплайн">▦ Пайплайн</button>
+                <button id="cb_view_kanban" onclick="cbSetView('kanban')" title="Канбан">▦ Канбан</button>
+                <button id="cb_view_list" onclick="cbSetView('list')" title="Список">≡ Список</button>
+            </div>
+            <button class="btn btn-sm" onclick="cbAutoAssign()" title="Авто-распределить">⚡ Авто</button>
+            <button class="btn btn-sm" onclick="cbShowComputedModal()">+ Формула</button>
+            <button id="cb_load_btn" class="btn btn-primary btn-sm" onclick="cbLoadAll()">Загрузить</button>
+        </div>
     </div>
 
-    <!-- Common fields picker -->
-    <div class="card">
-        <div class="card-header">
+    <!-- Main stage: pipeline (default) / kanban / list -->
+    <div id="cb_existing">
+        <div class="empty-state" style="padding:48px;text-align:center">
+            <p>Нажмите <strong>Загрузить</strong> чтобы увидеть колонки</p>
+        </div>
+    </div>
+
+    <!-- Common fields picker (collapsible) -->
+    <div class="card" style="margin-top:14px">
+        <div class="card-header" style="cursor:pointer" onclick="cbToggleFieldsPicker()">
             <h3><span class="card-icon">+</span> Доступные поля из источников</h3>
             <div class="btn-group">
                 <input type="text" id="cb_field_search" placeholder="Поиск..." oninput="cbFilterFields()"
-                       style="padding:4px 10px;font-size:12px;border:1px solid var(--warm-300,#d5d0ca);border-radius:var(--radius-sm,5px);width:200px;background:var(--bg,#fff)">
+                       onclick="event.stopPropagation()"
+                       style="padding:4px 10px;font-size:12px;border:1px solid var(--border-strong);border-radius:var(--radius-sm);width:200px;background:var(--bg,#fff)">
+                <button class="btn btn-ghost btn-xs" id="cb_picker_toggle">▾</button>
             </div>
         </div>
-        <div id="cb_fields_list">
-            <div class="empty-state" style="padding:24px"><p>Нажмите "Загрузить" чтобы увидеть поля</p></div>
-        </div>
-        <div id="cb_batch_bar" style="display:none;padding:12px 18px;border-top:1px solid var(--border,#e8e5e1);display:flex;align-items:center;gap:12px">
-            <button class="btn btn-primary btn-sm" onclick="cbBatchAdd()">Добавить выбранные</button>
-            <span id="cb_selected_count" style="font-size:12px;color:var(--text-2,#57534e)">0 выбрано</span>
+        <div id="cb_fields_wrapper">
+            <div id="cb_fields_list">
+                <div class="empty-state" style="padding:24px"><p>Нажмите "Загрузить" чтобы увидеть поля</p></div>
+            </div>
+            <div id="cb_batch_bar" style="display:none;padding:12px 18px;border-top:1px solid var(--border);align-items:center;gap:12px">
+                <button class="btn btn-primary btn-sm" onclick="cbBatchAdd()">Добавить выбранные</button>
+                <span id="cb_selected_count" style="font-size:12px;color:var(--fg2)">0 выбрано</span>
+            </div>
         </div>
     </div>
 </div>
@@ -569,27 +585,40 @@ let cbSources = [];
 let cbLoaded = false;
 let cbTargets = [];
 let cbColumnMap = {};
-let cbView = localStorage.getItem('cb_view') || 'kanban';
+let cbView = localStorage.getItem('cb_view') || 'pipeline';
+let cbCoverageMode = localStorage.getItem('cb_coverage') || 'bar';
+let cbDensity = localStorage.getItem('cb_density') || 'roomy';
+let cbCommonFields = [];
+let cbCustomRegistry = [];
+let cbPickerOpen = true;
 
 document.addEventListener('click', function(e) {
     if (e.target.matches('[data-tab="tab-columns"]') && !cbLoaded) {
         cbLoaded = true;
-        cbLoadSources();
+        cbLoadAll();
     }
 });
 
-let cbCommonFields = [];
-let cbCustomRegistry = [];
-
 function cbInitView() {
-    const listBtn = document.getElementById('cb_view_list');
-    const kbnBtn = document.getElementById('cb_view_kanban');
-    if (listBtn && kbnBtn) {
-        listBtn.className = cbView === 'list' ? 'btn btn-secondary btn-sm' : 'btn btn-ghost btn-sm';
-        kbnBtn.className = cbView === 'kanban' ? 'btn btn-secondary btn-sm' : 'btn btn-ghost btn-sm';
-    }
+    ['pipeline', 'kanban', 'list'].forEach(v => {
+        const btn = document.getElementById('cb_view_' + v);
+        if (btn) btn.className = cbView === v ? 'is-active' : '';
+    });
 }
 document.addEventListener('DOMContentLoaded', cbInitView);
+
+function cbUpdateStats() {
+    const el = document.getElementById('cb_stats');
+    if (!el) return;
+    const {colMap, computedCols} = cbBuildColData();
+    const allCols = [...Object.keys(colMap), ...computedCols.map(c => c.target_column)];
+    const assigned = allCols.filter(c => (cbColumnMap[c]?.targets || []).length > 0).length;
+    const computed = computedCols.length;
+    const unmapped = allCols.length - assigned;
+    el.innerHTML = '<b style="color:var(--fg1);font-family:var(--font-mono)">' + assigned + '</b> / ' + allCols.length + ' распределено'
+        + (computed > 0 ? ' · <span style="color:var(--purple-600)">' + computed + ' ƒ</span>' : '')
+        + (unmapped > 0 ? ' · <span style="color:var(--amber-600)">' + unmapped + ' не распределено</span>' : '');
+}
 
 function cbLoadAll() {
     const btn = document.getElementById('cb_load_btn');
@@ -611,6 +640,7 @@ function cbLoadAll() {
         cbColumnMap = ctgData.column_map || {};
         cbRenderExisting();
         cbRenderFields();
+        cbUpdateStats();
         btn.textContent = 'Обновить';
         btn.disabled = false;
     })
@@ -620,9 +650,16 @@ function cbLoadAll() {
 function cbSetView(view) {
     cbView = view;
     localStorage.setItem('cb_view', view);
-    document.getElementById('cb_view_list').className = view === 'list' ? 'btn btn-secondary btn-sm' : 'btn btn-ghost btn-sm';
-    document.getElementById('cb_view_kanban').className = view === 'kanban' ? 'btn btn-secondary btn-sm' : 'btn btn-ghost btn-sm';
+    cbInitView();
     cbRenderExisting();
+}
+
+function cbToggleFieldsPicker() {
+    cbPickerOpen = !cbPickerOpen;
+    const wrap = document.getElementById('cb_fields_wrapper');
+    const toggle = document.getElementById('cb_picker_toggle');
+    if (wrap) wrap.style.display = cbPickerOpen ? '' : 'none';
+    if (toggle) toggle.textContent = cbPickerOpen ? '▾' : '▸';
 }
 
 // ── Build unified column data ──
@@ -657,7 +694,7 @@ function cbBuildColData() {
     return {colMap, computedCols};
 }
 
-// ── Existing target columns ──
+// ── Existing target columns — 3 layouts ──
 function cbRenderExisting() {
     const container = document.getElementById('cb_existing');
     if (!cbSources || cbSources.length === 0) { container.innerHTML = ''; return; }
@@ -666,148 +703,102 @@ function cbRenderExisting() {
     const cols = Object.keys(colMap);
 
     if (cols.length === 0 && computedCols.length === 0) {
-        container.innerHTML = '<div class="empty-state" style="padding:24px"><p>Целевые колонки ещё не определены. Выберите поля ниже.</p></div>';
+        container.innerHTML = '<div class="empty-state" style="padding:48px;text-align:center"><p>Целевые колонки ещё не определены. Выберите поля ниже.</p></div>';
         return;
     }
 
-    if (cbView === 'kanban') {
-        cbRenderKanban(container, colMap, computedCols);
-        return;
+    let html = '<div class="cb-stage cb-layout-' + cbView + '">';
+    if (cbView === 'pipeline') {
+        html += cbRenderSourceRail();
+        html += '<div class="board">' + cbRenderKanbanBoard(colMap, computedCols) + '</div>';
+        html += cbRenderTargetsRail(colMap, computedCols);
+    } else if (cbView === 'kanban') {
+        html += '<div class="board">' + cbRenderKanbanBoard(colMap, computedCols) + '</div>';
+    } else if (cbView === 'list') {
+        html += cbRenderList(colMap, computedCols);
     }
-
-    let html = '';
-
-    // Helper: build target dropdown for a column
-    function targetCell(colName) {
-        const entry = cbColumnMap[colName] || {targets: [], auto: false};
-        const assigned = entry.targets || [];
-        const isAuto = entry.auto;
-
-        // Auto → badge (не дропдаун)
-        if (isAuto && assigned.length > 0) {
-            const t = cbTargets.find(x => x.id === assigned[0]);
-            if (t) {
-                const isDim = t.target_role === 'dimension';
-                const color = isDim ? 'var(--blue-600,#2563eb)' : 'var(--green-600,#16a34a)';
-                const bg = isDim ? 'var(--blue-50,#eff6ff)' : 'var(--green-50,#f0fdf4)';
-                return '<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:' + bg + ';color:' + color + ';font-weight:600">' + t.target_table + '</span>';
-            }
-        }
-
-        // Manual → дропдаун
-        let sel = '<select class="cb-target-select" data-col="' + colName + '" onchange="cbAssignTarget(this)" '
-            + 'style="font-size:11px;padding:2px 6px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg);width:100%">';
-        sel += '<option value=""' + (assigned.length === 0 ? ' selected' : '') + '>не хранить</option>';
-        cbTargets.forEach(t => {
-            const isSelected = assigned.includes(t.id);
-            sel += '<option value="' + t.id + '"' + (isSelected ? ' selected' : '') + '>' + t.target_table + '</option>';
-        });
-        if (cbTargets.length > 1) {
-            const allSelected = cbTargets.every(t => assigned.includes(t.id));
-            sel += '<option value="all"' + (allSelected ? ' selected' : '') + '>оба</option>';
-        }
-        sel += '</select>';
-        return sel;
-    }
-
-    // ── Обычные колонки ──
-    if (cols.length > 0) {
-        html += '<div style="padding:6px 16px;border-bottom:1px solid var(--border);display:grid;grid-template-columns:160px 120px 70px 100px 130px 1fr 36px;gap:8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:.5px">'
-            + '<span>Колонка</span><span>Имя 1С</span><span>Тип</span><span>Преобразование</span><span>Таблица</span><span>Покрытие</span><span></span></div>';
-
-        cols.forEach(col => {
-            const info = colMap[col];
-            const mappedIds = new Set(info.sources.map(s => s.source_id));
-            let coverage = '';
-            cbSources.forEach(src => {
-                const short = (src.onec_name || src.source_code).replace('Документ.','');
-                if (mappedIds.has(src.id)) {
-                    coverage += '<span class="coverage-dot mapped" title="' + short + '">&#10003;</span>';
-                } else {
-                    coverage += '<span class="coverage-dot unmapped" title="' + short + '">&#9675;</span>';
-                }
-            });
-
-            html += '<div class="cb-row" style="grid-template-columns:160px 120px 70px 100px 130px 1fr 36px">'
-                + '<span class="col-name" style="cursor:pointer" title="Нажмите для переименования" onclick="cbStartRename(this, \'' + col + '\')">' + col + '</span>'
-                + '<span style="font-size:11px;color:var(--accent)">' + (info.onec_name || '--') + '</span>'
-                + '<span class="col-type">' + (info.type || '--') + '</span>'
-                + '<span class="col-transform">' + (info.transform || '--') + '</span>'
-                + '<span>' + targetCell(col) + '</span>'
-                + '<span class="col-coverage">' + coverage + '</span>'
-                + '<button class="btn btn-ghost btn-xs" onclick="cbDeleteColumn(\'' + col + '\')" title="Удалить" style="color:var(--red)">&#10005;</button>'
-                + '</div>';
-        });
-    }
-
-    // ── Вычисляемые колонки ──
-    html += '<div style="padding:10px 16px;border-top:2px solid var(--border);border-bottom:1px solid var(--border);display:grid;grid-template-columns:160px 1fr 70px 130px 120px 36px;gap:8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:.5px">'
-        + '<span>&#402; Вычисляемые</span><span>Функция</span><span>Тип</span><span>Таблица</span><span>Использует</span><span></span></div>';
-
-    if (computedCols.length > 0) {
-        computedCols.forEach(m => {
-            const params = typeof m.transform_params === 'string' ? JSON.parse(m.transform_params || '{}') : (m.transform_params || {});
-            const funcName = params.function || '--';
-            const regEntry = cbCustomRegistry.find(r => r.name === funcName);
-            const usesStr = regEntry ? regEntry.uses_columns.join(', ') : '--';
-
-            html += '<div class="cb-row" style="grid-template-columns:160px 1fr 70px 130px 120px 36px">'
-                + '<span class="col-name" style="font-weight:600;color:var(--purple-600,#9333ea)">&#402; ' + m.target_column + '</span>'
-                + '<span class="text-mono" style="font-size:11px">' + funcName + '</span>'
-                + '<span class="col-type">' + (m.target_type || 'float') + '</span>'
-                + '<span>' + targetCell(m.target_column) + '</span>'
-                + '<span style="font-size:11px;color:var(--text-2)">' + usesStr + '</span>'
-                + '<button class="btn btn-ghost btn-xs" onclick="cbDeleteComputed(\'' + m.target_column + '\')" title="Удалить" style="color:var(--red)">&#10005;</button>'
-                + '</div>';
-        });
-    } else {
-        html += '<div style="padding:12px 16px;font-size:12px;color:var(--text-3)">Нет вычисляемых колонок</div>';
-    }
-
-    html += '<div style="padding:8px 16px;border-top:1px solid var(--border)">'
-        + '<button class="btn btn-secondary btn-sm" onclick="cbShowComputedModal()">+ Добавить формулу</button>'
-        + '</div>';
-
+    html += '</div>';
     container.innerHTML = html;
+    cbBindDnD();
 }
 
-// ── Kanban view ──
-function cbRenderKanban(container, colMap, computedCols) {
-    // Group columns by target
+// ── Source rail (left) ──
+function cbRenderSourceRail() {
+    let html = '<div class="rail"><div class="rail-head"><h4>Источники — ' + cbSources.length + '</h4></div><div class="rail-body">';
+    cbSources.forEach(s => {
+        const type = s.source_type || 'standalone';
+        const typeLabel = type === 'header' ? 'H' : type === 'detail' ? 'VT' : 'A';
+        const shortName = (s.onec_name || s.source_code).replace('Документ.', '');
+        html += '<div class="src-group">';
+        html += '<div class="src-group-head"><span class="src-dot ' + type + '"></span>'
+            + '<span class="src-title">' + shortName + '</span>'
+            + '<span class="src-meta">' + typeLabel + '</span></div>';
+        html += '<div class="src-mssql">' + s.mssql_table + '</div>';
+
+        // List mappings for this source (existing)
+        const mapped = new Set();
+        (s.mappings || []).forEach(m => {
+            if (m.source_column && !m.source_column.startsWith('__computed__')) {
+                mapped.add(m.source_column);
+            }
+        });
+
+        (s.mappings || []).forEach(m => {
+            if (m.transform_type === 'custom_python') return;
+            if (!m.source_column) return;
+            html += '<div class="src-field is-mapped"'
+                + ' draggable="true"'
+                + ' ondragstart="cbDragStartField(event, ' + s.id + ', \'' + (m.onec_name || '').replace(/'/g, "\\'") + '\', \'' + m.source_column + '\', \'' + (m.target_type || 'text') + '\', \'' + (m.transform_type || '') + '\')"'
+                + ' title="Уже используется — повторное добавление создаст общую колонку">'
+                + '<span class="cov mapped"></span>'
+                + '<span class="fname">' + (m.onec_name || m.source_column) + '</span>'
+                + '<span class="ftype">' + (m.target_type || 'text') + '</span>'
+                + '</div>';
+        });
+
+        // Unmapped fields from fields_cache
+        (s.fields || []).forEach(f => {
+            const col = f.mssql_column || f.mssql_column_name || '';
+            if (!col || mapped.has(col)) return;
+            const tt = f.target_type || 'text';
+            const tr = f.transform_type || '';
+            const on = f.field_name || f.onec_name || col;
+            html += '<div class="src-field"'
+                + ' draggable="true"'
+                + ' ondragstart="cbDragStartField(event, ' + s.id + ', \'' + on.replace(/'/g, "\\'") + '\', \'' + col + '\', \'' + tt + '\', \'' + tr + '\')"'
+                + ' title="Перетащите в колонку канбана">'
+                + '<span class="cov unmapped"></span>'
+                + '<span class="fname">' + on + '</span>'
+                + '<span class="ftype">' + tt + '</span>'
+                + '</div>';
+        });
+
+        html += '</div>';
+    });
+    html += '</div></div>';
+    return html;
+}
+
+// ── Kanban board (center) ──
+function cbRenderKanbanBoard(colMap, computedCols) {
     const groups = {unassigned: [], byTarget: {}};
     cbTargets.forEach(t => { groups.byTarget[t.id] = []; });
 
-    // Helper for badge
-    function sourceBadge(sourceTypes, isComputed) {
-        if (isComputed) return '<span class="kbn-badge kbn-badge-computed">ƒ custom</span>';
-        const types = Array.from(sourceTypes || []);
-        let html = '';
-        if (types.includes('header')) html += '<span class="kbn-badge kbn-badge-header">header</span>';
-        if (types.includes('detail')) html += '<span class="kbn-badge kbn-badge-detail">VT</span>';
-        if (types.includes('standalone')) html += '<span class="kbn-badge kbn-badge-accum">accum</span>';
-        return html;
-    }
-
     function isLocked(col, info, isComputed) {
-        // Locked if auto-assigned by source_type (not standalone/computed)
         const entry = cbColumnMap[col] || {};
         if (isComputed) return false;
         if (!entry.auto) return false;
         const types = Array.from(info.source_types || []);
-        // Only lock if purely header or purely detail
         if (types.length === 1 && (types[0] === 'header' || types[0] === 'detail')) return true;
         return false;
     }
 
-    // Categorize columns
     Object.keys(colMap).forEach(col => {
         const info = colMap[col];
         const entry = cbColumnMap[col] || {targets: []};
         const card = {col, info, isComputed: false, locked: isLocked(col, info, false), entry};
         if (entry.targets && entry.targets.length > 0) {
-            entry.targets.forEach(tid => {
-                if (groups.byTarget[tid]) groups.byTarget[tid].push(card);
-            });
+            entry.targets.forEach(tid => { if (groups.byTarget[tid]) groups.byTarget[tid].push(card); });
         } else {
             groups.unassigned.push(card);
         }
@@ -816,102 +807,267 @@ function cbRenderKanban(container, colMap, computedCols) {
     computedCols.forEach(m => {
         const col = m.target_column;
         const entry = cbColumnMap[col] || {targets: []};
-        const info = {
-            type: m.target_type, transform: 'custom_python',
-            source_types: new Set([m._source_type]),
-        };
+        const info = {type: m.target_type, transform: 'custom_python', source_types: new Set([m._source_type]), onec_name: null};
         const params = typeof m.transform_params === 'string' ? JSON.parse(m.transform_params || '{}') : (m.transform_params || {});
         const regEntry = cbCustomRegistry.find(r => r.name === params.function);
-        const card = {col, info, isComputed: true, computed: m, funcName: params.function, regEntry, locked: false, entry};
+        const card = {col, info, isComputed: true, funcName: params.function, regEntry, locked: false, entry};
         if (entry.targets && entry.targets.length > 0) {
-            entry.targets.forEach(tid => {
-                if (groups.byTarget[tid]) groups.byTarget[tid].push(card);
-            });
+            entry.targets.forEach(tid => { if (groups.byTarget[tid]) groups.byTarget[tid].push(card); });
         } else {
             groups.unassigned.push(card);
         }
     });
 
-    // Error: computed requires missing columns
     const mappedTargets = new Set(Object.keys(colMap));
     function computedErrors(card) {
         if (!card.regEntry) return [];
         return card.regEntry.uses_columns.filter(c => !mappedTargets.has(c));
     }
 
-    // Render card
     function renderCard(card) {
         const errors = card.isComputed ? computedErrors(card) : [];
         const hasError = errors.length > 0;
-        let html = '<div class="kbn-card'
-            + (card.locked ? ' kbn-card-locked' : '')
-            + (hasError ? ' kbn-card-error' : '')
-            + (card.isComputed ? ' kbn-card-computed' : '') + '"'
-            + (card.locked ? '' : ' draggable="true" ondragstart="cbDragStart(event)" data-col="' + card.col + '" data-is-computed="' + card.isComputed + '"')
+        const density = cbDensity === 'compact' ? 'compact' : '';
+
+        let html = '<div class="kbn-card ' + density
+            + (card.locked ? ' locked' : '')
+            + (hasError ? ' has-error' : '') + '"'
+            + (card.locked ? '' : ' draggable="true" ondragstart="cbDragStartCard(event, \'' + escAttr(card.col) + '\', ' + card.isComputed + ')"')
             + '>';
+
+        // Head
         html += '<div class="kbn-card-head">';
-        html += '<span class="kbn-card-name">' + (card.isComputed ? 'ƒ ' : '') + card.col + '</span>';
-        if (card.locked) html += '<span style="font-size:10px;color:var(--text-3)" title="Заблокировано — тип источника">🔒</span>';
+        html += '<span class="kbn-card-name">' + (card.isComputed ? '<span class="fsigil">ƒ</span>' : '') + card.col + '</span>';
+        html += '<span class="kbn-card-type">' + (card.info.type || '--') + '</span>';
         html += '</div>';
-        html += '<div class="kbn-card-meta">';
-        if (card.info.onec_name) html += '<span style="color:var(--accent)">' + card.info.onec_name + '</span> · ';
-        html += '<span class="text-mono" style="color:var(--text-3)">' + (card.info.type || '--') + '</span>';
-        html += '</div>';
-        html += '<div class="kbn-card-badges">' + sourceBadge(card.info.source_types, card.isComputed);
-        if (card.info.transform && !card.isComputed) html += '<span class="kbn-badge kbn-badge-transform">' + card.info.transform + '</span>';
-        html += '</div>';
+
+        // Meta (if not compact)
+        if (cbDensity !== 'compact') {
+            let meta = '';
+            if (card.info.onec_name) meta += '<span class="onec">' + card.info.onec_name + '</span>';
+            if (card.info.onec_name && card.info.transform && !card.isComputed) meta += ' · ';
+            if (card.info.transform && !card.isComputed) meta += '<span class="xform">' + card.info.transform + '</span>';
+            if (!meta) meta = '<span style="color:var(--fg3)">—</span>';
+            html += '<div class="kbn-card-meta">' + meta + '</div>';
+
+            // Badges
+            html += '<div class="kbn-card-badges">';
+            const types = card.isComputed ? new Set(['computed']) : (card.info.source_types || new Set());
+            if (types.has('header')) html += '<span class="kbn-badge header">header</span>';
+            if (types.has('detail')) html += '<span class="kbn-badge detail">VT</span>';
+            if (types.has('standalone')) html += '<span class="kbn-badge accum">accum</span>';
+            if (types.has('computed')) html += '<span class="kbn-badge computed">ƒ custom</span>';
+            if (card.info.transform && !card.isComputed) html += '<span class="kbn-badge transform">' + card.info.transform + '</span>';
+            html += '</div>';
+        }
+
+        // Coverage (not for computed)
+        if (!card.isComputed && cbCoverageMode !== 'hidden') {
+            const totalSrc = cbSources.filter(s => s.source_type !== 'standalone').length || cbSources.length;
+            const mappedIds = new Set((card.info.sources || []).map(s => s.source_id));
+            const mappedCount = mappedIds.size;
+            if (cbCoverageMode === 'bar') {
+                const pct = totalSrc > 0 ? (mappedCount / totalSrc) * 100 : 0;
+                const partial = mappedCount < totalSrc ? ' partial' : '';
+                html += '<div class="kbn-card-cov' + partial + '">'
+                    + '<span>' + mappedCount + '/' + totalSrc + '</span>'
+                    + '<span class="cov-bar"><i style="width:' + pct + '%"></i></span>'
+                    + '</div>';
+            } else if (cbCoverageMode === 'dots') {
+                let dots = '<span class="cov-dots">';
+                cbSources.forEach(s => {
+                    const on = mappedIds.has(s.id) ? ' class="on"' : '';
+                    dots += '<span' + on + ' title="' + (s.onec_name || s.source_code) + '"></span>';
+                });
+                dots += '</span>';
+                html += '<div class="kbn-card-cov">' + dots + '<span style="margin-left:auto">' + mappedCount + '/' + totalSrc + '</span></div>';
+            }
+        }
+
+        // Computed func
+        if (card.isComputed && card.regEntry) {
+            html += '<div class="kbn-card-func">' + card.funcName + '(' + card.regEntry.uses_columns.join(', ') + ')</div>';
+        }
+
+        // Error
         if (hasError) {
             html += '<div class="kbn-card-err">Нет колонок: ' + errors.join(', ') + '</div>';
         }
-        if (card.isComputed) {
-            html += '<div class="kbn-card-func">' + card.funcName + '</div>';
+
+        // X button
+        if (!card.locked) {
+            html += '<button class="kbn-card-x" onclick="event.stopPropagation();'
+                + (card.isComputed ? 'cbDeleteComputed' : 'cbDeleteColumn')
+                + '(\'' + escAttr(card.col) + '\')" title="Удалить">✕</button>';
         }
-        html += '<button class="kbn-card-x" onclick="' + (card.isComputed ? 'cbDeleteComputed' : 'cbDeleteColumn') + '(\'' + card.col + '\')" title="Удалить">&#10005;</button>';
+
         html += '</div>';
         return html;
     }
 
-    // Build HTML
-    let html = '<div class="kbn-grid">';
-
-    // Column 1: Unassigned
-    html += '<div class="kbn-col kbn-col-unassigned" ondragover="cbDragOver(event)" ondrop="cbDrop(event, \'\')">';
-    html += '<div class="kbn-col-head"><span>Не распределено</span><span class="kbn-count">' + groups.unassigned.length + '</span></div>';
-    html += '<div class="kbn-col-body">';
-    if (groups.unassigned.length === 0) {
-        html += '<div class="kbn-empty">—</div>';
-    } else {
-        groups.unassigned.forEach(c => { html += renderCard(c); });
-    }
-    html += '</div></div>';
-
-    // Columns per target
-    cbTargets.forEach(t => {
-        const isDim = t.target_role === 'dimension';
-        html += '<div class="kbn-col kbn-col-' + (isDim ? 'dim' : 'fact') + '" ondragover="cbDragOver(event)" ondrop="cbDrop(event, \'' + t.id + '\')">';
-        html += '<div class="kbn-col-head"><span>' + t.target_table + '</span><span class="kbn-count">' + groups.byTarget[t.id].length + '</span></div>';
+    function renderLane(id, title, sub, count, role, icon) {
+        const isOver = '';
+        const cls = 'kbn-col ' + (id === 'unassigned' ? 'kbn-col-unassigned' : (role === 'dimension' ? 'kbn-col-dim' : 'kbn-col-fact'));
+        let html = '<div class="' + cls + '" data-target-id="' + id + '"'
+            + ' ondragover="cbDragOver(event)"'
+            + ' ondragleave="cbDragLeave(event)"'
+            + ' ondrop="cbDrop(event, \'' + id + '\')">';
+        html += '<div class="kbn-col-head">';
+        html += '<span class="kbn-col-icon ' + (role || 'unassigned') + '">' + icon + '</span>';
+        html += '<div class="kbn-col-name"><span class="t">' + title + '</span><span class="s">' + sub + '</span></div>';
+        html += '<span class="kbn-count">' + count + '</span>';
+        html += '</div>';
         html += '<div class="kbn-col-body">';
-        if (groups.byTarget[t.id].length === 0) {
-            html += '<div class="kbn-empty">—</div>';
+        const cards = id === 'unassigned' ? groups.unassigned : groups.byTarget[id];
+        if (cards.length === 0) {
+            html += '<div class="kbn-empty">Перетащите сюда</div>';
         } else {
-            groups.byTarget[t.id].forEach(c => { html += renderCard(c); });
+            cards.forEach(c => { html += renderCard(c); });
         }
         html += '</div></div>';
+        return html;
+    }
+
+    let html = '<div class="kbn-grid">';
+    html += renderLane('unassigned', 'Не распределено', 'не хранится в БД', groups.unassigned.length, null, '?');
+    cbTargets.forEach(t => {
+        const role = t.target_role || 'fact';
+        const icon = role === 'dimension' ? 'D' : 'F';
+        const sub = (t.load_mode || 'upsert') + (t.upsert_keys && t.upsert_keys.length ? ' · keys: ' + t.upsert_keys.join(', ') : '');
+        html += renderLane(t.id, t.target_table, sub, groups.byTarget[t.id].length, role, icon);
+    });
+    html += '</div>';
+    return html;
+}
+
+// ── Targets rail (right) ──
+function cbRenderTargetsRail(colMap, computedCols) {
+    let html = '<div class="targets-rail">';
+    html += '<div class="targets-head"><h4>Целевые таблицы — ' + cbTargets.length + '</h4></div>';
+    html += '<div class="targets-body">';
+
+    cbTargets.forEach(t => {
+        const role = t.target_role || 'fact';
+        const assigned = (t.include_columns || []).length;
+        html += '<div class="tgt-card">';
+        html += '<div class="tgt-head">'
+            + '<span class="tgt-dot ' + role + '"></span>'
+            + '<span class="tgt-name">' + t.target_table + '</span>'
+            + '<span class="tgt-role ' + role + '">' + role + '</span>'
+            + '</div>';
+        html += '<div class="tgt-stats"><b>' + assigned + '</b> колонок · <span style="color:var(--fg3)">' + (t.load_mode || 'upsert') + '</span></div>';
+        if (t.upsert_keys && t.upsert_keys.length) {
+            html += '<div class="tgt-keys">🔑 <i>' + t.upsert_keys.join(', ') + '</i></div>';
+        }
+        html += '</div>';
     });
 
-    html += '</div>';
-    html += '<div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px">'
-        + '<button class="btn btn-secondary btn-sm" onclick="cbShowComputedModal()">+ Добавить формулу</button>'
+    // Union output columns preview
+    const allAssigned = new Set();
+    cbTargets.forEach(t => (t.include_columns || []).forEach(c => allAssigned.add(c)));
+    const unionCols = Array.from(allAssigned);
+    if (unionCols.length > 0) {
+        html += '<div class="targets-union">';
+        html += '<div class="overline">Выходные колонки ⊕</div>';
+        html += '<div class="targets-union-cols">' + unionCols.slice(0, 15).join(', ');
+        if (unionCols.length > 15) html += '… +' + (unionCols.length - 15);
+        html += '</div></div>';
+    }
+
+    // SQL preview button
+    html += '<div class="targets-sql">'
+        + '<button class="btn btn-primary btn-sm" onclick="loadSqlPreview()">📄 SQL превью</button>'
         + '</div>';
 
-    container.innerHTML = html;
+    html += '</div></div>';
+    return html;
+}
+
+// ── List layout ──
+function cbRenderList(colMap, computedCols) {
+    let html = '<div class="card"><div class="card-header">';
+    html += '<h3><span class="card-icon">☰</span> Целевые колонки</h3>';
+    html += '<span class="overline">' + (Object.keys(colMap).length + computedCols.length) + ' колонок</span>';
+    html += '</div>';
+    html += '<table class="cb-list-table"><thead><tr>';
+    html += '<th>Колонка</th><th>Имя 1С</th><th>Тип</th><th>Преобразование</th><th>Таблица</th><th>Покрытие</th><th style="width:30px"></th>';
+    html += '</tr></thead><tbody>';
+
+    function targetCell(col, isComputed) {
+        const entry = cbColumnMap[col] || {targets: [], auto: false};
+        const assigned = entry.targets || [];
+        if (entry.auto && assigned.length === 1 && !isComputed) {
+            const t = cbTargets.find(x => x.id === assigned[0]);
+            if (t) {
+                const role = t.target_role || 'fact';
+                return '<span class="kbn-badge ' + (role === 'dimension' ? 'header' : 'accum') + '">' + t.target_table + '</span>';
+            }
+        }
+        let sel = '<select class="tgt-select" data-col="' + col + '" onchange="cbAssignTarget(this)">';
+        sel += '<option value=""' + (assigned.length === 0 ? ' selected' : '') + '>не хранить</option>';
+        cbTargets.forEach(t => {
+            const isSel = assigned.includes(t.id);
+            sel += '<option value="' + t.id + '"' + (isSel ? ' selected' : '') + '>' + t.target_table + '</option>';
+        });
+        if (cbTargets.length > 1) {
+            const allSel = cbTargets.every(t => assigned.includes(t.id));
+            sel += '<option value="all"' + (allSel ? ' selected' : '') + '>оба</option>';
+        }
+        sel += '</select>';
+        return sel;
+    }
+
+    Object.keys(colMap).forEach(col => {
+        const info = colMap[col];
+        const mappedIds = new Set(info.sources.map(s => s.source_id));
+        let dots = '<span class="cb-cov-dots">';
+        cbSources.forEach(s => {
+            dots += '<span' + (mappedIds.has(s.id) ? ' class="on"' : '') + ' title="' + (s.onec_name || s.source_code) + '"></span>';
+        });
+        dots += '</span>';
+
+        html += '<tr>';
+        html += '<td><span class="cb-col-name" style="cursor:pointer" onclick="cbStartRename(this, \'' + escAttr(col) + '\')">' + escAttr(col) + '</span></td>';
+        html += '<td style="color:var(--warm-700);font-size:11px">' + (info.onec_name || '—') + '</td>';
+        html += '<td><span class="cb-col-type">' + (info.type || '—') + '</span></td>';
+        html += '<td>' + (info.transform ? '<span class="cb-col-transform">' + info.transform + '</span>' : '—') + '</td>';
+        html += '<td>' + targetCell(col, false) + '</td>';
+        html += '<td>' + dots + '</td>';
+        html += '<td><button class="btn btn-ghost btn-xs" onclick="cbDeleteColumn(\'' + escAttr(col) + '\')">✕</button></td>';
+        html += '</tr>';
+    });
+
+    computedCols.forEach(m => {
+        const params = typeof m.transform_params === 'string' ? JSON.parse(m.transform_params || '{}') : (m.transform_params || {});
+        const funcName = params.function || '—';
+        html += '<tr>';
+        html += '<td><span style="color:var(--purple-600);font-weight:700;margin-right:4px">ƒ</span><span class="cb-col-name">' + m.target_column + '</span></td>';
+        html += '<td style="color:var(--fg3);font-size:11px">—</td>';
+        html += '<td><span class="cb-col-type">' + (m.target_type || 'float') + '</span></td>';
+        html += '<td><span class="cb-col-transform">custom_python</span></td>';
+        html += '<td>' + targetCell(m.target_column, true) + '</td>';
+        html += '<td><span style="font-size:10px;color:var(--purple-600);font-family:var(--font-mono)">' + funcName + '</span></td>';
+        html += '<td><button class="btn btn-ghost btn-xs" onclick="cbDeleteComputed(\'' + m.target_column + '\')">✕</button></td>';
+        html += '</tr>';
+    });
+
+    html += '</tbody></table></div>';
+    return html;
 }
 
 // ── Drag & Drop ──
-function cbDragStart(ev) {
-    ev.dataTransfer.setData('col', ev.currentTarget.dataset.col);
-    ev.dataTransfer.setData('is_computed', ev.currentTarget.dataset.isComputed);
-    ev.currentTarget.style.opacity = '0.4';
+function cbDragStartCard(ev, col, isComputed) {
+    ev.dataTransfer.effectAllowed = 'move';
+    ev.dataTransfer.setData('application/json', JSON.stringify({kind: 'move-col', col: col, isComputed: isComputed}));
+    ev.currentTarget.classList.add('dragging');
+}
+
+function cbDragStartField(ev, sourceId, onecName, sourceCol, targetType, transform) {
+    ev.dataTransfer.effectAllowed = 'copy';
+    ev.dataTransfer.setData('application/json', JSON.stringify({
+        kind: 'new-field', sourceId, onecName, sourceCol, targetType, transform
+    }));
+    ev.currentTarget.classList.add('is-dragging');
 }
 
 function cbDragOver(ev) {
@@ -919,32 +1075,75 @@ function cbDragOver(ev) {
     ev.currentTarget.classList.add('kbn-col-over');
 }
 
+function cbDragLeave(ev) {
+    if (ev.currentTarget.contains(ev.relatedTarget)) return;
+    ev.currentTarget.classList.remove('kbn-col-over');
+}
+
 function cbDrop(ev, targetId) {
     ev.preventDefault();
     ev.currentTarget.classList.remove('kbn-col-over');
-    const col = ev.dataTransfer.getData('col');
-    if (!col) return;
+    let raw;
+    try { raw = ev.dataTransfer.getData('application/json'); } catch(_) { return; }
+    if (!raw) return;
+    const payload = JSON.parse(raw);
+    const tid = targetId === 'unassigned' ? null : parseInt(targetId);
 
-    const tid = targetId ? parseInt(targetId) : null;
-    fetch('/api/registers/' + REG_ID + '/assign-column-target', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({column: col, target_id: tid})
-    })
-    .then(r => r.json())
-    .then(data => {
-        if (data.ok) cbLoadAll();
-        else alert('Ошибка: ' + (data.error || ''));
-    })
-    .catch(err => alert('Ошибка: ' + err));
+    if (payload.kind === 'move-col') {
+        fetch('/api/registers/' + REG_ID + '/assign-column-target', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({column: payload.col, target_id: tid})
+        }).then(r => r.json()).then(data => {
+            if (data.ok) cbLoadAll();
+            else alert('Ошибка: ' + (data.error || ''));
+        });
+    } else if (payload.kind === 'new-field') {
+        // Create mapping then assign to target
+        const targetCol = cbTransliterate(payload.onecName || payload.sourceCol);
+        fetch('/sources/' + payload.sourceId + '/mappings/batch', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({mappings: [{
+                source_column: payload.sourceCol,
+                target_column: targetCol,
+                target_type: payload.targetType || 'text',
+                transform_type: payload.transform || null,
+                onec_name: payload.onecName || null,
+            }]})
+        }).then(r => r.json()).then(data => {
+            if (!data.ok) { alert('Ошибка: ' + (data.error || '')); return; }
+            if (tid) {
+                return fetch('/api/registers/' + REG_ID + '/assign-column-target', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({column: targetCol, target_id: tid})
+                }).then(r => r.json()).then(d => {
+                    if (!d.ok) alert('Ошибка: ' + (d.error || ''));
+                });
+            }
+        }).then(() => cbLoadAll()).catch(err => alert('Ошибка: ' + err));
+    }
 }
 
-// Remove hover highlight when leaving
-document.addEventListener('dragleave', function(e) {
-    if (e.target && e.target.classList && e.target.classList.contains('kbn-col')) {
-        e.target.classList.remove('kbn-col-over');
-    }
+function cbBindDnD() {
+    // Clear any lingering hover states
+    document.querySelectorAll('.kbn-col-over').forEach(el => el.classList.remove('kbn-col-over'));
+    document.querySelectorAll('.dragging').forEach(el => el.classList.remove('dragging'));
+    document.querySelectorAll('.is-dragging').forEach(el => el.classList.remove('is-dragging'));
+}
+
+document.addEventListener('dragend', function() {
+    document.querySelectorAll('.kbn-col-over').forEach(el => el.classList.remove('kbn-col-over'));
+    document.querySelectorAll('.dragging').forEach(el => el.classList.remove('dragging'));
+    document.querySelectorAll('.is-dragging').forEach(el => el.classList.remove('is-dragging'));
 });
+
+function escAttr(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/'/g,'&#39;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function cbTransliterate(s) {
+    const map = {'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'yo','ж':'zh','з':'z','и':'i','й':'y','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u','ф':'f','х':'h','ц':'ts','ч':'ch','ш':'sh','щ':'sch','ъ':'','ы':'y','ь':'','э':'e','ю':'yu','я':'ya'};
+    return (s || '').toLowerCase().split('').map(c => map[c] !== undefined ? map[c] : c).join('').replace(/[^a-z0-9_]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+}
 
 // ── Auto assign ──
 function cbAutoAssign() {
