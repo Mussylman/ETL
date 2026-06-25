@@ -1,55 +1,170 @@
 {% extends "base.html" %}
 {% set active_nav = "registers" %}
 
-{% block title %}Регистры — ETL Config{% endblock %}
+{% block title %}Витрины — ETL Config{% endblock %}
 
 {% block breadcrumb %}
-    <li class="active">Регистры</li>
+    <li class="active">Витрины</li>
 {% endblock %}
 
 {% block content %}
-<div class="page-header">
+<div class="rl-header">
     <div>
-        <h2>Регистры</h2>
-        <span class="text-secondary" style="font-size:13px">Конфигурации пайплайнов данных</span>
+        <h1 class="rl-title">Список ETL пайплайнов</h1>
+        <p class="rl-subtitle">Конфигурации пайплайнов: источники 1С → целевые таблицы PostgreSQL</p>
     </div>
-    <a href="/registers/new" class="btn btn-primary">+ Новый регистр</a>
+    <div class="rl-header-actions">
+        <a href="/registers/wizard" class="btn-rl-primary" title="Создать новый пайплайн по шаблону">
+            <span class="material-symbols-outlined">bolt</span>
+            Создать пайплайн
+        </a>
+        <a href="/registers/new" class="btn-rl-ghost" title="Ручное создание без шаблона">
+            <span class="material-symbols-outlined">add</span>
+            Вручную
+        </a>
+    </div>
+</div>
+
+<div class="rl-toolbar">
+    <div class="rl-search">
+        <span class="material-symbols-outlined">search</span>
+        <input id="rl_search" type="text" placeholder="Поиск по имени или коду витрины…" oninput="rlFilter()">
+    </div>
+    <div class="rl-chips" id="rl_status_chips">
+        <button class="rl-chip is-active" data-status="all" onclick="rlSetStatus(this, 'all')">Все</button>
+        <button class="rl-chip ok"    data-status="success" onclick="rlSetStatus(this, 'success')">Активен</button>
+        <button class="rl-chip warn"  data-status="running" onclick="rlSetStatus(this, 'running')">Синхронизируется</button>
+        <button class="rl-chip err"   data-status="failed"  onclick="rlSetStatus(this, 'failed')">Ошибка</button>
+        <button class="rl-chip idle"  data-status="idle"    onclick="rlSetStatus(this, 'idle')">Не запускалась</button>
+    </div>
 </div>
 
 {% if registers %}
-<div class="register-grid">
+<div class="rl-grid">
     {% for reg in registers %}
-    <a href="/registers/{{ reg.id }}" class="register-card">
-        <div class="d-flex align-center justify-between">
-            <h3>{{ reg.name or reg.code }}</h3>
-            {% if reg.is_active %}
-                <span class="dot dot-green" title="Активен"></span>
-            {% else %}
-                <span class="dot dot-gray" title="Неактивен"></span>
+    {% set status = reg.last_status or 'idle' %}
+    <div class="rl-card" data-name="{{ (reg.name or reg.code)|lower }}" data-code="{{ reg.code|lower }}" data-status="{{ status }}">
+        <a class="rl-card-link" href="/registers/{{ reg.id }}">
+            <div class="rl-card-head">
+                <h3 class="rl-card-title">{{ reg.name or reg.code }}</h3>
+                <span class="rl-badge {{ status }}">
+                    {% if status == 'success' %}Активен
+                    {% elif status == 'running' %}Синхронизируется
+                    {% elif status == 'failed' %}Ошибка
+                    {% else %}Не запускалась
+                    {% endif %}
+                </span>
+            </div>
+            <div class="rl-card-code">{{ reg.code }}</div>
+            {% if reg.target_tables %}
+            <div class="rl-card-section">
+                <div class="rl-card-label">Целевые таблицы</div>
+                <div class="rl-card-tables">
+                    {% for t in reg.target_tables %}
+                        <span class="rl-table-pill">{{ t }}</span>
+                    {% endfor %}
+                </div>
+            </div>
             {% endif %}
+            <div class="rl-card-section">
+                <div class="rl-card-label">Последняя синхронизация</div>
+                <div class="rl-card-meta">
+                    {% if reg.last_success_at %}{{ reg.last_success_at.strftime('%d.%m.%Y %H:%M') }}
+                    {% else %}—
+                    {% endif %}
+                </div>
+            </div>
+        </a>
+        <div class="rl-card-actions">
+            <a href="/registers/{{ reg.id }}/edit" class="btn-rl-ghost-sm">
+                <span class="material-symbols-outlined">edit</span>
+                Редактировать
+            </a>
+            <form action="/api/registers/{{ reg.id }}/sync" method="POST" class="rl-sync-form" data-reg-id="{{ reg.id }}">
+                <button type="button" class="btn-rl-primary-sm" onclick="rlSync({{ reg.id }}, this)">
+                    {% if status == 'running' %}
+                        <span class="material-symbols-outlined">pause</span>Отменить
+                    {% elif status == 'failed' %}
+                        <span class="material-symbols-outlined">refresh</span>Повторить
+                    {% else %}
+                        <span class="material-symbols-outlined">sync</span>Синхронизация
+                    {% endif %}
+                </button>
+            </form>
+            <button class="btn-rl-icon" onclick="rlMenu({{ reg.id }}, this)" title="Ещё">
+                <span class="material-symbols-outlined">more_horiz</span>
+            </button>
         </div>
-        <div class="code">{{ reg.code }}</div>
-        {% if reg.description %}
-            <div class="desc">{{ reg.description[:100] }}{{ '...' if reg.description|length > 100 else '' }}</div>
-        {% endif %}
-        <div class="meta">
-            <span>
-                <span class="badge badge-{{ reg.default_mode or 'info' }}" style="font-size:10px">{{ reg.default_mode }}</span>
-            </span>
-            {% if reg.updated_at %}
-                <span>{{ reg.updated_at.strftime('%d.%m.%Y %H:%M') }}</span>
-            {% endif %}
-        </div>
-    </a>
+    </div>
     {% endfor %}
 </div>
+<div id="rl_empty_filter" style="display:none" class="rl-empty">
+    <p>Ничего не найдено по этому фильтру.</p>
+</div>
 {% else %}
-<div class="card">
-    <div class="empty-state">
-        <div class="empty-icon">&#9634;</div>
-        <p>Регистров пока нет. Создайте первый регистр для начала работы.</p>
-        <a href="/registers/new" class="btn btn-primary">+ Новый регистр</a>
-    </div>
+<div class="rl-empty">
+    <span class="material-symbols-outlined" style="font-size:48px;opacity:.4">grid_view</span>
+    <p>Витрин пока нет. Создайте первый пайплайн.</p>
+    <a href="/registers/wizard" class="btn-rl-primary">
+        <span class="material-symbols-outlined">bolt</span>
+        Создать пайплайн
+    </a>
 </div>
 {% endif %}
+
+<script>
+let rlActiveStatus = 'all';
+
+function rlSetStatus(btn, status) {
+    rlActiveStatus = status;
+    document.querySelectorAll('#rl_status_chips .rl-chip').forEach(b => b.classList.remove('is-active'));
+    btn.classList.add('is-active');
+    rlFilter();
+}
+
+function rlFilter() {
+    const q = (document.getElementById('rl_search').value || '').toLowerCase().trim();
+    let shown = 0;
+    document.querySelectorAll('.rl-card').forEach(card => {
+        const name = card.dataset.name || '';
+        const code = card.dataset.code || '';
+        const status = card.dataset.status || '';
+        const matchText = !q || name.includes(q) || code.includes(q);
+        const matchStatus = rlActiveStatus === 'all' || status === rlActiveStatus;
+        const ok = matchText && matchStatus;
+        card.style.display = ok ? '' : 'none';
+        if (ok) shown++;
+    });
+    const empty = document.getElementById('rl_empty_filter');
+    if (empty) empty.style.display = shown === 0 ? 'block' : 'none';
+}
+
+function rlSync(regId, btn) {
+    if (!confirm('Запустить синхронизацию витрины?')) return;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="material-symbols-outlined rl-spin">progress_activity</span>…';
+    fetch('/api/registers/' + regId + '/sync', {method: 'POST'})
+        .then(r => r.json())
+        .then(d => {
+            if (d.error) { alert('Ошибка: ' + d.error); }
+            else if (d.requires_confirm) {
+                if (confirm('Требуется пересоздание таблиц. Продолжить?')) {
+                    fetch('/api/registers/' + regId + '/sync?confirm=true', {method: 'POST'})
+                        .then(r2 => r2.json())
+                        .then(() => location.reload());
+                } else {
+                    location.reload();
+                }
+            } else {
+                location.reload();
+            }
+        })
+        .catch(err => { alert('Ошибка: ' + err); location.reload(); });
+}
+
+function rlMenu(regId, btn) {
+    // Простое меню — пока «Открыть в новой вкладке»
+    window.open('/registers/' + regId, '_blank');
+}
+</script>
 {% endblock %}

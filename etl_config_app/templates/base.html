@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}ETL Config{% endblock %}</title>
     <link href="{{ url_for('static', path='css/style.css') }}" rel="stylesheet">
+    <script>
+        // Apply theme before paint — избегаем мигания
+        (function() {
+            var t = localStorage.getItem('ds-theme') || 'light';
+            document.documentElement.setAttribute('data-theme', t);
+        })();
+    </script>
 </head>
 <body>
     <!-- Sidebar -->
@@ -20,7 +27,7 @@
             <div class="nav-section">Пайплайн</div>
             <a href="/registers" class="{% if active_nav == 'registers' %}active{% endif %}">
                 <span class="icon">&#9633;</span>
-                Регистры
+                Витрины
             </a>
         </nav>
         <div class="sidebar-footer">
@@ -35,11 +42,25 @@
                 <li><a href="/registers">Главная</a></li>
                 {% block breadcrumb %}{% endblock %}
             </ul>
+            <button class="theme-toggle" type="button" onclick="toggleTheme()" title="Переключить тему">
+                <span class="material-symbols-outlined theme-icon-light">light_mode</span>
+                <span class="material-symbols-outlined theme-icon-dark">dark_mode</span>
+            </button>
         </div>
         <div class="content">
             {% block content %}{% endblock %}
         </div>
     </div>
+
+    <script>
+        function toggleTheme() {
+            var root = document.documentElement;
+            var cur = root.getAttribute('data-theme') || 'light';
+            var next = cur === 'dark' ? 'light' : 'dark';
+            root.setAttribute('data-theme', next);
+            localStorage.setItem('ds-theme', next);
+        }
+    </script>
 
     {% block modals %}{% endblock %}
 

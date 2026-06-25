@@ -4,49 +4,80 @@
 {% block title %}{{ source.source_code }} — ETL Config{% endblock %}
 
 {% block breadcrumb %}
-    <li><a href="/registers">Регистры</a></li>
+    <li><a href="/registers">Витрины</a></li>
     <li><a href="/registers/{{ source.register_id }}">{{ source.register_code }}</a></li>
     <li class="active">{{ source.source_code }}</li>
 {% endblock %}
 
 {% block content %}
-<div class="page-header">
-    <div>
-        <div class="d-flex align-center gap-2">
-            <h2>{{ source.onec_name or source.source_code }}</h2>
-            <span class="badge badge-{{ source.source_type }}">{{ source.source_type }}</span>
+<div class="dt-header">
+    <div class="dt-header-main">
+        <div class="dt-title-row">
+            <h1 class="dt-title">{{ source.onec_name or source.source_code }}</h1>
+            <span class="cb2-tbadge {{ 'accum' if source.source_type == 'standalone' else source.source_type }}">
+                {{ 'ACCUM' if source.source_type == 'standalone' else 'HEADER' if source.source_type == 'header' else 'VT' }}
+            </span>
         </div>
-        <span class="text-mono text-secondary" style="font-size:12px">{{ source.mssql_schema }}.{{ source.mssql_table }}</span>
+        <div class="dt-meta">
+            <span class="dt-meta-code">{{ source.mssql_schema }}.{{ source.mssql_table }}</span>
+            <span class="dt-meta-sep">·</span>
+            <span class="dt-meta-pipeline">{{ source.source_code }}</span>
+            {% if source.parent_source_code %}
+                <span class="dt-meta-sep">·</span>
+                <span class="dt-meta-parent">
+                    <span class="material-symbols-outlined">subdirectory_arrow_right</span>
+                    из <strong>{{ source.parent_source_code }}</strong>
+                </span>
+            {% endif %}
+        </div>
     </div>
-    <div class="btn-group">
-        <a href="/sources/{{ source.id }}/edit" class="btn btn-secondary btn-sm">Редактировать</a>
-        <button class="btn btn-danger btn-sm" onclick="showDeleteModal('/sources/{{ source.id }}/delete', '{{ source.source_code }}')">Удалить</button>
+    <div class="dt-header-actions">
+        <a href="/sources/{{ source.id }}/edit" class="dt-btn ghost">
+            <span class="material-symbols-outlined">edit</span>
+            <span class="dt-btn-label">Редактировать</span>
+        </a>
+        <button class="dt-btn icon" onclick="showDeleteModal('/sources/{{ source.id }}/delete', '{{ source.source_code }}')" title="Удалить источник">
+            <span class="material-symbols-outlined">delete</span>
+        </button>
     </div>
 </div>
 
-<!-- Source Info -->
 {% if source.join_type or source.parent_source_code %}
-<div style="padding:8px 14px;background:var(--cyan-50);border:1px solid var(--cyan-100);border-radius:var(--radius);margin-bottom:16px;font-size:12px;color:var(--cyan-600)">
-    <strong>Соединение ({{ source.join_type or 'JOIN' }}):</strong>
-    <code style="background:rgba(8,145,178,.08);padding:1px 6px;border-radius:3px">{{ source.mssql_table }}.{{ source.join_key_source }} = {{ source.parent_source_code }}.{{ source.join_key_parent }}</code>
+<div class="dt-join-info">
+    <span class="material-symbols-outlined">link</span>
+    <span>
+        Соединение <strong>{{ source.join_type or 'JOIN' }}</strong>:
+        <code>{{ source.mssql_table }}.{{ source.join_key_source }} = {{ source.parent_source_code }}.{{ source.join_key_parent }}</code>
+    </span>
 </div>
 {% endif %}
 
 {% if source.where_clause %}
-<div style="padding:8px 14px;background:var(--amber-50);border:1px solid var(--amber-100);border-radius:var(--radius);margin-bottom:16px;font-size:12px;color:var(--amber-600)">
-    <strong>WHERE:</strong>
-    <code style="background:rgba(245,158,11,.08);padding:1px 6px;border-radius:3px">{{ source.where_clause }}</code>
+<div class="dt-where-info">
+    <span class="material-symbols-outlined">filter_alt</span>
+    <span>
+        <strong>WHERE:</strong>
+        <code>{{ source.where_clause }}</code>
+    </span>
 </div>
 {% endif %}
 
-<!-- Маппинг колонок (только чтение) -->
-<div class="card mb-4">
-    <div class="card-header">
-        <h3><span class="card-icon">&#9776;</span> Маппинг колонок <span class="tab-count">{{ mappings|length }}</span></h3>
+<!-- Маппинг колонок -->
+<div class="dt-section">
+    <div class="dt-section-head">
+        <div>
+            <h3 class="dt-section-title">
+                <span class="material-symbols-outlined">view_column</span>
+                Маппинг колонок
+                <span class="dt-tab-count">{{ mappings|length }}</span>
+            </h3>
+            <p class="dt-section-sub">Какая колонка 1С/MSSQL во что превращается при загрузке</p>
+        </div>
     </div>
+
     {% if mappings %}
-    <div class="table-wrap">
-        <table>
+    <div class="sd-table-wrap">
+        <table class="sd-table">
             <thead>
                 <tr>
                     <th>Имя 1С</th>
@@ -57,25 +88,30 @@
                     {% if source.source_type in ('standalone', 'header') and targets|length > 1 %}
                     <th>Таблица</th>
                     {% endif %}
-                    <th>Статус</th>
-                    <th style="width:60px"></th>
+                    <th style="width:60px">Активно</th>
+                    <th style="width:36px"></th>
                 </tr>
             </thead>
             <tbody>
                 {% for m in mappings %}
-                <tr{% if not m.is_active %} style="opacity:0.4"{% endif %} data-mapping-id="{{ m.id }}">
-                    <td style="color:var(--brand-600);font-weight:600">{{ m.onec_name or '--' }}</td>
-                    <td class="text-mono">{{ m.source_column }}</td>
+                <tr class="sd-row{% if not m.is_active %} is-inactive{% endif %}" data-mapping-id="{{ m.id }}">
+                    <td class="sd-cell-onec">{{ m.onec_name or '—' }}</td>
+                    <td><code class="sd-mono">{{ m.source_column }}</code></td>
                     <td>
-                        <span class="text-mono fw-600" style="cursor:pointer" title="Нажмите для переименования"
+                        <span class="cb2-dbcol" title="Нажмите для переименования"
                               onclick="startRename(this, '{{ m.target_column }}', {{ source.register_id }})">{{ m.target_column }}</span>
                     </td>
-                    <td class="text-secondary">{{ m.target_type or '--' }}</td>
-                    <td>{% if m.transform_type %}<span class="badge badge-info" style="font-size:10px">{{ m.transform_type }}</span>{% else %}--{% endif %}</td>
+                    <td class="sd-type">{{ m.target_type or '—' }}</td>
+                    <td>
+                        {% if m.transform_type %}
+                            <span class="sd-transform">{{ m.transform_type }}</span>
+                        {% else %}
+                            <span class="sd-mute">—</span>
+                        {% endif %}
+                    </td>
                     {% if source.source_type in ('standalone', 'header') and targets|length > 1 %}
                     <td>
-                        <select class="src-target-select" data-col="{{ m.target_column }}" onchange="assignColTarget(this)"
-                                style="font-size:11px;padding:2px 6px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg)">
+                        <select class="src-target-select cb2-transform-select" data-col="{{ m.target_column }}" onchange="assignColTarget(this)">
                             <option value="">не хранить</option>
                             {% for t in targets %}
                             <option value="{{ t.id }}">{{ t.target_table }}</option>
@@ -85,16 +121,17 @@
                     </td>
                     {% endif %}
                     <td>
-                        <form method="POST" action="/mappings/{{ m.id }}/toggle" style="display:inline">
-                            {% if m.is_active %}
-                                <button type="submit" class="dot dot-green" style="cursor:pointer;border:none;padding:0" title="Нажмите чтобы выключить"></button>
-                            {% else %}
-                                <button type="submit" class="dot dot-gray" style="cursor:pointer;border:none;padding:0" title="Нажмите чтобы включить"></button>
-                            {% endif %}
+                        <form method="POST" action="/mappings/{{ m.id }}/toggle" class="sd-toggle-form">
+                            <button type="submit" class="sd-toggle {{ 'on' if m.is_active else 'off' }}"
+                                    title="{{ 'Активно — нажмите чтобы выключить' if m.is_active else 'Выключено — нажмите чтобы включить' }}">
+                                <span class="material-symbols-outlined">{{ 'check_circle' if m.is_active else 'radio_button_unchecked' }}</span>
+                            </button>
                         </form>
                     </td>
                     <td>
-                        <button class="btn btn-ghost btn-xs" onclick="deleteMapping({{ m.id }}, '{{ m.source_column }}')" title="Удалить" style="color:var(--red-500)">&#10005;</button>
+                        <button class="sd-delete-btn" onclick="deleteMapping({{ m.id }}, '{{ m.source_column }}')" title="Удалить маппинг">
+                            <span class="material-symbols-outlined">close</span>
+                        </button>
                     </td>
                 </tr>
                 {% endfor %}
@@ -102,17 +139,27 @@
         </table>
     </div>
     {% else %}
-    <div class="empty-state" style="padding:24px">
-        <p>Маппингов пока нет.</p>
+    <div class="rl-empty" style="margin:0">
+        <span class="material-symbols-outlined" style="font-size:48px;opacity:.4">view_column</span>
+        <p>Маппингов пока нет — добавьте поля из таблицы ниже.</p>
     </div>
     {% endif %}
 </div>
 
-<!-- Available Fields -->
-<div class="card">
-    <div class="card-header">
-        <h3><span class="card-icon">&#9634;</span> Доступные поля</h3>
-        <button class="btn btn-secondary btn-sm" onclick="loadFields()">Обновить</button>
+<!-- Доступные поля -->
+<div class="dt-section">
+    <div class="dt-section-head">
+        <div>
+            <h3 class="dt-section-title">
+                <span class="material-symbols-outlined">manage_search</span>
+                Доступные поля
+            </h3>
+            <p class="dt-section-sub">Все поля MSSQL-таблицы, которые ещё не сопоставлены</p>
+        </div>
+        <button class="dt-btn ghost" onclick="loadFields()">
+            <span class="material-symbols-outlined">refresh</span>
+            <span class="dt-btn-label">Обновить</span>
+        </button>
     </div>
     <div id="fieldsTable"></div>
 </div>
@@ -121,12 +168,27 @@
 {% block modals %}
 <div id="deleteModal" class="modal-backdrop">
     <div class="modal">
-        <h3>Подтвердите удаление</h3>
-        <p>Вы уверены, что хотите удалить <strong class="delete-name"></strong>?</p>
-        <form method="POST" action="">
-            <div class="btn-group" style="justify-content:flex-end">
-                <button type="button" class="btn btn-secondary" onclick="hideDeleteModal()">Отмена</button>
-                <button type="submit" class="btn btn-danger">Удалить</button>
+        <div class="dt-modal-head">
+            <div class="dt-modal-head-title">
+                <span class="dt-modal-head-title-icon danger">
+                    <span class="material-symbols-outlined">delete</span>
+                </span>
+                <h3>Подтвердите удаление</h3>
+            </div>
+            <button type="button" class="dt-modal-close" onclick="hideDeleteModal()">
+                <span class="material-symbols-outlined">close</span>
+            </button>
+        </div>
+        <div class="dt-modal-body">
+            <p>Вы уверены, что хотите удалить <strong class="delete-name"></strong>? Это действие нельзя отменить.</p>
+        </div>
+        <form method="POST" action="" style="margin:0">
+            <div class="dt-modal-foot">
+                <button type="button" class="dt-btn ghost" onclick="hideDeleteModal()">Отмена</button>
+                <button type="submit" class="dt-btn danger">
+                    <span class="material-symbols-outlined">delete</span>
+                    Удалить
+                </button>
             </div>
         </form>
     </div>
@@ -137,21 +199,21 @@
 <script>
 function loadFields() {
     const container = document.getElementById('fieldsTable');
-    container.innerHTML = '<div style="padding:20px;color:var(--text-tertiary)"><span class="spinner"></span> Загрузка полей...</div>';
+    container.innerHTML = '<div class="sd-loading"><span class="material-symbols-outlined rl-spin">progress_activity</span>Загрузка полей…</div>';
     fetch('/api/sources/{{ source.id }}/fields')
     .then(r => r.json())
     .then(data => {
         const fields = data.fields || [];
         if (!fields.length) {
-            container.innerHTML = '<div class="empty-state" style="padding:24px"><p>Поля не найдены</p></div>';
+            container.innerHTML = '<div class="rl-empty" style="margin:0"><p>Поля не найдены</p></div>';
             return;
         }
         const mapped = new Set();
         {% for m in mappings %}mapped.add('{{ m.source_column }}'.toLowerCase());{% endfor %}
 
-        let html = '<div class="table-wrap"><table><thead><tr>'
+        let html = '<div class="sd-table-wrap"><table class="sd-table sd-fields"><thead><tr>'
             + '<th style="width:36px"><input type="checkbox" id="fields_check_all" onchange="toggleAllFields(this)"></th>'
-            + '<th>Имя 1С</th><th>Колонка MSSQL</th><th>Тип</th><th>Целевой тип</th><th>Преобразование</th><th>Статус</th>'
+            + '<th>Имя 1С</th><th>Колонка MSSQL</th><th>MSSQL тип</th><th>Целевой тип</th><th>Преобразование</th><th>Статус</th>'
             + '</tr></thead><tbody>';
         fields.forEach(f => {
             const col = f.mssql_column || ('_' + f.field_name_sql);
@@ -159,7 +221,7 @@ function loadFields() {
             const targetType = f.target_type || 'text';
             const transform = f.transform_type || '';
             const targetCol = (f.field_name_sql || col).toLowerCase().replace(/^_/, '').replace(/rref$/i, '');
-            html += '<tr' + (isMapped ? ' style="background:var(--green-50);opacity:.6"' : '') + '>'
+            html += '<tr class="' + (isMapped ? 'sd-row-mapped' : '') + '">'
                 + '<td>' + (isMapped ? '' : '<input type="checkbox" class="field-cb"'
                     + ' data-source-col="' + col + '"'
                     + ' data-target-col="' + targetCol + '"'
@@ -167,26 +229,29 @@ function loadFields() {
                     + ' data-transform="' + transform + '"'
                     + ' data-onec-name="' + (f.field_name || '') + '"'
                     + '>') + '</td>'
-                + '<td style="font-weight:600;color:var(--accent)">' + (f.field_name || '--') + '</td>'
-                + '<td class="text-mono">' + col + '</td>'
-                + '<td class="text-secondary">' + (f.mssql_type || '--') + (f.mssql_length ? '(' + f.mssql_length + ')' : '') + '</td>'
-                + '<td>' + targetType + '</td>'
-                + '<td>' + (transform ? '<span class="badge badge-info" style="font-size:10px">' + transform + '</span>' : '--') + '</td>'
-                + '<td>' + (isMapped ? '<span class="badge badge-active" style="font-size:10px">Mapped</span>' : '') + '</td>'
+                + '<td class="sd-cell-onec">' + (f.field_name || '—') + '</td>'
+                + '<td><code class="sd-mono">' + col + '</code></td>'
+                + '<td class="sd-type">' + (f.mssql_type || '—') + (f.mssql_length ? '(' + f.mssql_length + ')' : '') + '</td>'
+                + '<td class="sd-type">' + targetType + '</td>'
+                + '<td>' + (transform ? '<span class="sd-transform">' + transform + '</span>' : '<span class="sd-mute">—</span>') + '</td>'
+                + '<td>' + (isMapped ? '<span class="sd-mapped-badge"><span class="material-symbols-outlined">check_circle</span>замаплено</span>' : '') + '</td>'
                 + '</tr>';
         });
         html += '</tbody></table></div>';
-        html += '<div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;align-items:center;gap:10px">'
-            + '<button class="btn btn-primary btn-sm" onclick="addSelectedFields()">Добавить выбранные</button>'
-            + '<span id="fields_selected_count" class="text-secondary" style="font-size:12px">0 выбрано</span>'
+        html += '<div class="sd-add-actions">'
+            + '<span id="fields_selected_count" class="dt-modal-foot-counter">0 выбрано</span>'
+            + '<button class="dt-btn primary" onclick="addSelectedFields()">'
+            + '<span class="material-symbols-outlined">add</span>Добавить выбранные'
+            + '</button>'
             + '</div>';
         container.innerHTML = html;
-        // Update count on checkbox change
         container.querySelectorAll('.field-cb').forEach(cb => {
             cb.addEventListener('change', updateFieldCount);
         });
     })
-    .catch(err => { container.innerHTML = '<div style="padding:20px;color:var(--red-500)">Error: ' + err + '</div>'; });
+    .catch(err => {
+        container.innerHTML = '<div class="wz2-msg error"><span class="material-symbols-outlined">error</span><span>Ошибка: ' + err + '</span></div>';
+    });
 }
 loadFields();
 
@@ -216,8 +281,8 @@ function addSelectedFields() {
         });
     });
 
-    const btn = event.target;
-    btn.innerHTML = '<span class="spinner"></span> Добавление...';
+    const btn = event.target.closest('button');
+    btn.innerHTML = '<span class="material-symbols-outlined rl-spin">progress_activity</span>Добавление…';
     btn.disabled = true;
 
     fetch('/sources/{{ source.id }}/mappings/batch', {
@@ -227,17 +292,16 @@ function addSelectedFields() {
     })
     .then(r => r.json())
     .then(data => {
-        if (data.ok) {
-            location.reload();
-        } else {
+        if (data.ok) location.reload();
+        else {
             alert('Ошибка: ' + (data.error || 'unknown'));
-            btn.textContent = 'Добавить выбранные';
+            btn.innerHTML = '<span class="material-symbols-outlined">add</span>Добавить выбранные';
             btn.disabled = false;
         }
     })
     .catch(err => {
         alert('Ошибка: ' + err);
-        btn.textContent = 'Добавить выбранные';
+        btn.innerHTML = '<span class="material-symbols-outlined">add</span>Добавить выбранные';
         btn.disabled = false;
     });
 }
@@ -246,7 +310,7 @@ function startRename(el, oldName, regId) {
     const input = document.createElement('input');
     input.type = 'text';
     input.value = oldName;
-    input.style.cssText = 'font-family:JetBrains Mono,monospace;font-size:12px;font-weight:600;padding:2px 6px;border:1px solid var(--brand-500);border-radius:var(--radius-xs);outline:none;width:150px;box-shadow:var(--shadow-focus)';
+    input.className = 'cb2-dbcol-edit';
     input.onblur = function() { finishRename(this, oldName, regId); };
     input.onkeydown = function(e) {
         if (e.key === 'Enter') { e.preventDefault(); this.blur(); }
@@ -261,8 +325,7 @@ function finishRename(input, oldName, regId) {
     const newName = input.value.trim();
     if (!newName || newName === oldName) {
         const span = document.createElement('span');
-        span.className = 'text-mono fw-600';
-        span.style.cursor = 'pointer';
+        span.className = 'cb2-dbcol';
         span.title = 'Нажмите для переименования';
         span.textContent = oldName;
         span.onclick = function() { startRename(this, oldName, regId); };
@@ -289,7 +352,6 @@ function deleteMapping(mappingId, name) {
     .catch(err => alert('Ошибка: ' + err));
 }
 
-// ── Target assignment for standalone sources ──
 function assignColTarget(selectEl) {
     const col = selectEl.dataset.col;
     const val = selectEl.value;
@@ -306,7 +368,6 @@ function assignColTarget(selectEl) {
     .catch(err => alert('Ошибка: ' + err));
 }
 
-// Load current assignments on page load
 {% if source.source_type in ('standalone', 'header') and targets|length > 1 %}
 (function() {
     fetch('/api/registers/{{ source.register_id }}/column-targets')

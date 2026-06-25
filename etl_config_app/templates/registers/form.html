@@ -1,49 +1,81 @@
 {% extends "base.html" %}
 {% set active_nav = "registers" %}
 
-{% block title %}{{ 'Редактировать' if register else 'Новый' }} регистр — ETL Config{% endblock %}
+{% block title %}{{ 'Редактировать' if register else 'Новая' }} витрина — ETL Config{% endblock %}
 
 {% block breadcrumb %}
-    <li><a href="/registers">Регистры</a></li>
+    <li><a href="/registers">Витрины</a></li>
     {% if register %}
         <li><a href="/registers/{{ register.id }}">{{ register.code }}</a></li>
         <li class="active">Редактировать</li>
     {% else %}
-        <li class="active">Новый регистр</li>
+        <li class="active">Новая витрина</li>
     {% endif %}
 {% endblock %}
 
 {% block content %}
-<div class="page-header">
-    <h2>{{ 'Редактировать регистр' if register else 'Новый регистр' }}</h2>
-</div>
+<div class="wz-shell" style="max-width:880px">
+    <div class="wz-header">
+        <h1 class="wz-title">
+            {% if register %}Редактировать витрину{% else %}Новая витрина{% endif %}
+        </h1>
+        <p class="wz-subtitle">
+            {% if register %}
+                Изменение настроек витрины <code style="font-family:'JetBrains Mono',monospace;background:var(--ds-surface-3);padding:2px 6px;border-radius:4px">{{ register.code }}</code>
+            {% else %}
+                Ручное создание витрины без шаблона. Источники добавляйте после создания.
+            {% endif %}
+        </p>
+    </div>
 
-<div class="card">
-    <div class="card-body">
-        <form method="POST" action="{{ '/registers/' ~ register.id ~ '/edit' if register else '/registers/new' }}">
-            <div class="form-grid">
-                <div class="form-group">
-                    <label for="code">Код *</label>
+    <form method="POST" action="{{ '/registers/' ~ register.id ~ '/edit' if register else '/registers/new' }}">
+        <div class="dt-section">
+            <div class="dt-section-head">
+                <div>
+                    <h3 class="dt-section-title">
+                        <span class="material-symbols-outlined">edit_note</span>
+                        Основные параметры
+                    </h3>
+                    <p class="dt-section-sub">Имя в URL/SQL и человеко-читаемое название</p>
+                </div>
+            </div>
+            <div class="dt-form-grid">
+                <div class="dt-form-group">
+                    <label for="code">Код витрины <span style="color:var(--ds-error)">*</span></label>
                     <input type="text" id="code" name="code" required
                            value="{{ register.code if register else '' }}"
                            placeholder="sales_register">
-                    <div class="help">Уникальный идентификатор (латиница, подчёркивания)</div>
+                    <small class="wz2-hint">Уникальный, латиница, snake_case</small>
                 </div>
-                <div class="form-group">
+                <div class="dt-form-group">
                     <label for="name">Название</label>
                     <input type="text" id="name" name="name"
                            value="{{ register.name if register else '' }}"
                            placeholder="Регистр продаж">
                 </div>
-                <div class="form-group full-width">
+                <div class="dt-form-group dt-form-group-wide">
                     <label for="description">Описание</label>
                     <textarea id="description" name="description" rows="2"
-                              placeholder="Для чего этот регистр...">{{ register.description if register else '' }}</textarea>
+                              placeholder="Для чего эта витрина…">{{ register.description if register else '' }}</textarea>
                 </div>
-                <div class="form-group">
-                    <label for="parent_id">Родительский регистр</label>
+            </div>
+        </div>
+
+        <div class="dt-section">
+            <div class="dt-section-head">
+                <div>
+                    <h3 class="dt-section-title">
+                        <span class="material-symbols-outlined">schema</span>
+                        Связи и режим
+                    </h3>
+                    <p class="dt-section-sub">Родительская витрина и стандартный режим загрузки</p>
+                </div>
+            </div>
+            <div class="dt-form-grid">
+                <div class="dt-form-group">
+                    <label for="parent_id">Родительская витрина</label>
                     <select id="parent_id" name="parent_id">
-                        <option value="">-- нет --</option>
+                        <option value="">— нет —</option>
                         {% for r in all_registers %}
                             {% if not register or r.id != register.id %}
                             <option value="{{ r.id }}" {{ 'selected' if register and register.parent_id == r.id }}>
@@ -52,39 +84,55 @@
                             {% endif %}
                         {% endfor %}
                     </select>
-                    <div class="help">Связь с родительским регистром (напр. sales &rarr; sales_positions). Ключи соединения устанавливаются автоматически.</div>
+                    <small class="wz2-hint">Связь между витринами (напр. <code>sales</code> → <code>sales_positions</code>). Ключи соединения подбираются автоматически.</small>
                 </div>
-                <div class="form-group">
-                    <label for="default_mode">Режим загрузки</label>
+                <div class="dt-form-group">
+                    <label for="default_mode">Режим по умолчанию</label>
                     <select id="default_mode" name="default_mode">
-                        <option value="incremental" {{ 'selected' if register and register.default_mode == 'incremental' }}>incremental</option>
-                        <option value="full_period" {{ 'selected' if register and register.default_mode == 'full_period' }}>full_period</option>
-                        <option value="consistency" {{ 'selected' if register and register.default_mode == 'consistency' }}>consistency</option>
+                        <option value="incremental" {{ 'selected' if register and register.default_mode == 'incremental' }}>incremental — инкрементально</option>
+                        <option value="full_period" {{ 'selected' if register and register.default_mode == 'full_period' }}>full_period — полный период</option>
+                        <option value="consistency" {{ 'selected' if register and register.default_mode == 'consistency' }}>consistency — проверка</option>
                     </select>
                 </div>
-                <div class="form-group">
-                    <label for="retail_table">Таблица розницы (для инкремента)</label>
+            </div>
+        </div>
+
+        <div class="dt-section">
+            <div class="dt-section-head">
+                <div>
+                    <h3 class="dt-section-title">
+                        <span class="material-symbols-outlined">history_toggle_off</span>
+                        Watermark (retail)
+                    </h3>
+                    <p class="dt-section-sub">Таблица в <code>bd_retail</code> для отслеживания изменений в инкременте</p>
+                </div>
+            </div>
+            <div class="dt-form-grid">
+                <div class="dt-form-group">
+                    <label for="retail_table">Таблица розницы</label>
                     <select id="retail_table" name="retail_table" onchange="loadRetailColumns()">
                         <option value="">— не использовать —</option>
                     </select>
-                    <div class="help">Таблица из bd_retail для отслеживания изменений</div>
+                    <small class="wz2-hint">Источник <code>MAX(updated_at)</code> для incremental watermark</small>
                 </div>
-                <div class="form-group">
-                    <label for="retail_uid_column">UID колонка (связь с 1С)</label>
+                <div class="dt-form-group">
+                    <label for="retail_uid_column">UID колонка</label>
                     <select id="retail_uid_column" name="retail_uid_column">
                         <option value="">— выберите таблицу —</option>
                     </select>
-                    <div class="help">Колонка с UUID документа (связь с _IDRRef в 1С)</div>
+                    <small class="wz2-hint">UUID-колонка для match с <code>_IDRRef</code> 1С</small>
                 </div>
             </div>
-            <div class="d-flex gap-2" style="margin-top:20px">
-                <button type="submit" class="btn btn-primary">
-                    {{ 'Сохранить' if register else 'Создать регистр' }}
-                </button>
-                <a href="{{ '/registers/' ~ register.id if register else '/registers' }}" class="btn btn-secondary">Отмена</a>
-            </div>
-        </form>
-    </div>
+        </div>
+
+        <div class="wz2-footer">
+            <a href="{{ '/registers/' ~ register.id if register else '/registers' }}" class="dt-btn ghost">Отмена</a>
+            <button type="submit" class="dt-btn primary">
+                <span class="material-symbols-outlined">{{ 'save' if register else 'add' }}</span>
+                {{ 'Сохранить изменения' if register else 'Создать витрину' }}
+            </button>
+        </div>
+    </form>
 </div>
 {% endblock %}
 

@@ -1,0 +1,437 @@
+{% extends "base.html" %}
+{% set active_nav = "registers" %}
+
+{% block title %}Создать пайплайн — Регистр накопления — ETL Config{% endblock %}
+
+{% block breadcrumb %}
+    <li><a href="/registers">Витрины</a></li>
+    <li><a href="/registers/wizard">Создание пайплайна</a></li>
+    <li class="active">Регистр накопления + Документы</li>
+{% endblock %}
+
+{% block content %}
+<div class="wz-shell">
+    <div class="wz-header">
+        <h1 class="wz-title">Регистр накопления + Документы</h1>
+        <p class="wz-subtitle">
+            Один экран: основной регистр (AccumRg) + документы-регистраторы + табличные части → две таблицы PostgreSQL.
+        </p>
+        <div class="wz-step">
+            <a href="/registers/wizard" class="wz-step-back">
+                <span class="material-symbols-outlined">arrow_back</span>
+                Шаблоны
+            </a>
+            <span class="wz-step-sep">·</span>
+            <span class="wz-step-label">Шаг 2 из 2</span>
+            <span class="wz-step-sep">·</span>
+            <span class="wz-step-current">Настройка</span>
+        </div>
+    </div>
+
+    <!-- Шаг 1 — основная информация -->
+    <div class="dt-section wz2-section">
+        <div class="dt-section-head">
+            <div>
+                <h3 class="dt-section-title">
+                    <span class="material-symbols-outlined">edit_note</span>
+                    Основная информация
+                </h3>
+                <p class="dt-section-sub">Имя витрины — будет использоваться в URL и SQL-таблицах</p>
+            </div>
+            <span class="wz2-step-num">1</span>
+        </div>
+        <div class="dt-form-grid">
+            <div class="dt-form-group">
+                <label>Имя витрины (code)</label>
+                <input id="w_code" type="text" placeholder="sales, purchases, stock…">
+                <small class="wz2-hint">Латиница, snake_case, уникальный</small>
+            </div>
+            <div class="dt-form-group">
+                <label>Отображаемое имя</label>
+                <input id="w_name" type="text" placeholder="Продажи, Закупки, …">
+            </div>
+            <div class="dt-form-group dt-form-group-wide">
+                <label>Описание</label>
+                <input id="w_desc" type="text" placeholder="опционально">
+            </div>
+        </div>
+    </div>
+
+    <!-- Шаг 2 — главный источник -->
+    <div class="dt-section wz2-section">
+        <div class="dt-section-head">
+            <div>
+                <h3 class="dt-section-title">
+                    <span class="material-symbols-outlined">database</span>
+                    Главный источник
+                </h3>
+                <p class="dt-section-sub">Регистр накопления — поиск через 1С API по русскому имени</p>
+            </div>
+            <span class="wz2-step-num">2</span>
+        </div>
+
+        <div class="wz2-search">
+            <div class="wz2-search-field">
+                <span class="material-symbols-outlined">search</span>
+                <input id="w_main_table" type="text" placeholder="Продажи, Закупки, ОстаткиТоваров…"
+                       onkeydown="if(event.key==='Enter'){event.preventDefault();wProbeSource()}">
+                <button id="w_clear_btn" type="button" onclick="wClearSource()" title="Отменить выбор" style="display:none">
+                    <span class="material-symbols-outlined">close</span>
+                </button>
+            </div>
+            <button id="w_search_btn" class="dt-btn primary" onclick="wProbeSource()">
+                <span class="material-symbols-outlined">search</span>
+                Найти
+            </button>
+        </div>
+        <small class="wz2-hint">
+            Введите русское имя (например <code>Продажи</code>) → выберите из списка.
+            Можно вставить готовое SQL-имя: <code>_AccumRg17844</code>.
+        </small>
+
+        <div id="w_search_results" class="wz2-results" style="display:none"></div>
+
+        <div id="w_main_info" class="dt-form-selected" style="display:none">
+            <span class="material-symbols-outlined">check_circle</span>
+            <strong id="w_main_onec"></strong>
+            <code id="w_main_mssql"></code>
+            <span id="w_main_fields_count" class="wz2-count"></span>
+            <button onclick="wClearSource()" class="dt-btn icon" title="Отменить выбор">
+                <span class="material-symbols-outlined">close</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Шаг 3 — документы и VT -->
+    <div class="dt-section wz2-section" id="w_docs_card" hidden>
+        <div class="dt-section-head">
+            <div>
+                <h3 class="dt-section-title">
+                    <span class="material-symbols-outlined">description</span>
+                    Документы и табличные части
+                </h3>
+                <p class="dt-section-sub">
+                    Документы, регистрирующие движения в выбранном регистре. Отметьте табличные части,
+                    которые подтянуть в <code>{positions}</code>.
+                </p>
+            </div>
+            <span class="wz2-step-num">3</span>
+        </div>
+        <div id="w_docs_list"></div>
+    </div>
+
+    <!-- Шаг 4 — имена целевых таблиц -->
+    <div class="dt-section wz2-section">
+        <div class="dt-section-head">
+            <div>
+                <h3 class="dt-section-title">
+                    <span class="material-symbols-outlined">table</span>
+                    Имена целевых таблиц
+                </h3>
+                <p class="dt-section-sub">PostgreSQL таблицы, в которые движок будет писать данные</p>
+            </div>
+            <span class="wz2-step-num">4</span>
+        </div>
+        <div class="dt-form-grid">
+            <div class="dt-form-group">
+                <label>Шапка (dim)</label>
+                <input id="w_dim_name" type="text" placeholder="{{ code }} (= имя витрины)">
+            </div>
+            <div class="dt-form-group">
+                <label>Позиции (fact)</label>
+                <input id="w_fact_name" type="text" placeholder="{{ code }}_positions">
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="wz2-footer">
+        <a href="/registers" class="dt-btn ghost">Отмена</a>
+        <button id="w_create_btn" class="dt-btn primary" onclick="wCreate()" disabled>
+            <span class="material-symbols-outlined">bolt</span>
+            Создать витрину
+        </button>
+    </div>
+
+    <div id="w_msg" class="wz2-msg" style="display:none"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let probed = null;
+
+document.addEventListener('DOMContentLoaded', () => {
+    const codeInput = document.getElementById('w_code');
+    if (!codeInput) return;
+    codeInput.addEventListener('input', () => {
+        const c = codeInput.value.trim();
+        const dim = document.getElementById('w_dim_name');
+        const fact = document.getElementById('w_fact_name');
+        if (dim && !dim.dataset.touched) dim.value = c;
+        if (fact && !fact.dataset.touched) fact.value = c ? c + '_positions' : '';
+    });
+    document.getElementById('w_dim_name')?.addEventListener('input', e => e.target.dataset.touched = '1');
+    document.getElementById('w_fact_name')?.addEventListener('input', e => e.target.dataset.touched = '1');
+
+    document.getElementById('w_main_table')?.addEventListener('input', (e) => {
+        delete e.target.dataset.mssql;
+        document.getElementById('w_main_info').style.display = 'none';
+        document.getElementById('w_search_results').style.display = 'none';
+        document.getElementById('w_docs_card').hidden = true;
+        document.getElementById('w_create_btn').disabled = true;
+        probed = null;
+        const cb = document.getElementById('w_clear_btn');
+        if (cb) cb.style.display = e.target.value ? 'inline-flex' : 'none';
+    });
+});
+
+function hasCyrillic(s) { return /[А-Яа-яЁё]/.test(s); }
+function isSqlName(s) { return /^_?(AccumRg|InfoRg|AccRg|Document|Reference|Const|Enum|Chrc|Acc)/i.test(s); }
+
+function wSetSearchBusy(busy, label) {
+    const btn = document.getElementById('w_search_btn');
+    if (!btn) return;
+    if (busy) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="material-symbols-outlined wz2-spin">progress_activity</span>' + (label || 'Поиск…');
+    } else {
+        btn.disabled = false;
+        btn.innerHTML = '<span class="material-symbols-outlined">search</span>Найти';
+    }
+}
+
+function wProbeSource() {
+    const rawInput = document.getElementById('w_main_table').value.trim();
+    if (!rawInput) { wShowMsg('error', 'Введите русское имя или SQL-имя'); return; }
+
+    const resultsBox = document.getElementById('w_search_results');
+    resultsBox.style.display = 'none';
+    resultsBox.innerHTML = '';
+
+    document.getElementById('w_msg').style.display = 'none';
+    wSetSearchBusy(true, 'Поиск…');
+
+    let goSearch = hasCyrillic(rawInput) || !isSqlName(rawInput);
+    let cleanQuery = rawInput.replace(/^_+/, '');
+
+    if (goSearch) { wDoSearchWithFallback(cleanQuery); return; }
+    const tbl = rawInput.startsWith('_') ? rawInput : '_' + rawInput;
+    wRunProbe(tbl);
+}
+
+function splitCamel(s) { return s.split(/(?=[A-ZА-ЯЁ])/).filter(p => p.length > 0); }
+
+function wBuildQueryCandidates(raw) {
+    const cands = [raw];
+    if (raw.includes('.')) {
+        const tail = raw.split('.').pop();
+        if (tail && tail !== raw) cands.push(tail);
+    }
+    const lastSeg = raw.split('.').pop();
+    const parts = splitCamel(lastSeg);
+    if (parts.length > 1) {
+        for (let i = parts.length - 1; i >= 0; i--) {
+            const w = parts[i];
+            if (w.length >= 3 && !cands.includes(w)) cands.push(w);
+        }
+    }
+    return cands;
+}
+
+function wDoSearchWithFallback(query) {
+    const candidates = wBuildQueryCandidates(query);
+    const tried = [];
+
+    function tryNext(i) {
+        if (i >= candidates.length) {
+            wSetSearchBusy(false);
+            wShowMsg('warn',
+                '1С не нашёл объектов. Пробовал: ' + tried.map(t => '<code>'+t+'</code>').join(', ')
+                + '. Попробуйте ввести только одно слово (например <code>Продажи</code>) — 1С API ищет по словам.');
+            return;
+        }
+        const q = candidates[i];
+        tried.push(q);
+        wSetSearchBusy(true, 'Пробую «' + q + '»…');
+        fetch('/api/1c/search?q=' + encodeURIComponent(q))
+            .then(r => r.json()).then(items => {
+                if (!Array.isArray(items) || !items.length) return tryNext(i + 1);
+                document.getElementById('w_msg').style.display = 'none';
+                const accumLike = items.filter(x => /^(AccumRg|InfoRg|AccRg)\d+$/i.test(x.table_name_sql || ''));
+                const list = accumLike.length ? accumLike : items;
+                if (list.length === 1) return wRunProbe('_' + list[0].table_name_sql);
+                wSetSearchBusy(false);
+                wRenderSearchResults(list, q, tried);
+            })
+            .catch(err => {
+                wSetSearchBusy(false);
+                wShowMsg('error', 'Сеть/JSON: ' + err);
+            });
+    }
+    tryNext(0);
+}
+
+function wRenderSearchResults(items, matchedQuery, allTried) {
+    const box = document.getElementById('w_search_results');
+    let headerHtml = '<div class="wz2-results-head">Найдено ' + items.length + ' объектов — выберите нужный:';
+    if (allTried && allTried.length > 1) {
+        headerHtml += ' <span class="wz2-results-hint">Сработал запрос <code>' + matchedQuery
+            + '</code> (исходный <code>' + allTried[0] + '</code> ничего не вернул).</span>';
+    }
+    headerHtml += '</div>';
+
+    let html = headerHtml;
+    items.forEach(x => {
+        const sql = x.table_name_sql || '';
+        const rus = x.table_name || '';
+        const displayName = rus || ('_' + sql);
+        const mssqlArg = JSON.stringify("_" + sql);
+        const onecArg = JSON.stringify(rus);
+        html += '<div class="wz2-result-item" onclick=\'wPickSearchResult(' + mssqlArg + ', ' + onecArg + ')\'>'
+            +    '<span class="wz2-result-name">' + displayName + '</span>'
+            +    '<code class="wz2-result-sql">_' + sql + '</code>'
+            +  '</div>';
+    });
+    box.innerHTML = html;
+    box.style.display = 'block';
+}
+
+function wPickSearchResult(mssql_table, onec_name) {
+    const inp = document.getElementById('w_main_table');
+    inp.value = onec_name || mssql_table;
+    inp.dataset.mssql = mssql_table;
+    document.getElementById('w_search_results').style.display = 'none';
+    document.getElementById('w_clear_btn').style.display = 'inline-flex';
+    wRunProbe(mssql_table);
+}
+
+function wClearSource() {
+    const inp = document.getElementById('w_main_table');
+    inp.value = '';
+    delete inp.dataset.mssql;
+    inp.focus();
+    document.getElementById('w_clear_btn').style.display = 'none';
+    document.getElementById('w_main_info').style.display = 'none';
+    document.getElementById('w_search_results').style.display = 'none';
+    document.getElementById('w_docs_card').hidden = true;
+    document.getElementById('w_docs_list').innerHTML = '';
+    document.getElementById('w_msg').style.display = 'none';
+    document.getElementById('w_create_btn').disabled = true;
+    probed = null;
+}
+
+function wRunProbe(tbl) {
+    document.getElementById('w_msg').style.display = 'none';
+    wSetSearchBusy(true, 'Загрузка структуры…');
+    const inp = document.getElementById('w_main_table');
+    inp.dataset.mssql = tbl;
+    document.getElementById('w_clear_btn').style.display = 'inline-flex';
+    return fetch('/api/registers/wizard/probe-source?mssql_table=' + encodeURIComponent(tbl))
+    .then(r => r.json()).then(data => {
+        wSetSearchBusy(false);
+        if (data.error) { wShowMsg('error', 'Ошибка: ' + data.error); return; }
+        probed = data;
+        const ms = data.main_source || {};
+        document.getElementById('w_main_info').style.display = 'flex';
+        document.getElementById('w_main_onec').textContent = ms.onec_name || '(имя 1С не найдено)';
+        document.getElementById('w_main_mssql').textContent = ms.mssql_table || '';
+        document.getElementById('w_main_fields_count').textContent = (ms.fields || []).length + ' полей';
+
+        const docs = data.documents || [];
+        const dcard = document.getElementById('w_docs_card');
+        const dlist = document.getElementById('w_docs_list');
+        if (!docs.length) {
+            dcard.hidden = true;
+        } else {
+            dcard.hidden = false;
+            let html = '';
+            docs.forEach(d => {
+                const vts = (d.vt_tables || []).filter(v => v.onec_name);
+                html += '<div class="wz2-doc">'
+                    +  '  <div class="wz2-doc-head">'
+                    +  '    <span class="wz2-doc-tref">' + d.type_int + '</span>'
+                    +  '    <strong class="wz2-doc-name">' + (d.onec_name || 'Документ ' + d.type_int) + '</strong>'
+                    +  '    <code class="wz2-doc-mssql">' + d.mssql_table + '</code>'
+                    +  '  </div>';
+                if (!vts.length) {
+                    html += '<div class="wz2-doc-empty">нет VT в этой конфигурации</div>';
+                } else {
+                    html += '<div class="wz2-vt-list">';
+                    vts.forEach(vt => {
+                        const vname = (vt.onec_name || '').split('.').slice(-1)[0] || vt.mssql_table;
+                        html += '<label class="wz2-vt-row">'
+                            + '<input type="checkbox" class="w-vt-cb" data-doc="' + d.type_int + '" data-vt="' + vt.mssql_table + '">'
+                            + '<span class="wz2-vt-name">' + vname + '</span>'
+                            + '<code class="wz2-vt-mssql">' + vt.mssql_table + '</code>'
+                            + '</label>';
+                    });
+                    html += '</div>';
+                }
+                html += '</div>';
+            });
+            dlist.innerHTML = html;
+        }
+        document.getElementById('w_create_btn').disabled = false;
+    }).catch(err => {
+        wSetSearchBusy(false);
+        wShowMsg('error', 'Сеть/JSON: ' + err);
+    });
+}
+
+function wShowMsg(kind, html) {
+    const msg = document.getElementById('w_msg');
+    msg.className = 'wz2-msg ' + kind;
+    msg.innerHTML = '<span class="material-symbols-outlined">'
+        + (kind === 'error' ? 'error' : kind === 'warn' ? 'warning' : 'info')
+        + '</span><span>' + html + '</span>';
+    msg.style.display = 'flex';
+}
+
+function wCreate() {
+    if (!probed) { wShowMsg('warn', 'Сначала найдите источник'); return; }
+    const code = document.getElementById('w_code').value.trim();
+    if (!code) { wShowMsg('warn', 'Введите имя витрины'); return; }
+
+    const docMap = {};
+    document.querySelectorAll('.w-vt-cb:checked').forEach(cb => {
+        const d = parseInt(cb.dataset.doc);
+        if (!docMap[d]) docMap[d] = [];
+        docMap[d].push(cb.dataset.vt);
+    });
+    const documents = Object.keys(docMap).map(d => ({type_int: parseInt(d), vt_tables: docMap[d]}));
+
+    const body = {
+        code: code,
+        name: document.getElementById('w_name').value.trim(),
+        description: document.getElementById('w_desc').value.trim(),
+        main_mssql_table: probed.main_source.mssql_table,
+        target_dim_name: document.getElementById('w_dim_name').value.trim() || code,
+        target_fact_name: document.getElementById('w_fact_name').value.trim() || (code + '_positions'),
+        documents: documents,
+    };
+
+    const btn = document.getElementById('w_create_btn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="material-symbols-outlined wz2-spin">progress_activity</span>Создание…';
+
+    fetch('/api/registers/wizard/create', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+    }).then(r => r.json()).then(data => {
+        if (data.ok) {
+            window.location = '/registers/' + data.register_id + '#columns';
+        } else {
+            wShowMsg('error', 'Ошибка: ' + (data.error || 'unknown'));
+            btn.disabled = false;
+            btn.innerHTML = '<span class="material-symbols-outlined">bolt</span>Создать витрину';
+        }
+    }).catch(err => {
+        wShowMsg('error', 'Сеть: ' + err);
+        btn.disabled = false;
+        btn.innerHTML = '<span class="material-symbols-outlined">bolt</span>Создать витрину';
+    });
+}
+</script>
+{% endblock %}

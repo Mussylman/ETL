@@ -9,184 +9,266 @@
 {% endblock %}
 
 {% block content %}
-<!-- Header -->
-<div class="page-header">
-    <div>
-        <div class="d-flex align-center gap-2">
-            <h2>{{ register.name or register.code }}</h2>
+<!-- Header (new dt-* design) -->
+<div class="dt-header">
+    <div class="dt-header-main">
+        <div class="dt-title-row">
+            <h1 class="dt-title">{{ register.name or register.code }}</h1>
             {% if register.is_active %}
-                <span class="badge badge-active">Активен</span>
+                <span class="dt-badge active"><span class="material-symbols-outlined">check_circle</span>Активен</span>
             {% else %}
-                <span class="badge badge-inactive">Неактивен</span>
+                <span class="dt-badge inactive"><span class="material-symbols-outlined">pause_circle</span>Неактивен</span>
             {% endif %}
         </div>
-        <div class="d-flex align-center gap-2 mt-2">
-            <span class="text-mono text-secondary" style="font-size:12px">{{ register.code }}</span>
+        <div class="dt-meta">
+            <span class="dt-meta-code">{{ register.code }}</span>
+            {% if register.pipeline_type %}
+                <span class="dt-meta-sep">·</span>
+                <span class="dt-meta-pipeline">{{ register.pipeline_type }}</span>
+            {% endif %}
             {% if register.parent_id and parent_register %}
-            <span class="text-secondary" style="font-size:12px">&larr;</span>
-            <a href="/registers/{{ register.parent_id }}" style="font-size:12px;color:var(--brand-600);text-decoration:none">{{ parent_register.name or parent_register.code }}</a>
+                <span class="dt-meta-sep">·</span>
+                <span class="dt-meta-parent">
+                    <span class="material-symbols-outlined">arrow_back</span>
+                    <a href="/registers/{{ register.parent_id }}">{{ parent_register.name or parent_register.code }}</a>
+                </span>
             {% endif %}
         </div>
     </div>
-    <div class="btn-group">
-        <a href="/registers/{{ register.id }}/edit" class="btn btn-secondary btn-sm">Редактировать</a>
-        <button id="autoTransBtn" class="btn btn-secondary btn-sm" onclick="autoTransforms()">Авто-преобразования</button>
-        <button id="syncDbBtn" class="btn btn-primary btn-sm" onclick="syncDatabase()">Синхронизация</button>
-        <form method="POST" action="/registers/{{ register.id }}/toggle" style="display:inline">
-            <button type="submit" class="btn btn-sm {{ 'btn-danger' if register.is_active else 'btn-success' }}">
-                {{ 'Отключить' if register.is_active else 'Включить' }}
+    <div class="dt-header-actions">
+        <button class="dt-btn ghost" onclick="autoTransforms()" id="autoTransBtn" title="Авто-определение преобразований по типам MSSQL">
+            <span class="material-symbols-outlined">auto_fix</span>
+            <span class="dt-btn-label">Авто-преобразования</span>
+        </button>
+        <a href="/registers/{{ register.id }}/edit" class="dt-btn ghost">
+            <span class="material-symbols-outlined">edit</span>
+            <span class="dt-btn-label">Редактировать</span>
+        </a>
+        <button class="dt-btn primary" id="syncDbBtn" onclick="syncDatabase()">
+            <span class="material-symbols-outlined">sync</span>
+            <span class="dt-btn-label">Синхронизация</span>
+        </button>
+        <button class="dt-btn icon" onclick="dtToggleMenu(this)" title="Ещё">
+            <span class="material-symbols-outlined">more_horiz</span>
+        </button>
+        <div class="dt-menu" id="dt_menu" style="display:none">
+            <form method="POST" action="/registers/{{ register.id }}/toggle" class="dt-menu-form">
+                <button type="submit" class="dt-menu-item">
+                    <span class="material-symbols-outlined">{{ 'toggle_off' if register.is_active else 'toggle_on' }}</span>
+                    {{ 'Отключить витрину' if register.is_active else 'Включить витрину' }}
+                </button>
+            </form>
+            <button class="dt-menu-item danger" onclick="showDeleteModal('/registers/{{ register.id }}/delete', '{{ register.code }}')">
+                <span class="material-symbols-outlined">delete</span>
+                Удалить витрину
             </button>
-        </form>
-        <button class="btn btn-danger btn-sm" onclick="showDeleteModal('/registers/{{ register.id }}/delete', '{{ register.code }}')">Удалить</button>
+        </div>
     </div>
 </div>
 
 {% if register.parent_join_key and register.child_join_key %}
-<div style="padding:8px 14px;background:var(--brand-50);border:1px solid var(--brand-100);border-radius:var(--radius);margin-bottom:16px;font-size:12px;color:var(--brand-600)">
-    <strong>Соединение:</strong>
-    <code style="background:rgba(99,102,241,.1);padding:1px 6px;border-radius:3px">{{ parent_register.code if parent_register else 'parent' }}.{{ register.parent_join_key }} = {{ register.code }}.{{ register.child_join_key }}</code>
+<div class="dt-join-info">
+    <span class="material-symbols-outlined">link</span>
+    <span>Соединение:
+        <code>{{ parent_register.code if parent_register else 'parent' }}.{{ register.parent_join_key }} = {{ register.code }}.{{ register.child_join_key }}</code>
+    </span>
 </div>
 {% endif %}
 
-<!-- Tabs -->
-<div class="tabs" data-tab-group="main">
-    <button class="tab active" data-tab="tab-sources">
-        <span class="tab-icon">&#9634;</span>
-        Источники <span class="tab-count">{{ sources|length }}</span>
+<!-- Tabs (new dt-tabs) -->
+<div class="dt-tabs tabs" data-tab-group="main">
+    <button class="dt-tab tab active" data-tab="tab-sources">
+        <span class="material-symbols-outlined">database</span>
+        Источники
+        <span class="dt-tab-count">{{ sources|length }}</span>
     </button>
-    <button class="tab" data-tab="tab-columns">
-        <span class="tab-icon">&#9776;</span>
+    <button class="dt-tab tab" data-tab="tab-columns">
+        <span class="material-symbols-outlined">view_column</span>
         Колонки
     </button>
-    <button class="tab" data-tab="tab-status">
-        <span class="tab-icon">&#9889;</span>
+    <button class="dt-tab tab" data-tab="tab-status">
+        <span class="material-symbols-outlined">monitoring</span>
         Статус
     </button>
 </div>
 
 <!-- ═══════════ Sources Tab ═══════════ -->
 <div id="tab-sources" class="tab-panel active" data-tab-group="main">
-    <!-- Sources list as cards -->
-    <div class="card">
-        <div class="card-header">
-            <h3><span class="card-icon">&#9634;</span> Источники данных</h3>
-            <a href="/registers/{{ register.id }}/sources/new" class="btn btn-secondary btn-sm">+ Добавить</a>
-        </div>
-        {% if sources %}
-        <div>
-            {% for s in sources %}
-            <a href="/sources/{{ s.id }}" class="source-item" style="text-decoration:none;color:inherit">
-                <div class="source-icon type-{{ s.source_type }}">
-                    {% if s.source_type == 'detail' %}&#9701;{% elif s.source_type == 'header' %}&#9633;{% else %}&#9643;{% endif %}
-                </div>
-                <div class="source-info">
-                    <div class="source-name">
-                        {{ s.onec_name or s.source_code }}
-                        <span class="badge badge-{{ s.source_type }}" style="font-size:10px">{{ s.source_type }}</span>
-                    </div>
-                    <div class="source-meta">{{ s.mssql_table }}</div>
-                </div>
-                <div class="source-stats">
-                    <span class="badge badge-info">{{ s.column_count }} col</span>
-                </div>
+    {% set standalone_srcs = sources | selectattr('source_type', 'equalto', 'standalone') | list %}
+    {% set header_srcs     = sources | selectattr('source_type', 'equalto', 'header')     | list %}
+    {% set detail_srcs     = sources | selectattr('source_type', 'equalto', 'detail')     | list %}
+
+    <div class="dt-section">
+        <div class="dt-section-head">
+            <div>
+                <h3 class="dt-section-title">
+                    <span class="material-symbols-outlined">database</span>
+                    Источники данных
+                </h3>
+                <p class="dt-section-sub">Таблицы 1С, из которых движок забирает данные</p>
+            </div>
+            <a href="/registers/{{ register.id }}/sources/new" class="dt-btn ghost">
+                <span class="material-symbols-outlined">add</span>
+                <span class="dt-btn-label">Добавить вручную</span>
             </a>
-            {% endfor %}
         </div>
+
+        {% if sources %}
+        {% for group_label, group_icon, group_list, group_class, group_badge in [
+            ('Главный источник',     'inventory_2', standalone_srcs, 'standalone', 'ACCUM'),
+            ('Документы (header)',   'description', header_srcs,     'header',     'HEADER'),
+            ('Табличные части (VT)', 'table_rows',  detail_srcs,     'detail',     'VT'),
+        ] %}
+            {% if group_list %}
+            <div class="dt-src-group">
+                <div class="dt-src-group-head">
+                    <span class="material-symbols-outlined dt-src-group-icon type-{{ group_class }}">{{ group_icon }}</span>
+                    <span class="dt-src-group-label">{{ group_label }}</span>
+                    <span class="dt-src-group-count">{{ group_list|length }}</span>
+                </div>
+                <div class="dt-src-grid">
+                    {% for s in group_list %}
+                    <a href="/sources/{{ s.id }}" class="dt-src-card">
+                        <div class="dt-src-card-head">
+                            <span class="cb2-tbadge {{ 'accum' if group_class == 'standalone' else group_class }}">
+                                {{ group_badge }}
+                            </span>
+                            <span class="dt-src-card-cols">{{ s.column_count }} <span>col</span></span>
+                        </div>
+                        <div class="dt-src-card-title">
+                            {{ s.onec_name or s.source_code }}
+                        </div>
+                        <div class="dt-src-card-mssql">
+                            <span class="material-symbols-outlined">table_chart</span>
+                            <code>{{ s.mssql_table }}</code>
+                        </div>
+                        {% if s.parent_source_id %}
+                            {% for ps in sources %}{% if ps.id == s.parent_source_id %}
+                            <div class="dt-src-card-parent">
+                                <span class="material-symbols-outlined">subdirectory_arrow_right</span>
+                                <span class="dt-src-card-parent-label">из</span>
+                                <span class="dt-src-card-parent-name">{{ ps.onec_name or ps.source_code }}</span>
+                            </div>
+                            {% endif %}{% endfor %}
+                        {% endif %}
+                    </a>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+        {% endfor %}
         {% else %}
-        <div class="empty-state">
-            <div class="empty-icon">&#9634;</div>
+        <div class="rl-empty">
+            <span class="material-symbols-outlined" style="font-size:48px;opacity:.4">database_off</span>
             <p>Источники ещё не настроены</p>
+            <a href="/registers/{{ register.id }}/sources/new" class="dt-btn primary">
+                <span class="material-symbols-outlined">add</span>Добавить источник
+            </a>
         </div>
         {% endif %}
     </div>
 
     <!-- Quick Add Source from 1C -->
-    <div class="card">
-        <div class="card-header">
-            <h3><span class="card-icon">&#128269;</span> Быстрое добавление из 1С</h3>
+    <div class="dt-section">
+        <div class="dt-section-head">
+            <div>
+                <h3 class="dt-section-title">
+                    <span class="material-symbols-outlined">bolt</span>
+                    Быстрое добавление из 1С
+                </h3>
+                <p class="dt-section-sub">Поиск через 1С API → авторезолв полей → создание источника</p>
+            </div>
         </div>
-        <div class="card-body">
-            <div class="form-grid">
-                <div class="form-group">
-                    <label>Поиск объекта 1С</label>
-                    <div class="autocomplete-wrap">
-                        <input type="text" id="quick_1c_search" placeholder="Напр. Продажи, ЧекККМ, Номенклатура...">
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label>Тип источника</label>
-                    <select id="quick_source_type">
-                        <option value="header">шапка</option>
-                        <option value="detail">табличная часть (VT)</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>Родительский источник</label>
-                    <select id="quick_parent">
-                        <option value="">-- нет --</option>
-                        {% for s in sources %}
-                        <option value="{{ s.id }}">{{ s.onec_name or s.source_code }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>Тип соединения</label>
-                    <select id="quick_join_type">
-                        <option value="">-- нет --</option>
-                        <option value="LEFT JOIN">LEFT JOIN</option>
-                        <option value="INNER JOIN">INNER JOIN</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>Ключ (источник)</label>
-                    <input type="text" id="quick_join_key_source" placeholder="_IDRRef">
-                </div>
-                <div class="form-group">
-                    <label>Ключ (родитель)</label>
-                    <input type="text" id="quick_join_key_parent" placeholder="_IDRRef">
+        <div class="dt-form-grid">
+            <div class="dt-form-group dt-form-group-wide">
+                <label>Поиск объекта 1С</label>
+                <div class="autocomplete-wrap">
+                    <input type="text" id="quick_1c_search" placeholder="Напр. Продажи, ЧекККМ, Номенклатура…">
                 </div>
             </div>
-            <div id="quick_selected" style="display:none;margin-top:12px;padding:10px 14px;background:var(--green-50);border:1px solid var(--green-100);border-radius:var(--radius-sm);font-size:13px">
-                <strong id="quick_selected_name"></strong>
-                <span class="text-mono text-secondary" id="quick_selected_sql" style="margin-left:8px;font-size:11px"></span>
+            <div class="dt-form-group">
+                <label>Тип источника</label>
+                <select id="quick_source_type">
+                    <option value="header">шапка</option>
+                    <option value="detail">табличная часть (VT)</option>
+                </select>
             </div>
-            <div style="margin-top:12px" class="d-flex gap-2">
-                <button id="quickAddBtn" class="btn btn-primary btn-sm" onclick="quickAddSource()" disabled>Добавить источник</button>
-                <a href="/registers/{{ register.id }}/sources/new" class="btn btn-secondary btn-sm">Расширенная форма</a>
+            <div class="dt-form-group">
+                <label>Родительский источник</label>
+                <select id="quick_parent">
+                    <option value="">— нет —</option>
+                    {% for s in sources %}
+                    <option value="{{ s.id }}">{{ s.onec_name or s.source_code }}</option>
+                    {% endfor %}
+                </select>
             </div>
+            <div class="dt-form-group">
+                <label>Тип соединения</label>
+                <select id="quick_join_type">
+                    <option value="">— нет —</option>
+                    <option value="LEFT JOIN">LEFT JOIN</option>
+                    <option value="INNER JOIN">INNER JOIN</option>
+                </select>
+            </div>
+            <div class="dt-form-group">
+                <label>Ключ (источник)</label>
+                <input type="text" id="quick_join_key_source" placeholder="_IDRRef">
+            </div>
+            <div class="dt-form-group">
+                <label>Ключ (родитель)</label>
+                <input type="text" id="quick_join_key_parent" placeholder="_IDRRef">
+            </div>
+        </div>
+        <div id="quick_selected" class="dt-form-selected" style="display:none">
+            <span class="material-symbols-outlined">check_circle</span>
+            <strong id="quick_selected_name"></strong>
+            <code id="quick_selected_sql"></code>
+        </div>
+        <div class="dt-form-actions">
+            <button id="quickAddBtn" class="dt-btn primary" onclick="quickAddSource()" disabled>
+                <span class="material-symbols-outlined">add</span>Добавить источник
+            </button>
+            <a href="/registers/{{ register.id }}/sources/new" class="dt-btn ghost">
+                <span class="material-symbols-outlined">tune</span>Расширенная форма
+            </a>
         </div>
     </div>
 
     {% if register.parent_id %}
     <!-- Discover Document Sources -->
-    <div class="card">
-        <div class="card-header">
-            <h3><span class="card-icon">&#9881;</span> Авто-поиск из родителя</h3>
-            <button id="discoverBtn" class="btn btn-primary btn-sm" onclick="discoverRecorderTypes()">
+    <div class="dt-section">
+        <div class="dt-section-head">
+            <div>
+                <h3 class="dt-section-title">
+                    <span class="material-symbols-outlined">manage_search</span>
+                    Авто-поиск из родителя
+                </h3>
+                <p class="dt-section-sub">
+                    Запрос <code>_RecorderTRef</code> из родительской MSSQL, определение имён 1С и создание источников
+                </p>
+            </div>
+            <button id="discoverBtn" class="dt-btn primary" onclick="discoverRecorderTypes()">
+                <span class="material-symbols-outlined">search</span>
                 Найти типы документов
             </button>
         </div>
-        <div class="card-body">
-            <p class="text-secondary" style="margin-bottom:12px;font-size:13px">
-                Запрос <code style="background:var(--gray-100);padding:1px 6px;border-radius:3px;font-size:12px">_RecorderTRef</code> из родительской таблицы MSSQL, определение имён 1С и создание источников.
-            </p>
-            <div id="auto_join_info" style="display:none;margin-bottom:12px;padding:10px 14px;background:var(--brand-50);border:1px solid var(--brand-100);border-radius:var(--radius-sm);color:var(--brand-600);font-size:13px"></div>
-            <div id="discover_list" style="display:none">
-                <div style="border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">
-                    <div style="padding:8px 16px;background:var(--gray-50);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px">
-                        <input type="checkbox" id="discover_check_all" checked onchange="toggleAllDiscover(this)" style="width:16px;height:16px;accent-color:var(--primary)">
-                        <span style="font-size:12px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.3px">Выберите типы документов</span>
-                    </div>
-                    <div id="discover_tbody"></div>
+        <div id="auto_join_info" class="dt-join-info" style="display:none"></div>
+        <div id="discover_list" style="display:none">
+            <div class="dt-discover-wrap">
+                <div class="dt-discover-head">
+                    <input type="checkbox" id="discover_check_all" checked onchange="toggleAllDiscover(this)">
+                    <span>Выберите типы документов</span>
                 </div>
-                <div style="margin-top:12px">
-                    <button id="batchCreateBtn" class="btn btn-primary btn-sm" onclick="batchCreateDocumentSources()">
-                        Создать выбранные источники
-                    </button>
-                </div>
+                <div id="discover_tbody"></div>
             </div>
-            <div id="batch_result" style="display:none;margin-top:12px;padding:12px 16px;border-radius:var(--radius-sm);font-size:13px"></div>
+            <div class="dt-form-actions" style="margin-top:12px">
+                <button id="batchCreateBtn" class="dt-btn primary" onclick="batchCreateDocumentSources()">
+                    <span class="material-symbols-outlined">add_circle</span>
+                    Создать выбранные источники
+                </button>
+            </div>
         </div>
+        <div id="batch_result" style="display:none"></div>
     </div>
     {% endif %}
 </div>
@@ -194,50 +276,90 @@
 <!-- ═══════════ Columns Tab ═══════════ -->
 <div id="tab-columns" class="tab-panel" data-tab-group="main">
 
-    <!-- Board toolbar -->
-    <div class="board-head" id="cb_toolbar" style="margin-bottom:12px">
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-            <span class="overline">Распределение</span>
-            <span id="cb_stats" style="font-size:12px;color:var(--fg2)">—</span>
+    <!-- Stats row -->
+    <div class="cb2-stats" id="cb2_stats">
+        <div class="cb2-stat"><b id="cb2_st_total">—</b><span>всего</span></div>
+        <div class="cb2-stat sep" id="cb2_st_targets"></div>
+        <div class="cb2-stat ignored"><b id="cb2_st_ignored">0</b><span>не грузить</span></div>
+        <div class="cb2-stat errors"><b id="cb2_st_errors">0</b><span>ошибок</span></div>
+    </div>
+
+    <!-- Toolbar -->
+    <div class="cb2-toolbar">
+        <div class="cb2-toolbar-left">
+            <div class="cb2-search">
+                <span class="cb2-search-ic">🔍</span>
+                <input type="text" id="cb2_search" placeholder="Поиск по имени колонки или 1С..." oninput="cb2Render()">
+            </div>
+            <div class="cb2-chips" id="cb2_chips" role="tablist"></div>
         </div>
-        <div class="btn-group">
+        <div class="cb2-toolbar-right">
+            <button class="btn btn-secondary btn-sm" onclick="cb2OpenAddModal()">+ Добавить поля</button>
+            <button class="btn btn-secondary btn-sm" onclick="cbShowComputedModal()">+ Формула</button>
+            <button class="btn btn-primary btn-sm" onclick="cb2OpenAutoPreview()">⚡ Авто-распределить</button>
+            <button class="btn btn-ghost btn-sm" onclick="cb2ToggleAdvanced()" title="Старые режимы: Pipeline / Kanban / List" id="cb2_adv_btn">⋯ Расширенный</button>
+            <button id="cb_load_btn" class="btn btn-ghost btn-sm" onclick="cbLoadAll()" title="Перезагрузить из БД">↻</button>
+        </div>
+    </div>
+
+    <!-- System fields info banner -->
+    <div class="cb2-sys-banner" id="cb2_sys_banner">
+        <div class="cb2-sys-head">
+            <span class="cb2-sys-ic">⚙</span>
+            <b>Системные поля создаются автоматически</b>
+            <span class="cb2-sys-toggle" onclick="cb2ToggleSysBanner()">▾</span>
+        </div>
+        <div class="cb2-sys-body" id="cb2_sys_body">
+            <div class="cb2-sys-cols" id="cb2_sys_cols">—</div>
+            <div class="cb2-sys-note">
+                Не выбирайте <code>id</code> или <code>sales_id</code> из 1С вручную.
+                <code>sales_positions.sales_id</code> заполняется автоматически после загрузки через
+                <code>post_load_sql</code> (по связке <code>recorder + recorder_type</code>).
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Section 1: Основной регистр ── -->
+    <div class="cb2-section" id="cb2_section_register">
+        <div class="cb2-section-head">
+            <h3>📊 Основной регистр</h3>
+            <span class="cb2-section-sub" id="cb2_section_register_sub">—</span>
+        </div>
+        <div class="cb2-hint">
+            Сначала распределите поля основного регистра.
+            <b>Period / Recorder / RecorderTRef</b> обычно идут в <code>sales</code>;
+            <b>Номенклатура / Количество / Стоимость / Подразделение</b> — в <code>sales_positions</code>.
+        </div>
+        <div id="cb2_main_register"></div>
+    </div>
+
+    <!-- ── Section 2: Документы и табличные части ── -->
+    <div class="cb2-section" id="cb2_section_docs" style="margin-top:18px">
+        <div class="cb2-section-head">
+            <h3>📑 Документы и табличные части</h3>
+            <span class="cb2-section-sub" id="cb2_section_docs_sub">—</span>
+        </div>
+        <div class="cb2-hint">
+            Эти поля нужны для <b>обогащения</b>: артикул, серийный номер, цена, ответственный,
+            склад и прочие реквизиты. <b>Не</b> главный источник для позиций.
+        </div>
+        <div id="cb2_main_docs"></div>
+    </div>
+
+    <!-- Advanced mode (legacy pipeline/kanban/list), hidden by default -->
+    <div id="cb_advanced_wrap" style="display:none;margin-top:18px;border-top:1px dashed var(--border);padding-top:14px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+            <span class="overline">Расширенный режим</span>
+            <span style="font-size:11px;color:var(--fg3)">старый интерфейс с drag&amp;drop</span>
+            <span class="cb-stats-inline" id="cb_stats" style="margin-left:auto;font-size:12px;color:var(--fg2)">—</span>
             <div class="view-toggle" role="tablist" aria-label="Вид">
                 <button id="cb_view_pipeline" class="is-active" onclick="cbSetView('pipeline')" title="Пайплайн">▦ Пайплайн</button>
                 <button id="cb_view_kanban" onclick="cbSetView('kanban')" title="Канбан">▦ Канбан</button>
                 <button id="cb_view_list" onclick="cbSetView('list')" title="Список">≡ Список</button>
             </div>
-            <button class="btn btn-sm" onclick="cbAutoAssign()" title="Авто-распределить">⚡ Авто</button>
-            <button class="btn btn-sm" onclick="cbShowComputedModal()">+ Формула</button>
-            <button id="cb_load_btn" class="btn btn-primary btn-sm" onclick="cbLoadAll()">Загрузить</button>
         </div>
-    </div>
-
-    <!-- Main stage: pipeline (default) / kanban / list -->
-    <div id="cb_existing">
-        <div class="empty-state" style="padding:48px;text-align:center">
-            <p>Нажмите <strong>Загрузить</strong> чтобы увидеть колонки</p>
-        </div>
-    </div>
-
-    <!-- Common fields picker (collapsible) -->
-    <div class="card" style="margin-top:14px">
-        <div class="card-header" style="cursor:pointer" onclick="cbToggleFieldsPicker()">
-            <h3><span class="card-icon">+</span> Доступные поля из источников</h3>
-            <div class="btn-group">
-                <input type="text" id="cb_field_search" placeholder="Поиск..." oninput="cbFilterFields()"
-                       onclick="event.stopPropagation()"
-                       style="padding:4px 10px;font-size:12px;border:1px solid var(--border-strong);border-radius:var(--radius-sm);width:200px;background:var(--bg,#fff)">
-                <button class="btn btn-ghost btn-xs" id="cb_picker_toggle">▾</button>
-            </div>
-        </div>
-        <div id="cb_fields_wrapper">
-            <div id="cb_fields_list">
-                <div class="empty-state" style="padding:24px"><p>Нажмите "Загрузить" чтобы увидеть поля</p></div>
-            </div>
-            <div id="cb_batch_bar" style="display:none;padding:12px 18px;border-top:1px solid var(--border);align-items:center;gap:12px">
-                <button class="btn btn-primary btn-sm" onclick="cbBatchAdd()">Добавить выбранные</button>
-                <span id="cb_selected_count" style="font-size:12px;color:var(--fg2)">0 выбрано</span>
-            </div>
+        <div id="cb_existing">
+            <div class="empty-state" style="padding:24px;text-align:center"><p>—</p></div>
         </div>
     </div>
 </div>
@@ -245,99 +367,148 @@
 <!-- ═══════════ Status Tab ═══════════ -->
 <div id="tab-status" class="tab-panel" data-tab-group="main">
     <!-- Pipeline Overview -->
-    <div class="card mb-4">
-        <div class="card-header">
-            <h3><span class="card-icon">&#9889;</span> Пайплайн</h3>
-            <button class="btn btn-primary btn-sm" onclick="syncDatabase()">Синхронизация</button>
-        </div>
-        {% if targets %}
-        <div>
-            {% for t in targets %}
-            <div class="pipeline-stat">
-                <div class="stat-icon" style="background:var(--green-50);color:var(--green-600)">&#9634;</div>
-                <div style="flex:1">
-                    <div class="stat-label">Целевая таблица</div>
-                    <div class="stat-value mono">{{ t.target_schema }}.{{ t.target_table }}</div>
-                </div>
-                <span class="badge badge-{{ t.load_mode }}">{{ t.load_mode }}</span>
+    <div class="dt-section">
+        <div class="dt-section-head">
+            <div>
+                <h3 class="dt-section-title">
+                    <span class="material-symbols-outlined">account_tree</span>
+                    Пайплайн
+                </h3>
+                <p class="dt-section-sub">Структура витрины: источники → целевые таблицы PostgreSQL</p>
             </div>
-            <div class="pipeline-stat">
-                <div class="stat-icon">&#128273;</div>
-                <div style="flex:1">
-                    <div class="stat-label">Ключи обновления</div>
-                    <div class="stat-value mono">{% if t.upsert_keys %}{{ t.upsert_keys | join(', ') }}{% else %}--{% endif %}</div>
+            <button class="dt-btn primary" onclick="syncDatabase()">
+                <span class="material-symbols-outlined">sync</span>Синхронизация
+            </button>
+        </div>
+        <div class="dt-pipeline-grid">
+            <div class="dt-pipeline-card sources">
+                <div class="dt-pipeline-card-head">
+                    <span class="material-symbols-outlined">database</span>
+                    <span class="dt-pipeline-card-label">Источники</span>
+                </div>
+                <div class="dt-pipeline-card-value">{{ sources|length }}</div>
+                <div class="dt-pipeline-card-meta">MSSQL таблиц</div>
+            </div>
+            <span class="dt-pipeline-arrow material-symbols-outlined">arrow_forward</span>
+            <div class="dt-pipeline-card transform">
+                <div class="dt-pipeline-card-head">
+                    <span class="material-symbols-outlined">transform</span>
+                    <span class="dt-pipeline-card-label">Трансформация</span>
+                </div>
+                <div class="dt-pipeline-card-value">ETL</div>
+                <div class="dt-pipeline-card-meta">binary → uuid, fix_year, etc.</div>
+            </div>
+            <span class="dt-pipeline-arrow material-symbols-outlined">arrow_forward</span>
+            <div class="dt-pipeline-card targets">
+                <div class="dt-pipeline-card-head">
+                    <span class="material-symbols-outlined">table</span>
+                    <span class="dt-pipeline-card-label">Цели</span>
+                </div>
+                <div class="dt-pipeline-card-value">{{ targets|length }}</div>
+                <div class="dt-pipeline-card-meta">PostgreSQL таблиц</div>
+            </div>
+        </div>
+
+        {% if targets %}
+        <div class="dt-targets-list">
+            {% for t in targets %}
+            <div class="dt-target-row">
+                <div class="dt-target-icon role-{{ t.target_role or 'fact' }}">
+                    <span class="material-symbols-outlined">
+                        {{ 'view_module' if t.target_role == 'dimension' else 'view_list' }}
+                    </span>
+                </div>
+                <div class="dt-target-body">
+                    <div class="dt-target-name">
+                        <code>{{ t.target_schema }}.{{ t.target_table }}</code>
+                        {% if t.target_role %}
+                            <span class="dt-target-role role-{{ t.target_role }}">{{ t.target_role }}</span>
+                        {% endif %}
+                    </div>
+                    <div class="dt-target-meta">
+                        <span>
+                            <span class="material-symbols-outlined">key</span>
+                            {% if t.upsert_keys %}<code>{{ t.upsert_keys | join(', ') }}</code>{% else %}—{% endif %}
+                        </span>
+                        <span class="dt-target-mode">{{ t.load_mode }}</span>
+                    </div>
                 </div>
             </div>
             {% endfor %}
+        </div>
         {% else %}
-        <div class="empty-state" style="padding:24px">
-            <p>Целевая таблица ещё не настроена.</p>
+        <div class="rl-empty" style="margin-top:14px">
+            <p>Целевые таблицы ещё не настроены.</p>
         </div>
         {% endif %}
-            <div class="pipeline-stat">
-                <div class="stat-icon" style="background:var(--blue-50);color:var(--blue-600)">&#9634;</div>
-                <div style="flex:1">
-                    <div class="stat-label">Источники</div>
-                    <div class="stat-value">{{ sources|length }} источников</div>
-                </div>
-            </div>
-            {% if unions %}
-            <div class="pipeline-stat">
-                <div class="stat-icon" style="background:var(--brand-50);color:var(--brand-600)">&#8853;</div>
-                <div style="flex:1">
-                    <div class="stat-label">Выходные колонки</div>
-                    <div class="stat-value mono" style="font-size:11px;font-weight:400">{% for u in unions %}{{ u.output_columns|join(', ') if u.output_columns else '--' }}{% endfor %}</div>
-                </div>
-            </div>
-            {% endif %}
-        </div>
     </div>
 
     <!-- SQL Preview -->
-    <div class="card mb-4">
-        <div class="card-header">
-            <h3><span class="card-icon">&#128196;</span> SQL Превью</h3>
-            <button class="btn btn-secondary btn-sm" onclick="loadSqlPreview()">Сгенерировать</button>
+    <div class="dt-section">
+        <div class="dt-section-head">
+            <div>
+                <h3 class="dt-section-title">
+                    <span class="material-symbols-outlined">code_blocks</span>
+                    SQL превью
+                </h3>
+                <p class="dt-section-sub">Покажет какой SQL движок отправит в MSSQL для каждой целевой таблицы</p>
+            </div>
+            <button class="dt-btn ghost" onclick="loadSqlPreview()">
+                <span class="material-symbols-outlined">play_arrow</span>Сгенерировать
+            </button>
         </div>
-        <pre id="sql_preview" class="sql-preview" style="display:none"></pre>
+        <pre id="sql_preview" class="dt-sql-preview" style="display:none"></pre>
     </div>
 
     <!-- Load History -->
-    <div class="card">
-        <div class="card-header">
-            <h3><span class="card-icon">&#128340;</span> История загрузок</h3>
+    <div class="dt-section">
+        <div class="dt-section-head">
+            <div>
+                <h3 class="dt-section-title">
+                    <span class="material-symbols-outlined">history</span>
+                    История загрузок
+                </h3>
+                <p class="dt-section-sub">Последние запуски ETL для этой витрины</p>
+            </div>
         </div>
         {% if history %}
-        <div class="table-wrap">
-            <table>
+        <div class="dt-history-wrap">
+            <table class="dt-history-table">
                 <thead>
                     <tr>
                         <th>Начало</th>
-                        <th>Таблица</th>
+                        <th>Режим</th>
                         <th>Статус</th>
                         <th>Строк</th>
                         <th>Время</th>
+                        <th>Checkpoint</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for h in history %}
                     <tr>
-                        <td>{{ h.started_at.strftime('%d.%m.%Y %H:%M') if h.started_at else '--' }}</td>
-                        <td class="text-mono">{{ h.target_table or '--' }}</td>
+                        <td>{{ h.started_at.strftime('%d.%m.%Y %H:%M:%S') if h.started_at else '—' }}</td>
+                        <td><code>{{ h.run_mode or '—' }}</code></td>
                         <td>
-                            {% if h.status == 'success' %}
-                                <span class="badge badge-active">success</span>
-                            {% elif h.status == 'error' %}
-                                <span class="badge badge-inactive">error</span>
-                            {% else %}
-                                <span class="badge badge-info">{{ h.status }}</span>
-                            {% endif %}
+                            <span class="dt-history-status {{ h.status }}">
+                                {% if h.status == 'success' %}
+                                    <span class="material-symbols-outlined">check_circle</span>success
+                                {% elif h.status in ['error', 'failed'] %}
+                                    <span class="material-symbols-outlined">error</span>{{ h.status }}
+                                {% elif h.status == 'running' %}
+                                    <span class="material-symbols-outlined">progress_activity</span>running
+                                {% else %}{{ h.status }}{% endif %}
+                            </span>
                         </td>
-                        <td>{{ h.rows_loaded if h.rows_loaded is not none else '--' }}</td>
+                        <td><b>{{ '{:,}'.format(h.rows_loaded).replace(',', ' ') if h.rows_loaded is not none else '—' }}</b></td>
                         <td>
                             {% if h.started_at and h.finished_at %}
-                                {{ (h.finished_at - h.started_at).total_seconds()|round(1) }}s
-                            {% else %}--{% endif %}
+                                {{ (h.finished_at - h.started_at).total_seconds()|round(1) }} с
+                            {% else %}—{% endif %}
+                        </td>
+                        <td class="dt-history-cp">
+                            {% if h.checkpoint_value %}<code title="{{ h.checkpoint_value }}">{{ h.checkpoint_value[:60] }}{% if h.checkpoint_value|length > 60 %}…{% endif %}</code>{% else %}—{% endif %}
+                            {% if h.error_message %}<div class="dt-history-err">{{ h.error_message[:200] }}</div>{% endif %}
                         </td>
                     </tr>
                     {% endfor %}
@@ -345,8 +516,12 @@
             </table>
         </div>
         {% else %}
-        <div class="empty-state" style="padding:24px">
+        <div class="rl-empty" style="margin-top:14px">
+            <span class="material-symbols-outlined" style="font-size:48px;opacity:.4">history_off</span>
             <p>Истории загрузок пока нет.</p>
+            <button class="dt-btn primary" onclick="syncDatabase()">
+                <span class="material-symbols-outlined">sync</span>Запустить синхронизацию
+            </button>
         </div>
         {% endif %}
     </div>
@@ -415,23 +590,101 @@ function autoTransforms() {
     .catch(err => { alert('Ошибка: ' + err); btn.textContent = 'Авто-преобразования'; btn.disabled = false; });
 }
 
-function syncDatabase() {
+// Header overflow menu
+function dtToggleMenu(btn) {
+    const m = document.getElementById('dt_menu');
+    if (!m) return;
+    const open = m.style.display !== 'none';
+    m.style.display = open ? 'none' : 'block';
+    if (!open) {
+        setTimeout(() => {
+            document.addEventListener('click', dtCloseMenu, { once: true });
+        }, 0);
+    }
+}
+function dtCloseMenu(e) {
+    const m = document.getElementById('dt_menu');
+    if (!m) return;
+    if (e && (m.contains(e.target) || e.target.closest('.dt-btn.icon'))) {
+        // Клик внутри меню или по самой кнопке — оставим открытым/закроем через toggle
+        return;
+    }
+    m.style.display = 'none';
+}
+
+function syncDatabase(confirm = false) {
     const btn = document.getElementById('syncDbBtn');
     btn.innerHTML = '<span class="spinner"></span> Синхронизация...';
     btn.disabled = true;
-    fetch(`/api/registers/${REG_ID}/sync`, {method: 'POST'})
+    const url = `/api/registers/${REG_ID}/sync${confirm ? '?confirm=true' : ''}`;
+    fetch(url, {method: 'POST'})
     .then(r => r.json())
     .then(data => {
+        // Сервер просит подтверждение destructive-изменений
+        if (data.requires_confirm) {
+            btn.textContent = 'Синхронизация'; btn.disabled = false;
+            renderSyncConfirmModal(data.plans);
+            return;
+        }
         if (data.ok) {
-            btn.textContent = 'Готово!';
+            btn.textContent = data.recreated ? 'Пересоздано!' : 'Готово!';
             btn.style.background = 'var(--green-600)';
-            setTimeout(() => { btn.textContent = 'Синхронизация'; btn.style.background = ''; btn.disabled = false; }, 2000);
+            setTimeout(() => { btn.textContent = 'Синхронизация'; btn.style.background = ''; btn.disabled = false; }, 2500);
+            if (data.recreated) {
+                alert('Таблицы пересозданы. Запусти full_period — данные потеряны.');
+            }
         } else {
-            alert('Sync error: ' + (data.error || 'unknown'));
+            const errMsg = data.error
+              || (data.applied || []).flatMap(p => p.errors || []).join('\n')
+              || 'unknown';
+            alert('Sync error:\n' + errMsg);
             btn.textContent = 'Синхронизация'; btn.disabled = false;
         }
     })
-    .catch(() => { alert('Sync failed'); btn.textContent = 'Синхронизация'; btn.disabled = false; });
+    .catch(err => { alert('Sync failed: ' + err); btn.textContent = 'Синхронизация'; btn.disabled = false; });
+}
+
+function renderSyncConfirmModal(plans) {
+    const m = document.getElementById('syncConfirmModal');
+    const list = document.getElementById('syncConfirmList');
+
+    let totalRows = 0;
+    let html = '';
+    plans.forEach(p => {
+        if (!p.actions || !p.actions.length) return;
+        const destructiveActs = p.actions.filter(a => a.destructive);
+        if (!destructiveActs.length) return;
+        totalRows += (p.rows_in_table || 0);
+
+        html += `<div class="sync-table-block">
+            <div class="sync-table-name">📊 <code>${p.full_table_name}</code>
+                <span class="sync-rows">— ${p.rows_in_table || 0} строк будет потеряно</span>
+            </div>
+            <ul class="sync-actions">`;
+        destructiveActs.forEach(a => {
+            const icon = a.kind === 'drop_column' ? '🗑' :
+                         a.kind === 'add_column' ? '➕' :
+                         a.kind === 'alter_type' ? '🔁' : '⚠';
+            html += `<li><span class="sync-icon">${icon}</span>
+                <code>${a.col || a.kind}</code>
+                <span class="sync-reason">${a.reason || a.kind}</span>
+            </li>`;
+        });
+        html += '</ul></div>';
+    });
+
+    list.innerHTML = html;
+    document.getElementById('syncConfirmTotalRows').textContent = totalRows;
+    m.style.display = 'flex';
+}
+
+function syncConfirmCancel() {
+    document.getElementById('syncConfirmModal').style.display = 'none';
+}
+
+function syncConfirmProceed() {
+    document.getElementById('syncConfirmModal').style.display = 'none';
+    syncDatabase(true);
 }
 
 function loadSqlPreview() {
@@ -591,6 +844,9 @@ let cbDensity = localStorage.getItem('cb_density') || 'roomy';
 let cbCommonFields = [];
 let cbCustomRegistry = [];
 let cbPickerOpen = true;
+let cb2Filter = 'all';                  // 'all' | <target_id:number> | 'ignored'
+let cb2AdvancedShown = localStorage.getItem('cb_advanced_shown') === '1';
+let cb2ManualOverride = {};             // {col: true} — пользователь явно поменял target
 
 document.addEventListener('click', function(e) {
     if (e.target.matches('[data-tab="tab-columns"]') && !cbLoaded) {
@@ -622,10 +878,8 @@ function cbUpdateStats() {
 
 function cbLoadAll() {
     const btn = document.getElementById('cb_load_btn');
-    btn.innerHTML = '<span class="spinner"></span> Загрузка...';
-    btn.disabled = true;
+    if (btn) { btn.innerHTML = '<span class="spinner"></span>'; btn.disabled = true; }
 
-    // Load: existing mappings + common fields + custom transforms + column-targets
     Promise.all([
         fetch('/api/registers/' + REG_ID + '/column-builder').then(r => r.json()),
         fetch('/api/registers/' + REG_ID + '/common-fields').then(r => r.json()),
@@ -638,13 +892,20 @@ function cbLoadAll() {
         cbCustomRegistry = ctData || [];
         cbTargets = ctgData.targets || [];
         cbColumnMap = ctgData.column_map || {};
+
+        cb2Render();
         cbRenderExisting();
-        cbRenderFields();
         cbUpdateStats();
-        btn.textContent = 'Обновить';
-        btn.disabled = false;
+
+        // Sync advanced visibility
+        const advWrap = document.getElementById('cb_advanced_wrap');
+        if (advWrap) advWrap.style.display = cb2AdvancedShown ? '' : 'none';
+        const advBtn = document.getElementById('cb2_adv_btn');
+        if (advBtn) advBtn.classList.toggle('is-active', cb2AdvancedShown);
+
+        if (btn) { btn.textContent = '↻'; btn.disabled = false; }
     })
-    .catch(err => { alert('Ошибка: ' + err); btn.textContent = 'Загрузить'; btn.disabled = false; });
+    .catch(err => { alert('Ошибка: ' + err); if (btn) { btn.textContent = '↻'; btn.disabled = false; } });
 }
 
 function cbSetView(view) {
@@ -1194,7 +1455,10 @@ function cbRenderFields() {
     let html = '<div style="padding:6px 16px;border-bottom:1px solid var(--border);display:grid;grid-template-columns:32px 1fr 90px 120px 100px;gap:8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:.5px">'
         + '<span></span><span>Имя 1С</span><span>Тип</span><span>Преобразование</span><span>Источники</span></div>';
 
-    unmapped.forEach((f, i) => {
+    unmapped.forEach((f) => {
+        // Используем индекс ПОЛНОГО cbCommonFields, не отфильтрованного:
+        // cbBatchAdd обращается к cbCommonFields[idx], иначе индексы съезжают.
+        const i = cbCommonFields.indexOf(f);
         const allMapped = f.sources.every(s => s.is_mapped);
         const targetCol = f.onec_name.toLowerCase()
             .replace(/[а-яё]/gi, c => {
@@ -1390,6 +1654,623 @@ function cmSelectFunc() {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════
+// SIMPLE COLUMN BUILDER (cb2_*) — главный экран
+// ═══════════════════════════════════════════════════════════════
+
+function cb2ToggleAdvanced() {
+    cb2AdvancedShown = !cb2AdvancedShown;
+    localStorage.setItem('cb_advanced_shown', cb2AdvancedShown ? '1' : '0');
+    const wrap = document.getElementById('cb_advanced_wrap');
+    if (wrap) wrap.style.display = cb2AdvancedShown ? '' : 'none';
+    const btn = document.getElementById('cb2_adv_btn');
+    if (btn) btn.classList.toggle('is-active', cb2AdvancedShown);
+}
+
+function cb2RowsFromMap(colMap, computedCols) {
+    // Унифицированный список строк для таблицы
+    const rows = [];
+    Object.keys(colMap).forEach(col => {
+        const info = colMap[col];
+        const entry = cbColumnMap[col] || {targets: [], auto: false};
+        rows.push({col, info, isComputed: false, entry});
+    });
+    computedCols.forEach(m => {
+        const col = m.target_column;
+        const entry = cbColumnMap[col] || {targets: [], auto: false};
+        const params = typeof m.transform_params === 'string' ? JSON.parse(m.transform_params || '{}') : (m.transform_params || {});
+        const regEntry = cbCustomRegistry.find(r => r.name === params.function);
+        rows.push({col, info: {type: m.target_type, transform: 'custom_python', onec_name: null, sources: [{source_id: m._source_id}], source_types: new Set([m._source_type])}, isComputed: true, entry, funcName: params.function, regEntry});
+    });
+    // Алфавитно
+    rows.sort((a, b) => a.col.localeCompare(b.col));
+    return rows;
+}
+
+function cb2RowStatus(row) {
+    // ignored | error | auto | manual
+    const errors = row.isComputed && row.regEntry
+        ? row.regEntry.uses_columns.filter(c => !cb2HasMappedTarget(c))
+        : [];
+    if (errors.length > 0) return {kind: 'error', errors};
+    if (!row.entry.targets || row.entry.targets.length === 0) return {kind: 'ignored'};
+    if (row.entry.auto && !cb2ManualOverride[row.col]) return {kind: 'auto'};
+    return {kind: 'manual'};
+}
+
+function cb2HasMappedTarget(col) {
+    return Object.prototype.hasOwnProperty.call(cbColumnMap, col);
+}
+
+function cb2BuildSourceLabel(row) {
+    const types = Array.from(row.info.source_types || []);
+    const srcIds = new Set((row.info.sources || []).map(s => s.source_id));
+    const srcNames = cbSources.filter(s => srcIds.has(s.id)).map(s => s.onec_name || s.source_code);
+    let label = '';
+    if (row.isComputed) label = 'ƒ formula';
+    else if (srcNames.length === 0) label = '—';
+    else if (srcNames.length === 1) label = srcNames[0];
+    else label = srcNames[0] + ' + ' + (srcNames.length - 1);
+    const typeBadges = types.map(t => {
+        if (t === 'header') return '<span class="cb2-tbadge header">header</span>';
+        if (t === 'detail') return '<span class="cb2-tbadge detail">VT</span>';
+        if (t === 'standalone') return '<span class="cb2-tbadge accum">accum</span>';
+        return '';
+    }).join('');
+    return {label, typeBadges};
+}
+
+function cb2RenderChips() {
+    const wrap = document.getElementById('cb2_chips');
+    if (!wrap) return;
+    const {colMap, computedCols} = cbBuildColData();
+    const rows = cb2RowsFromMap(colMap, computedCols);
+    const counts = {all: rows.length, ignored: 0};
+    cbTargets.forEach(t => counts[t.id] = 0);
+    rows.forEach(r => {
+        const tgts = r.entry.targets || [];
+        if (tgts.length === 0) counts.ignored++;
+        else tgts.forEach(tid => { counts[tid] = (counts[tid] || 0) + 1; });
+    });
+
+    let html = '';
+    html += '<button class="cb2-chip' + (cb2Filter === 'all' ? ' is-active' : '') + '" onclick="cb2SetFilter(\'all\')">Все <span>' + counts.all + '</span></button>';
+    cbTargets.forEach(t => {
+        const role = t.target_role || 'fact';
+        html += '<button class="cb2-chip ' + role + (cb2Filter == t.id ? ' is-active' : '') + '" onclick="cb2SetFilter(' + t.id + ')">' + t.target_table + ' <span>' + (counts[t.id] || 0) + '</span></button>';
+    });
+    html += '<button class="cb2-chip ignored' + (cb2Filter === 'ignored' ? ' is-active' : '') + '" onclick="cb2SetFilter(\'ignored\')">не грузить <span>' + counts.ignored + '</span></button>';
+    wrap.innerHTML = html;
+}
+
+function cb2SetFilter(f) {
+    cb2Filter = f;
+    cb2Render();
+}
+
+function cb2RenderStats() {
+    const {colMap, computedCols} = cbBuildColData();
+    const rows = cb2RowsFromMap(colMap, computedCols);
+    let ignored = 0, errors = 0;
+    const perTarget = {};
+    cbTargets.forEach(t => perTarget[t.id] = 0);
+    rows.forEach(r => {
+        const s = cb2RowStatus(r);
+        if (s.kind === 'error') errors++;
+        if (s.kind === 'ignored') ignored++;
+        (r.entry.targets || []).forEach(tid => { perTarget[tid] = (perTarget[tid] || 0) + 1; });
+    });
+    document.getElementById('cb2_st_total').textContent = rows.length;
+    document.getElementById('cb2_st_ignored').textContent = ignored;
+    document.getElementById('cb2_st_errors').textContent = errors;
+
+    let tgHtml = '';
+    cbTargets.forEach(t => {
+        const role = t.target_role || 'fact';
+        tgHtml += '<div class="cb2-stat ' + role + '"><b>' + (perTarget[t.id] || 0) + '</b><span>' + t.target_table + '</span></div>';
+    });
+    document.getElementById('cb2_st_targets').outerHTML = '<div class="cb2-stat-group" id="cb2_st_targets">' + tgHtml + '</div>';
+}
+
+function cb2TargetSelect(row) {
+    const assigned = new Set(row.entry.targets || []);
+    const isIgnored = assigned.size === 0;
+    let html = '<div class="cb2-tgt-chips" data-col="' + escAttr(row.col) + '">';
+    cbTargets.forEach(t => {
+        const isSel = assigned.has(t.id);
+        const role = t.target_role || 'fact';
+        html += '<button type="button" class="cb2-tgt-chip ' + role + (isSel ? ' is-active' : '') + '"'
+            + ' data-tid="' + t.id + '"'
+            + ' onclick="cb2ToggleTarget(this, ' + t.id + ')"'
+            + ' title="' + escAttr(t.target_table) + ' (' + role + ')">'
+            + t.target_table
+            + '</button>';
+    });
+    html += '<button type="button" class="cb2-tgt-chip ignore' + (isIgnored ? ' is-active' : '') + '"'
+        + ' data-tid="ignore"'
+        + ' onclick="cb2ToggleTarget(this, null)"'
+        + ' title="не грузить">✕</button>';
+    html += '</div>';
+    return html;
+}
+
+function cb2TransformSelect(row) {
+    if (row.isComputed) {
+        return '<span class="cb2-x-ro">' + (row.funcName || 'custom_python') + '</span>';
+    }
+    const cur = row.info.transform || '';
+    const opts = [
+        ['', '— нет —'],
+        ['binary_to_uuid', 'binary_to_uuid'],
+        ['date_year_to_full', 'date_year_to_full'],
+        ['period_to_year_safe', 'period_to_year_safe'],
+        ['decimal', 'decimal'],
+        ['recorder_type_lookup', 'recorder_type_lookup'],
+    ];
+    let sel = '<select class="cb2-transform-select" data-col="' + escAttr(row.col) + '" onchange="cb2OnTransformChange(this)">';
+    opts.forEach(([v, lbl]) => {
+        sel += '<option value="' + v + '"' + (cur === v ? ' selected' : '') + '>' + lbl + '</option>';
+    });
+    if (cur && !opts.find(o => o[0] === cur)) {
+        sel += '<option value="' + cur + '" selected>' + cur + '</option>';
+    }
+    sel += '</select>';
+    return sel;
+}
+
+function cb2RowGroup(row) {
+    if (row.isComputed) return 'register';
+    const types = Array.from(row.info.source_types || []);
+    if (types.includes('standalone')) return 'register';
+    if (types.includes('header') || types.includes('detail')) return 'docs';
+    return 'register';
+}
+
+// Имена 1С/колонок, которые из AccumRg обычно идут в dim (sales)
+const CB2_ACCUMRG_DIM_TOKENS = ['period', 'recorder', 'recorderrref', 'recordertref', 'recorder_type', 'doc_type', 'period_data'];
+const CB2_ACCUMRG_DIM_ONEC = ['период', 'регистратор', 'типрегистратора', 'дата', 'documenttype'];
+
+// Имена 1С/колонок, которые из AccumRg обычно идут в fact (sales_positions)
+const CB2_ACCUMRG_FACT_TOKENS = ['nomenclature', 'quantity', 'cost', 'amount', 'price', 'division', 'line_no', 'lineno', 'linenumber'];
+const CB2_ACCUMRG_FACT_ONEC = ['номенклатура', 'количество', 'стоимость', 'сумма', 'цена', 'подразделение', 'номерстроки'];
+
+function cb2MatchTokens(row, tokens, onecTokens) {
+    const col = (row.col || '').toLowerCase();
+    const onec = (row.info?.onec_name || '').toLowerCase();
+    for (const t of tokens) if (col.includes(t)) return true;
+    for (const t of onecTokens) if (onec.includes(t)) return true;
+    return false;
+}
+
+function cb2Render() {
+    cb2RenderChips();
+    cb2RenderStats();
+    cb2RenderSystemFields();
+
+    const ctReg = document.getElementById('cb2_main_register');
+    const ctDoc = document.getElementById('cb2_main_docs');
+    const secReg = document.getElementById('cb2_section_register');
+    const secDoc = document.getElementById('cb2_section_docs');
+    if (!ctReg || !ctDoc) return;
+
+    if (!cbSources || cbSources.length === 0) {
+        ctReg.innerHTML = '<div class="empty-state" style="padding:32px;text-align:center"><p>Сначала добавьте источники на вкладке <strong>Источники</strong>.</p></div>';
+        ctDoc.innerHTML = '';
+        if (secDoc) secDoc.style.display = 'none';
+        return;
+    }
+
+    const {colMap, computedCols} = cbBuildColData();
+    const allRows = cb2RowsFromMap(colMap, computedCols);
+
+    // фильтры
+    const q = (document.getElementById('cb2_search')?.value || '').toLowerCase();
+    const filtered = allRows.filter(r => {
+        if (q) {
+            const inName = (r.col || '').toLowerCase().includes(q);
+            const inOnec = ((r.info.onec_name || '') + '').toLowerCase().includes(q);
+            if (!inName && !inOnec) return false;
+        }
+        if (cb2Filter === 'all') return true;
+        if (cb2Filter === 'ignored') return (r.entry.targets || []).length === 0;
+        return (r.entry.targets || []).includes(parseInt(cb2Filter));
+    });
+
+    const registerRows = filtered.filter(r => cb2RowGroup(r) === 'register');
+    const docsRows = filtered.filter(r => cb2RowGroup(r) === 'docs');
+
+    // подсчёт ВСЕХ строк по группе (для подзаголовка)
+    const totalReg = allRows.filter(r => cb2RowGroup(r) === 'register').length;
+    const totalDoc = allRows.filter(r => cb2RowGroup(r) === 'docs').length;
+    document.getElementById('cb2_section_register_sub').textContent = totalReg + ' колонок';
+    document.getElementById('cb2_section_docs_sub').textContent = totalDoc + ' колонок';
+
+    ctReg.innerHTML = cb2RenderTable(registerRows, 'Поля основного регистра не найдены. Загрузите AccumRg.');
+    if (totalDoc === 0) {
+        if (secDoc) secDoc.style.display = 'none';
+    } else {
+        if (secDoc) secDoc.style.display = '';
+        ctDoc.innerHTML = cb2RenderTable(docsRows, 'Нет полей из документов/VT под этот фильтр.');
+    }
+}
+
+function cb2RenderTable(rows, emptyMsg) {
+    if (rows.length === 0) {
+        return '<div class="cb2-table-wrap"><div class="empty-state" style="padding:24px;text-align:center"><p>' + escAttr(emptyMsg) + '</p></div></div>';
+    }
+
+    let html = '<div class="cb2-table-wrap"><table class="cb2-table"><thead><tr>'
+        + '<th class="c-name">1С / Колонка</th>'
+        + '<th class="c-src">Источник</th>'
+        + '<th class="c-dest">Куда грузить</th>'
+        + '<th class="c-dbcol">Колонка в БД</th>'
+        + '<th class="c-tr">Преобразование</th>'
+        + '<th class="c-st">Статус</th>'
+        + '<th class="c-act"></th>'
+        + '</tr></thead><tbody>';
+
+    rows.forEach(r => {
+        const status = cb2RowStatus(r);
+        const {label: srcLabel, typeBadges} = cb2BuildSourceLabel(r);
+        const onec = r.info.onec_name || (r.isComputed ? '<i style="color:var(--purple-600)">ƒ ' + (r.funcName || '') + '</i>' : '—');
+        const type = r.info.type || '—';
+
+        html += '<tr class="cb2-row status-' + status.kind + '" data-col="' + escAttr(r.col) + '">';
+        html += '<td class="c-name">'
+            + '<div class="cb2-name-onec">' + onec + '</div>'
+            + '<div class="cb2-name-type"><span class="cb2-tt">' + type + '</span></div>'
+            + '</td>';
+        html += '<td class="c-src">'
+            + '<div class="cb2-src-name">' + srcLabel + '</div>'
+            + '<div class="cb2-src-types">' + typeBadges + '</div>'
+            + '</td>';
+        html += '<td class="c-dest">' + cb2TargetSelect(r) + '</td>';
+        html += '<td class="c-dbcol">'
+            + '<span class="cb2-dbcol" onclick="cb2StartRenameInline(this, \'' + escAttr(r.col) + '\')" title="Кликни чтобы переименовать">' + escAttr(r.col) + '</span>'
+            + '</td>';
+        html += '<td class="c-tr">' + cb2TransformSelect(r) + '</td>';
+        const statusLabels = {auto: 'auto', manual: 'manual', ignored: 'ignore', error: 'error'};
+        const tip = status.kind === 'error' ? 'Нет колонок: ' + (status.errors || []).join(', ') : '';
+        html += '<td class="c-st"><span class="cb2-badge st-' + status.kind + '" title="' + escAttr(tip) + '">' + statusLabels[status.kind] + '</span></td>';
+        html += '<td class="c-act"><button class="btn btn-ghost btn-xs" onclick="' + (r.isComputed ? 'cbDeleteComputed' : 'cbDeleteColumn') + '(\'' + escAttr(r.col) + '\')" title="Удалить">✕</button></td>';
+        html += '</tr>';
+    });
+
+    html += '</tbody></table></div>';
+    return html;
+}
+
+function cb2RenderSystemFields() {
+    const el = document.getElementById('cb2_sys_cols');
+    if (!el) return;
+    const dim = cbTargets.find(t => t.target_role === 'dimension');
+    const fact = cbTargets.find(t => t.target_role === 'fact');
+    const dimName = dim ? dim.target_table : 'dim';
+    const factName = fact ? fact.target_table : 'fact';
+    const fkCol = dimName + '_id';
+    el.innerHTML =
+        '<div><code>' + dimName + '.id</code> <span>— PostgreSQL <b>BIGSERIAL PRIMARY KEY</b>, авто-инкремент</span></div>' +
+        '<div><code>' + factName + '.id</code> <span>— PostgreSQL <b>BIGSERIAL PRIMARY KEY</b>, авто-инкремент</span></div>' +
+        '<div><code>' + factName + '.' + fkCol + '</code> <span>— FK на <code>' + dimName + '(id)</code>, заполняется post_load_sql после загрузки</span></div>' +
+        '<div><code>recorder</code> / <code>recorder_type</code> / <code>line_no</code> <span>— технические natural-ключи (upsert)</span></div>' +
+        '<div><code>etl_loaded_at</code> / <code>etl_hash</code> <span>— служебные ETL-колонки</span></div>';
+}
+
+function cb2ToggleSysBanner() {
+    const body = document.getElementById('cb2_sys_body');
+    const toggle = document.querySelector('.cb2-sys-toggle');
+    if (!body) return;
+    const isOpen = body.style.display !== 'none';
+    body.style.display = isOpen ? 'none' : '';
+    if (toggle) toggle.textContent = isOpen ? '▸' : '▾';
+}
+
+// ── Inline edit «Колонка в БД» ──
+function cb2StartRenameInline(el, oldName) {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = oldName;
+    input.className = 'cb2-dbcol-edit';
+    input.onblur = function() { cb2FinishRenameInline(this, oldName); };
+    input.onkeydown = function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); this.blur(); }
+        if (e.key === 'Escape') { this.value = oldName; this.dataset.cancel = '1'; this.blur(); }
+    };
+    el.replaceWith(input);
+    input.focus();
+    input.select();
+}
+
+function cb2FinishRenameInline(input, oldName) {
+    const newName = (input.value || '').trim();
+    if (input.dataset.cancel || !newName || newName === oldName) { cb2Render(); return; }
+    fetch('/api/registers/' + REG_ID + '/rename-column', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({old_name: oldName, new_name: newName}),
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.error) alert('Ошибка: ' + d.error);
+        cbLoadAll();
+    })
+    .catch(err => { alert('Ошибка: ' + err); cbLoadAll(); });
+}
+
+// ── Чипы «Куда грузить» (multi-target toggle) ──
+function cb2ToggleTarget(btn, targetId) {
+    const wrap = btn.closest('.cb2-tgt-chips');
+    if (!wrap) return;
+    const col = wrap.dataset.col;
+
+    // Текущее состояние из DOM (а не из cbColumnMap — пользователь мог быстро кликать)
+    let activeIds = Array.from(wrap.querySelectorAll('.cb2-tgt-chip.is-active'))
+        .map(b => b.dataset.tid)
+        .filter(v => v !== 'ignore')
+        .map(v => parseInt(v));
+
+    if (targetId === null) {
+        // клик по ✕ — очистить всё
+        activeIds = [];
+    } else {
+        const i = activeIds.indexOf(targetId);
+        if (i >= 0) activeIds.splice(i, 1);
+        else activeIds.push(targetId);
+    }
+
+    // Optimistic UI: подсветить чипы сразу
+    wrap.querySelectorAll('.cb2-tgt-chip').forEach(b => {
+        const tid = b.dataset.tid;
+        if (tid === 'ignore') {
+            b.classList.toggle('is-active', activeIds.length === 0);
+        } else {
+            b.classList.toggle('is-active', activeIds.includes(parseInt(tid)));
+        }
+    });
+
+    cb2ManualOverride[col] = true;
+
+    fetch('/api/registers/' + REG_ID + '/assign-column-target', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({column: col, target_ids: activeIds})
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.error) { alert('Ошибка: ' + d.error); cbLoadAll(); return; }
+        return fetch('/api/registers/' + REG_ID + '/column-targets').then(r => r.json());
+    })
+    .then(ct => {
+        if (!ct) return;
+        cbColumnMap = ct.column_map || {};
+        cbTargets = ct.targets || cbTargets;
+        cb2RenderChips();
+        cb2RenderStats();
+    })
+    .catch(err => { alert('Ошибка: ' + err); cbLoadAll(); });
+}
+
+// ── Dropdown «Преобразование» ──
+function cb2OnTransformChange(selectEl) {
+    const col = selectEl.dataset.col;
+    const val = selectEl.value || null;
+    fetch('/api/registers/' + REG_ID + '/set-column-transform', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({column: col, transform_type: val})
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.error) { alert('Ошибка: ' + d.error); return; }
+        cbLoadAll();
+    })
+    .catch(err => alert('Ошибка: ' + err));
+}
+
+// ═══ Modal: + Добавить поля ═══
+function cb2OpenAddModal() {
+    const modal = document.getElementById('cb2AddFieldsModal');
+    if (!modal) return;
+    // default target = первый target
+    const sel = document.getElementById('cb2_add_target');
+    sel.innerHTML = '';
+    cbTargets.forEach(t => {
+        sel.innerHTML += '<option value="' + t.id + '">' + t.target_table + ' (' + (t.target_role || 'target') + ')</option>';
+    });
+    sel.innerHTML += '<option value="auto" selected>авто (header→dim, VT→fact)</option>';
+    sel.innerHTML += '<option value="">не грузить (только маппинг)</option>';
+
+    document.getElementById('cb2_add_search').value = '';
+    cb2RenderAddFields();
+    modal.style.display = 'flex';
+}
+
+function cb2CloseAddModal() {
+    document.getElementById('cb2AddFieldsModal').style.display = 'none';
+}
+
+function cb2RenderAddFields() {
+    const container = document.getElementById('cb2_add_list');
+    const q = (document.getElementById('cb2_add_search')?.value || '').toLowerCase();
+    if (cbCommonFields.length === 0) {
+        container.innerHTML = '<div class="empty-state" style="padding:24px"><p>Поля не найдены.</p></div>';
+        return;
+    }
+    const unmapped = cbCommonFields.filter(f => f.mapped_count < f.sources.length);
+    const filtered = unmapped.filter(f => !q || (f.onec_name || '').toLowerCase().includes(q));
+
+    let html = '<div class="cb2-add-head"><span>Имя 1С</span><span>Тип</span><span>Преобразование</span><span>Источники</span></div>';
+    filtered.forEach(f => {
+        const i = cbCommonFields.indexOf(f);
+        const allMapped = f.sources.every(s => s.is_mapped);
+        const targetCol = (f.onec_name || '').toLowerCase().replace(/[а-яё]/gi, c => {
+            const map = {'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'yo','ж':'zh','з':'z','и':'i','й':'y','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u','ф':'f','х':'h','ц':'ts','ч':'ch','ш':'sh','щ':'sch','ъ':'','ы':'y','ь':'','э':'e','ю':'yu','я':'ya','А':'a','Б':'b','В':'v','Г':'g','Д':'d','Е':'e','Ё':'yo','Ж':'zh','З':'z','И':'i','Й':'y','К':'k','Л':'l','М':'m','Н':'n','О':'o','П':'p','Р':'r','С':'s','Т':'t','У':'u','Ф':'f','Х':'h','Ц':'ts','Ч':'ch','Ш':'sh','Щ':'sch','Ъ':'','Ы':'y','Ь':'','Э':'e','Ю':'yu','Я':'ya'};
+            return map[c] || c;
+        }).replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+        const srcCount = f.sources.length;
+        const transform = f.transform_type || '';
+        const targetType = f.target_type || 'text';
+        html += '<label class="cb2-add-row' + (allMapped ? ' is-mapped' : '') + '">'
+            + '<input type="checkbox" class="cb2-add-cb" data-idx="' + i + '" data-onec="' + escAttr(f.onec_name || '') + '" data-target-col="' + targetCol + '" data-target-type="' + targetType + '" data-transform="' + transform + '"' + (allMapped ? ' disabled' : '') + ' onchange="cb2AddUpdateCount()">'
+            + '<span class="cb2-add-name">' + escAttr(f.onec_name || '') + '</span>'
+            + '<span class="cb2-add-type">' + targetType + '</span>'
+            + '<span class="cb2-add-tr">' + (transform || '—') + '</span>'
+            + '<span class="cb2-add-src">' + srcCount + ' / ' + cbSources.length + (allMapped ? ' <span class="badge badge-active" style="font-size:9px">mapped</span>' : '') + '</span>'
+            + '</label>';
+    });
+    container.innerHTML = html;
+    cb2AddUpdateCount();
+}
+
+function cb2AddUpdateCount() {
+    const n = document.querySelectorAll('.cb2-add-cb:checked').length;
+    document.getElementById('cb2_add_count').textContent = n + ' выбрано';
+    document.getElementById('cb2_add_apply').disabled = n === 0;
+}
+
+function cb2AddApply() {
+    const checked = document.querySelectorAll('.cb2-add-cb:checked');
+    if (checked.length === 0) return;
+    const tgtVal = document.getElementById('cb2_add_target').value;
+
+    const columns = [];
+    const targetColsAdded = [];
+    checked.forEach(cb => {
+        const idx = parseInt(cb.dataset.idx);
+        const f = cbCommonFields[idx];
+        const tc = cb.dataset.targetCol;
+        columns.push({
+            onec_name: f.onec_name,
+            target_column: tc,
+            target_type: cb.dataset.targetType,
+            transform_type: cb.dataset.transform || null,
+            sources: f.sources.filter(s => !s.is_mapped).map(s => ({source_id: s.source_id, mssql_column: s.mssql_column})),
+        });
+        targetColsAdded.push(tc);
+    });
+
+    const btn = document.getElementById('cb2_add_apply');
+    btn.disabled = true;
+    btn.textContent = 'Добавляю...';
+
+    fetch('/api/registers/' + REG_ID + '/batch-add-columns', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({columns: columns})
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (!d.ok) { alert('Ошибка: ' + (d.error || 'unknown')); btn.disabled = false; btn.textContent = 'Добавить выбранные'; return; }
+        // assign target если выбран явный target
+        if (tgtVal && tgtVal !== 'auto') {
+            const tid = tgtVal === '' ? null : parseInt(tgtVal);
+            return Promise.all(targetColsAdded.map(c =>
+                fetch('/api/registers/' + REG_ID + '/assign-column-target', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({column: c, target_id: tid})
+                }).then(r => r.json())
+            ));
+        }
+    })
+    .then(() => {
+        cb2CloseAddModal();
+        cbLoadAll();
+    })
+    .catch(err => { alert('Ошибка: ' + err); btn.disabled = false; btn.textContent = 'Добавить выбранные'; });
+}
+
+// ═══ Modal: ⚡ Авто-распределить ═══
+function cb2OpenAutoPreview() {
+    const modal = document.getElementById('cb2AutoPreviewModal');
+    if (!modal) return;
+    const {colMap, computedCols} = cbBuildColData();
+    const rows = cb2RowsFromMap(colMap, computedCols);
+    const dimT = cbTargets.find(t => t.target_role === 'dimension');
+    const factT = cbTargets.find(t => t.target_role === 'fact');
+
+    // Системные колонки которые не маппим из 1С даже если есть имя
+    const SKIP_COLS = new Set(['id', 'sales_id', (dimT?.target_table || '') + '_id', 'etl_loaded_at', 'etl_hash']);
+
+    const planned = {dim: [], fact: [], skip: []};
+    rows.forEach(r => {
+        if (r.isComputed) { planned.skip.push({col: r.col, why: 'formula → не трогаем'}); return; }
+        if (SKIP_COLS.has(r.col)) { planned.skip.push({col: r.col, why: 'системное поле — авто-PK / FK'}); return; }
+
+        const types = Array.from(r.info.source_types || []);
+        const hasStandalone = types.includes('standalone');
+
+        // 1. AccumRg (standalone) — основная логика
+        if (hasStandalone) {
+            const isFactToken = cb2MatchTokens(r, CB2_ACCUMRG_FACT_TOKENS, CB2_ACCUMRG_FACT_ONEC);
+            const isDimToken = cb2MatchTokens(r, CB2_ACCUMRG_DIM_TOKENS, CB2_ACCUMRG_DIM_ONEC);
+            if (isFactToken && factT) {
+                planned.fact.push(r.col); return;
+            }
+            if (isDimToken && dimT) {
+                planned.dim.push(r.col); return;
+            }
+            planned.skip.push({col: r.col, why: 'AccumRg → требует ручной выбор (не опознан как dim/fact)'});
+            return;
+        }
+
+        // 2. Документ header → dim
+        if (types.includes('header') && dimT && !types.includes('detail')) {
+            planned.dim.push(r.col); return;
+        }
+        // 3. VT (detail) → fact, только дополнительные поля
+        if (types.includes('detail') && factT && !types.includes('header')) {
+            planned.fact.push(r.col); return;
+        }
+        planned.skip.push({col: r.col, why: types.length > 1 ? 'смешанный источник: ' + types.join('+') : (types[0] || 'unknown') + ' → ручной выбор'});
+    });
+
+    document.getElementById('cb2_auto_dim_name').textContent = dimT ? dimT.target_table : '—';
+    document.getElementById('cb2_auto_fact_name').textContent = factT ? factT.target_table : '—';
+    document.getElementById('cb2_auto_dim_n').textContent = planned.dim.length;
+    document.getElementById('cb2_auto_fact_n').textContent = planned.fact.length;
+    document.getElementById('cb2_auto_skip_n').textContent = planned.skip.length;
+
+    document.getElementById('cb2_auto_dim_list').textContent = planned.dim.join(', ') || '—';
+    document.getElementById('cb2_auto_fact_list').textContent = planned.fact.join(', ') || '—';
+    document.getElementById('cb2_auto_skip_list').innerHTML = planned.skip.length
+        ? planned.skip.map(s => '<div><code>' + escAttr(s.col) + '</code> <span style="color:var(--fg3)">— ' + escAttr(s.why) + '</span></div>').join('')
+        : '—';
+
+    const applyBtn = document.getElementById('cb2_auto_apply');
+    applyBtn.disabled = (planned.dim.length + planned.fact.length) === 0;
+    applyBtn._moves = [
+        ...planned.dim.map(c => ({column: c, target_id: dimT.id})),
+        ...planned.fact.map(c => ({column: c, target_id: factT.id})),
+    ];
+
+    modal.style.display = 'flex';
+}
+
+function cb2CloseAutoPreview() {
+    document.getElementById('cb2AutoPreviewModal').style.display = 'none';
+}
+
+function cb2AutoApply() {
+    const btn = document.getElementById('cb2_auto_apply');
+    const moves = btn._moves || [];
+    if (moves.length === 0) return;
+    btn.disabled = true;
+    btn.textContent = 'Применение...';
+    Promise.all(moves.map(m =>
+        fetch('/api/registers/' + REG_ID + '/assign-column-target', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(m)
+        }).then(r => r.json())
+    ))
+    .then(() => {
+        cb2CloseAutoPreview();
+        cbLoadAll();
+    })
+    .catch(err => { alert('Ошибка: ' + err); btn.disabled = false; btn.textContent = 'Применить'; });
+}
+
 function cmCreate() {
     const funcName = document.getElementById('cm_func_select').value;
     const colName = document.getElementById('cm_col_name').value.trim();
@@ -1422,47 +2303,201 @@ function cmCreate() {
 {% endblock %}
 
 {% block modals %}
-<div id="computedModal" class="modal-backdrop" style="display:none">
-    <div class="modal" style="max-width:460px">
-        <h3>Добавить вычисляемую колонку</h3>
-        <div style="display:flex;flex-direction:column;gap:12px;margin:16px 0">
-            <div>
-                <label style="font-size:12px;font-weight:600;color:var(--text-2)">Функция</label>
-                <select id="cm_func_select" onchange="cmSelectFunc()" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13px;background:var(--bg)"></select>
+<!-- ═══════ Sync confirm (destructive changes) ═══════ -->
+<div id="syncConfirmModal" class="modal-backdrop" style="display:none">
+    <div class="modal" style="max-width:560px">
+        <div class="dt-modal-head">
+            <div class="dt-modal-head-title">
+                <span class="dt-modal-head-title-icon danger">
+                    <span class="material-symbols-outlined">warning</span>
+                </span>
+                <h3>Подтверждение пересоздания таблицы</h3>
             </div>
-            <div style="font-size:12px;color:var(--text-2)">
-                <span id="cm_description"></span>
-            </div>
-            <div style="font-size:12px;color:var(--text-3)">
-                Использует колонки: <strong id="cm_uses"></strong>
-            </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-                <div>
-                    <label style="font-size:12px;font-weight:600;color:var(--text-2)">Имя колонки</label>
-                    <input id="cm_col_name" type="text" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13px;background:var(--bg)">
-                </div>
-                <div>
-                    <label style="font-size:12px;font-weight:600;color:var(--text-2)">Тип</label>
-                    <input id="cm_col_type" type="text" value="decimal" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13px;background:var(--bg)">
-                </div>
+            <button type="button" class="dt-modal-close" onclick="syncConfirmCancel()">
+                <span class="material-symbols-outlined">close</span>
+            </button>
+        </div>
+        <div class="dt-modal-body">
+            <p>
+                Sync обнаружил изменения, которые нельзя применить без потери данных.
+                Таблицы будут <strong>пересозданы целиком</strong> (DROP + CREATE),
+                существующие строки удалятся.
+            </p>
+            <div id="syncConfirmList" class="dt-sync-list"></div>
+            <div class="dt-modal-warn-banner">
+                <span class="material-symbols-outlined">push_pin</span>
+                <span>
+                    <strong>После пересоздания нужно заново загрузить данные</strong> через <code>full_period</code>.
+                    Всего строк под удаление: <strong id="syncConfirmTotalRows">0</strong>.
+                </span>
             </div>
         </div>
-        <div id="cm_error" style="display:none;padding:10px 14px;background:var(--red-50,#fef2f2);border:1px solid var(--red-200,#fecaca);border-radius:var(--radius-sm);color:var(--red-700,#b91c1c);font-size:12px;margin-bottom:8px"></div>
-        <div class="btn-group" style="justify-content:flex-end">
-            <button type="button" class="btn btn-secondary" onclick="document.getElementById('computedModal').style.display='none'">Отмена</button>
-            <button type="button" class="btn btn-primary" onclick="cmCreate()">Создать</button>
+        <div class="dt-modal-foot">
+            <button type="button" class="dt-btn ghost" onclick="syncConfirmCancel()">Отмена</button>
+            <button type="button" class="dt-btn danger" onclick="syncConfirmProceed()">
+                <span class="material-symbols-outlined">delete_sweep</span>
+                Пересоздать
+            </button>
         </div>
     </div>
 </div>
 
+<!-- ═══════ Computed column ═══════ -->
+<div id="computedModal" class="modal-backdrop" style="display:none">
+    <div class="modal" style="max-width:480px">
+        <div class="dt-modal-head">
+            <div class="dt-modal-head-title">
+                <span class="dt-modal-head-title-icon info">
+                    <span class="material-symbols-outlined">function</span>
+                </span>
+                <h3>Вычисляемая колонка</h3>
+            </div>
+            <button type="button" class="dt-modal-close" onclick="document.getElementById('computedModal').style.display='none'">
+                <span class="material-symbols-outlined">close</span>
+            </button>
+        </div>
+        <div class="dt-modal-body">
+            <div class="dt-form-grid">
+                <div class="dt-form-group dt-form-group-wide">
+                    <label>Функция</label>
+                    <select id="cm_func_select" onchange="cmSelectFunc()"></select>
+                </div>
+                <div class="dt-form-group dt-form-group-wide" id="cm_meta_box" style="background:var(--ds-surface-3);padding:10px 12px;border-radius:var(--radius);">
+                    <div id="cm_description" style="font-size:12.5px;color:var(--ds-fg-muted);"></div>
+                    <div style="margin-top:6px;font-size:11.5px;color:var(--ds-fg-faint)">
+                        Использует колонки: <strong id="cm_uses" style="font-family:'JetBrains Mono',monospace;color:var(--ds-fg)"></strong>
+                    </div>
+                </div>
+                <div class="dt-form-group">
+                    <label>Имя колонки</label>
+                    <input id="cm_col_name" type="text">
+                </div>
+                <div class="dt-form-group">
+                    <label>Тип</label>
+                    <input id="cm_col_type" type="text" value="decimal">
+                </div>
+            </div>
+            <div id="cm_error" class="wz2-msg error" style="display:none;margin-top:12px"></div>
+        </div>
+        <div class="dt-modal-foot">
+            <button type="button" class="dt-btn ghost" onclick="document.getElementById('computedModal').style.display='none'">Отмена</button>
+            <button type="button" class="dt-btn primary" onclick="cmCreate()">
+                <span class="material-symbols-outlined">add</span>
+                Создать
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════ cb2: Добавить поля ═══════ -->
+<div id="cb2AddFieldsModal" class="modal-backdrop" style="display:none">
+    <div class="modal" style="max-width:760px">
+        <div class="dt-modal-head">
+            <div class="dt-modal-head-title">
+                <span class="dt-modal-head-title-icon info">
+                    <span class="material-symbols-outlined">add_circle</span>
+                </span>
+                <h3>Добавить поля из источников</h3>
+            </div>
+            <button type="button" class="dt-modal-close" onclick="cb2CloseAddModal()">
+                <span class="material-symbols-outlined">close</span>
+            </button>
+        </div>
+        <div class="dt-modal-body">
+            <div class="cb2-add-toolbar">
+                <div class="cb2-search" style="flex:1">
+                    <span class="cb2-search-ic material-symbols-outlined">search</span>
+                    <input type="text" id="cb2_add_search" placeholder="Поиск по имени поля…" oninput="cb2RenderAddFields()">
+                </div>
+                <div class="dt-form-group" style="min-width:200px">
+                    <label>Куда добавить</label>
+                    <select id="cb2_add_target"></select>
+                </div>
+            </div>
+            <div id="cb2_add_list" class="cb2-add-list-wrap"></div>
+        </div>
+        <div class="dt-modal-foot with-counter">
+            <span id="cb2_add_count" class="dt-modal-foot-counter">0 выбрано</span>
+            <div style="display:flex;gap:8px">
+                <button type="button" class="dt-btn ghost" onclick="cb2CloseAddModal()">Отмена</button>
+                <button id="cb2_add_apply" class="dt-btn primary" onclick="cb2AddApply()" disabled>
+                    <span class="material-symbols-outlined">add</span>
+                    Добавить выбранные
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════ cb2: Авто-распределить preview ═══════ -->
+<div id="cb2AutoPreviewModal" class="modal-backdrop" style="display:none">
+    <div class="modal" style="max-width:620px">
+        <div class="dt-modal-head">
+            <div class="dt-modal-head-title">
+                <span class="dt-modal-head-title-icon warn">
+                    <span class="material-symbols-outlined">bolt</span>
+                </span>
+                <h3>Авто-распределить колонки</h3>
+            </div>
+            <button type="button" class="dt-modal-close" onclick="cb2CloseAutoPreview()">
+                <span class="material-symbols-outlined">close</span>
+            </button>
+        </div>
+        <div class="dt-modal-body">
+            <p>
+                Правило: <code>header</code> → dim target, <code>VT</code> → fact target. Остальные пропускаются.
+            </p>
+            <div class="cb2-auto-grid">
+                <div class="cb2-auto-tile dim">
+                    <div class="t"><span class="material-symbols-outlined">view_module</span><b id="cb2_auto_dim_name">dim</b></div>
+                    <div class="n"><b id="cb2_auto_dim_n">0</b> колонок</div>
+                    <div class="lst" id="cb2_auto_dim_list">—</div>
+                </div>
+                <div class="cb2-auto-tile fact">
+                    <div class="t"><span class="material-symbols-outlined">view_list</span><b id="cb2_auto_fact_name">fact</b></div>
+                    <div class="n"><b id="cb2_auto_fact_n">0</b> колонок</div>
+                    <div class="lst" id="cb2_auto_fact_list">—</div>
+                </div>
+            </div>
+            <details class="cb2-auto-skip">
+                <summary><b id="cb2_auto_skip_n">0</b> колонок пропущено</summary>
+                <div id="cb2_auto_skip_list"></div>
+            </details>
+        </div>
+        <div class="dt-modal-foot">
+            <button type="button" class="dt-btn ghost" onclick="cb2CloseAutoPreview()">Отмена</button>
+            <button id="cb2_auto_apply" class="dt-btn primary" onclick="cb2AutoApply()">
+                <span class="material-symbols-outlined">check</span>
+                Применить
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════ Delete confirm ═══════ -->
 <div id="deleteModal" class="modal-backdrop">
     <div class="modal">
-        <h3>Подтвердите удаление</h3>
-        <p>Вы уверены, что хотите удалить <strong class="delete-name"></strong>? Это действие нельзя отменить.</p>
-        <form method="POST" action="">
-            <div class="btn-group" style="justify-content:flex-end">
-                <button type="button" class="btn btn-secondary" onclick="hideDeleteModal()">Отмена</button>
-                <button type="submit" class="btn btn-danger">Удалить</button>
+        <div class="dt-modal-head">
+            <div class="dt-modal-head-title">
+                <span class="dt-modal-head-title-icon danger">
+                    <span class="material-symbols-outlined">delete</span>
+                </span>
+                <h3>Подтвердите удаление</h3>
+            </div>
+            <button type="button" class="dt-modal-close" onclick="hideDeleteModal()">
+                <span class="material-symbols-outlined">close</span>
+            </button>
+        </div>
+        <div class="dt-modal-body">
+            <p>Вы уверены, что хотите удалить <strong class="delete-name"></strong>? Это действие нельзя отменить.</p>
+        </div>
+        <form method="POST" action="" style="margin:0">
+            <div class="dt-modal-foot">
+                <button type="button" class="dt-btn ghost" onclick="hideDeleteModal()">Отмена</button>
+                <button type="submit" class="dt-btn danger">
+                    <span class="material-symbols-outlined">delete</span>
+                    Удалить
+                </button>
             </div>
         </form>
     </div>

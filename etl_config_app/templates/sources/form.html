@@ -4,61 +4,91 @@
 {% block title %}{{ 'Редактировать' if source else 'Новый' }} источник — ETL Config{% endblock %}
 
 {% block breadcrumb %}
-    <li><a href="/registers">Регистры</a></li>
+    <li><a href="/registers">Витрины</a></li>
     <li><a href="/registers/{{ register.id }}">{{ register.code }}</a></li>
     <li class="active">{{ 'Редактировать' if source else 'Новый источник' }}</li>
 {% endblock %}
 
 {% block content %}
-<div class="page-header">
-    <h2>{{ 'Редактировать источник' if source else 'Добавить источник' }} <span class="text-muted" style="font-size:16px">{{ register.code }}</span></h2>
-</div>
+<div class="wz-shell" style="max-width:880px">
+    <div class="wz-header">
+        <h1 class="wz-title">
+            {% if source %}Редактировать источник{% else %}Новый источник{% endif %}
+        </h1>
+        <p class="wz-subtitle">
+            Витрина: <code style="font-family:'JetBrains Mono',monospace;background:var(--ds-surface-3);padding:2px 6px;border-radius:4px">{{ register.code }}</code>
+            {% if source %}<span class="dt-meta-sep">·</span> <code style="font-family:'JetBrains Mono',monospace">{{ source.source_code }}</code>{% endif %}
+        </p>
+    </div>
 
-<div class="card">
-    <div class="card-body">
-        <form method="POST" action="{{ '/sources/' ~ source.id ~ '/edit' if source else '/registers/' ~ register.id ~ '/sources/new' }}">
-            <div class="form-grid">
-                <div class="form-group">
-                    <label for="source_code">Код источника *</label>
+    <form method="POST" action="{{ '/sources/' ~ source.id ~ '/edit' if source else '/registers/' ~ register.id ~ '/sources/new' }}">
+        <!-- Шаг 1: Источник и тип -->
+        <div class="dt-section">
+            <div class="dt-section-head">
+                <div>
+                    <h3 class="dt-section-title">
+                        <span class="material-symbols-outlined">database</span>
+                        Источник 1С
+                    </h3>
+                    <p class="dt-section-sub">Объект 1С и MSSQL-таблица, из которой забираем данные</p>
+                </div>
+            </div>
+            <div class="dt-form-grid">
+                <div class="dt-form-group">
+                    <label for="source_code">Код источника <span style="color:var(--ds-error)">*</span></label>
                     <input type="text" id="source_code" name="source_code" required
                            value="{{ source.source_code if source else '' }}"
                            placeholder="sales_header">
                 </div>
-                <div class="form-group">
-                    <label for="source_type">Тип источника *</label>
+                <div class="dt-form-group">
+                    <label for="source_type">Тип источника <span style="color:var(--ds-error)">*</span></label>
                     <select id="source_type" name="source_type">
-                        <option value="header" {{ 'selected' if source and source.source_type == 'header' }}>шапка (header)</option>
-                        <option value="detail" {{ 'selected' if source and source.source_type == 'detail' }}>табличная часть (detail)</option>
+                        <option value="header" {{ 'selected' if source and source.source_type == 'header' }}>header — шапка</option>
+                        <option value="detail" {{ 'selected' if source and source.source_type == 'detail' }}>detail — табличная часть (VT)</option>
+                        <option value="standalone" {{ 'selected' if source and source.source_type == 'standalone' }}>standalone — самостоятельный</option>
                     </select>
                 </div>
-
-                <div class="form-group full-width">
-                    <label>Объект 1С</label>
+                <div class="dt-form-group dt-form-group-wide">
+                    <label for="search_1c">Объект 1С</label>
                     <div class="autocomplete-wrap">
-                        <input type="text" id="search_1c" placeholder="Начните вводить (напр. ЧекККМ, Номенклатура...)"
-                               value="{{ source.onec_name if source and source.onec_name else '' }}">
+                        <input type="text" id="search_1c"
+                               value="{{ source.onec_name if source and source.onec_name else '' }}"
+                               placeholder="Начните вводить (например ЧекККМ, Номенклатура…)">
                     </div>
                     <input type="hidden" id="onec_name" name="onec_name"
                            value="{{ source.onec_name if source and source.onec_name else '' }}">
-                    <div class="help">Поиск объектов 1С. При выборе автоматически заполняется таблица MSSQL и имя 1С.</div>
+                    <small class="wz2-hint">Поиск через 1С API. При выборе автоматически подставляется MSSQL-таблица.</small>
                 </div>
-
-                <div class="form-group">
+                <div class="dt-form-group">
                     <label for="mssql_schema">Схема MSSQL</label>
                     <input type="text" id="mssql_schema" name="mssql_schema"
                            value="{{ source.mssql_schema if source else 'dbo' }}">
                 </div>
-                <div class="form-group">
-                    <label for="mssql_table">Таблица MSSQL *</label>
+                <div class="dt-form-group">
+                    <label for="mssql_table">Таблица MSSQL <span style="color:var(--ds-error)">*</span></label>
                     <input type="text" id="mssql_table" name="mssql_table" required
                            value="{{ source.mssql_table if source else '' }}"
-                           placeholder="Document476 или _AccumRg17844">
+                           placeholder="_Document476 или _AccumRg17844">
                 </div>
+            </div>
+        </div>
 
-                <div class="form-group">
+        <!-- Шаг 2: Связи (JOIN) -->
+        <div class="dt-section">
+            <div class="dt-section-head">
+                <div>
+                    <h3 class="dt-section-title">
+                        <span class="material-symbols-outlined">link</span>
+                        JOIN с родителем
+                    </h3>
+                    <p class="dt-section-sub">Если это VT — выберите родительский header. Ключи соединения: <code>_IDRRef</code> по умолчанию.</p>
+                </div>
+            </div>
+            <div class="dt-form-grid">
+                <div class="dt-form-group dt-form-group-wide">
                     <label for="parent_source_id">Родительский источник</label>
                     <select id="parent_source_id" name="parent_source_id">
-                        <option value="">-- нет --</option>
+                        <option value="">— нет —</option>
                         {% for s in all_sources %}
                             {% if not source or s.id != source.id %}
                             <option value="{{ s.id }}" {{ 'selected' if source and source.parent_source_id == s.id }}>
@@ -68,46 +98,63 @@
                         {% endfor %}
                     </select>
                 </div>
-                <div class="form-group">
+                <div class="dt-form-group">
                     <label for="join_type">Тип соединения</label>
                     <select id="join_type" name="join_type">
-                        <option value="" {{ 'selected' if not source or not source.join_type }}>-- нет --</option>
+                        <option value="" {{ 'selected' if not source or not source.join_type }}>— нет —</option>
                         <option value="INNER JOIN" {{ 'selected' if source and source.join_type == 'INNER JOIN' }}>INNER JOIN</option>
                         <option value="LEFT JOIN" {{ 'selected' if source and source.join_type == 'LEFT JOIN' }}>LEFT JOIN</option>
                     </select>
                 </div>
-                <div class="form-group">
+                <div class="dt-form-group">
+                    <label for="priority">Приоритет</label>
+                    <input type="number" id="priority" name="priority"
+                           value="{{ source.priority if source else 0 }}"
+                           placeholder="0">
+                </div>
+                <div class="dt-form-group">
                     <label for="join_key_source">Ключ (этот источник)</label>
                     <input type="text" id="join_key_source" name="join_key_source"
                            value="{{ source.join_key_source if source else '' }}"
                            placeholder="_IDRRef">
                 </div>
-                <div class="form-group">
+                <div class="dt-form-group">
                     <label for="join_key_parent">Ключ (родитель)</label>
                     <input type="text" id="join_key_parent" name="join_key_parent"
                            value="{{ source.join_key_parent if source else '' }}"
                            placeholder="_IDRRef">
                 </div>
+            </div>
+        </div>
 
-                <div class="form-group full-width">
-                    <label for="where_clause">Условие WHERE</label>
+        <!-- Шаг 3: Доп фильтр -->
+        <div class="dt-section">
+            <div class="dt-section-head">
+                <div>
+                    <h3 class="dt-section-title">
+                        <span class="material-symbols-outlined">filter_alt</span>
+                        Доп. условие WHERE
+                    </h3>
+                    <p class="dt-section-sub">Необязательно. Например <code>_Posted = 1</code>. Можно использовать <code>{alias}</code>.</p>
+                </div>
+            </div>
+            <div class="dt-form-grid">
+                <div class="dt-form-group dt-form-group-wide">
+                    <label for="where_clause">SQL-фильтр</label>
                     <textarea id="where_clause" name="where_clause" rows="2"
-                              placeholder="Необязательный SQL-фильтр">{{ source.where_clause if source else '' }}</textarea>
-                </div>
-
-                <div class="form-group">
-                    <label for="priority">Приоритет</label>
-                    <input type="number" id="priority" name="priority"
-                           value="{{ source.priority if source else 0 }}">
+                              placeholder="{alias}._Posted = 0x01">{{ source.where_clause if source else '' }}</textarea>
                 </div>
             </div>
+        </div>
 
-            <div class="d-flex gap-2" style="margin-top:20px">
-                <button type="submit" class="btn btn-primary">{{ 'Сохранить' if source else 'Создать источник' }}</button>
-                <a href="/registers/{{ register.id }}" class="btn btn-secondary">Отмена</a>
-            </div>
-        </form>
-    </div>
+        <div class="wz2-footer">
+            <a href="/registers/{{ register.id }}" class="dt-btn ghost">Отмена</a>
+            <button type="submit" class="dt-btn primary">
+                <span class="material-symbols-outlined">{{ 'save' if source else 'add' }}</span>
+                {{ 'Сохранить изменения' if source else 'Создать источник' }}
+            </button>
+        </div>
+    </form>
 </div>
 {% endblock %}
 

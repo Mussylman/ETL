@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+{% set active_nav = "registers" %}
+
+{% block title %}Создать пайплайн — ETL Config{% endblock %}
+
+{% block breadcrumb %}
+    <li><a href="/registers">Витрины</a></li>
+    <li class="active">Создание пайплайна</li>
+{% endblock %}
+
+{% block content %}
+<div class="wz-shell">
+    <div class="wz-header">
+        <h1 class="wz-title">Выбор шаблона пайплайна</h1>
+        <p class="wz-subtitle">
+            Выберите шаблон для создания нового ETL пайплайна.<br>
+            Шаблоны оптимизированы под миграцию данных 1С → PostgreSQL для аналитики.
+        </p>
+        <div class="wz-step">
+            <span class="wz-step-label">Шаг 1 из 2</span>
+            <span class="wz-step-sep">·</span>
+            <span class="wz-step-current">Выбор шаблона</span>
+        </div>
+    </div>
+
+    <form id="wz_form" class="wz-grid" action="/registers/wizard/accumrg" method="GET">
+        <!-- Карточка 1: AccumRg + Documents (active) -->
+        <label class="wz-card is-selected" data-href="/registers/wizard/accumrg">
+            <input type="radio" name="template" value="accumrg" checked>
+            <div class="wz-card-icon">
+                <svg viewBox="0 0 64 48" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <rect x="2" y="6" width="22" height="36" rx="2" fill="currentColor" opacity=".18"/>
+                    <rect x="6" y="11" width="14" height="2" rx="1" fill="currentColor"/>
+                    <rect x="6" y="16" width="14" height="2" rx="1" fill="currentColor"/>
+                    <rect x="6" y="21" width="10" height="2" rx="1" fill="currentColor"/>
+                    <rect x="6" y="26" width="14" height="2" rx="1" fill="currentColor"/>
+                    <rect x="6" y="31" width="12" height="2" rx="1" fill="currentColor"/>
+                    <path d="M26 24 L36 24 M32 20 L36 24 L32 28" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <rect x="38" y="6" width="22" height="36" rx="2" fill="currentColor" opacity=".28"/>
+                    <rect x="42" y="11" width="14" height="2" rx="1" fill="currentColor"/>
+                    <rect x="42" y="16" width="14" height="2" rx="1" fill="currentColor"/>
+                    <rect x="42" y="21" width="10" height="2" rx="1" fill="currentColor"/>
+                    <rect x="42" y="26" width="14" height="2" rx="1" fill="currentColor"/>
+                </svg>
+            </div>
+            <div class="wz-card-body">
+                <h3 class="wz-card-title">Регистр накопления + Документы</h3>
+                <p class="wz-card-desc">
+                    Стандартный шаблон для переноса регистров накопления вместе с документами-регистраторами и табличными частями. Идеально для оборотов и остатков.
+                </p>
+            </div>
+        </label>
+
+        <!-- Карточка 2: Reference (soon) -->
+        <label class="wz-card is-soon" data-soon="true">
+            <input type="radio" name="template" value="reference">
+            <div class="wz-card-icon">
+                <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <path d="M10 6 h28 a2 2 0 0 1 2 2 v34 l-16 -8 -16 8 v-34 a2 2 0 0 1 2 -2 z" fill="currentColor" opacity=".22"/>
+                    <path d="M10 6 h28 a2 2 0 0 1 2 2 v34 l-16 -8 -16 8 v-34 a2 2 0 0 1 2 -2 z" stroke="currentColor" stroke-width="1.8"/>
+                    <rect x="16" y="14" width="16" height="2" rx="1" fill="currentColor"/>
+                    <rect x="16" y="19" width="12" height="2" rx="1" fill="currentColor"/>
+                </svg>
+            </div>
+            <div class="wz-card-body">
+                <h3 class="wz-card-title">Справочник <span class="wz-soon">скоро</span></h3>
+                <p class="wz-card-desc">
+                    Один справочник 1С (Номенклатура, Контрагенты, Сотрудники) → одна dim-таблица. Опционально с иерархией.
+                </p>
+            </div>
+        </label>
+
+        <!-- Карточка 3: Document + VT (soon) -->
+        <label class="wz-card is-soon" data-soon="true">
+            <input type="radio" name="template" value="document_vt">
+            <div class="wz-card-icon">
+                <svg viewBox="0 0 54 48" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <rect x="4" y="4" width="22" height="28" rx="2" fill="currentColor" opacity=".22"/>
+                    <rect x="4" y="4" width="22" height="28" rx="2" stroke="currentColor" stroke-width="1.6"/>
+                    <rect x="8" y="9" width="14" height="2" rx="1" fill="currentColor"/>
+                    <rect x="8" y="14" width="14" height="2" rx="1" fill="currentColor"/>
+                    <rect x="8" y="19" width="10" height="2" rx="1" fill="currentColor"/>
+                    <rect x="22" y="22" width="28" height="22" rx="2" fill="currentColor" opacity=".30"/>
+                    <line x1="22" y1="28" x2="50" y2="28" stroke="currentColor" stroke-width="1.6"/>
+                    <line x1="22" y1="34" x2="50" y2="34" stroke="currentColor" stroke-width="1.6"/>
+                    <line x1="32" y1="22" x2="32" y2="44" stroke="currentColor" stroke-width="1.6"/>
+                    <line x1="42" y1="22" x2="42" y2="44" stroke="currentColor" stroke-width="1.6"/>
+                </svg>
+            </div>
+            <div class="wz-card-body">
+                <h3 class="wz-card-title">Документ + Табличная часть <span class="wz-soon">скоро</span></h3>
+                <p class="wz-card-desc">
+                    Шапки документов и их связанные табличные части. Подходит для сложных транзакционных данных без регистра.
+                </p>
+            </div>
+        </label>
+
+        <!-- Карточка 4: InfoRg (soon) -->
+        <label class="wz-card is-soon" data-soon="true">
+            <input type="radio" name="template" value="inforg">
+            <div class="wz-card-icon">
+                <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <rect x="4" y="6" width="40" height="36" rx="2" fill="currentColor" opacity=".22"/>
+                    <rect x="4" y="6" width="40" height="36" rx="2" stroke="currentColor" stroke-width="1.6"/>
+                    <line x1="4" y1="14" x2="44" y2="14" stroke="currentColor" stroke-width="1.6"/>
+                    <line x1="12" y1="6" x2="12" y2="42" stroke="currentColor" stroke-width="1.6"/>
+                    <circle cx="20" cy="22" r="1.5" fill="currentColor"/>
+                    <circle cx="28" cy="22" r="1.5" fill="currentColor"/>
+                    <circle cx="36" cy="22" r="1.5" fill="currentColor"/>
+                    <circle cx="20" cy="30" r="1.5" fill="currentColor"/>
+                    <circle cx="28" cy="30" r="1.5" fill="currentColor"/>
+                    <circle cx="36" cy="30" r="1.5" fill="currentColor"/>
+                    <circle cx="20" cy="38" r="1.5" fill="currentColor"/>
+                </svg>
+            </div>
+            <div class="wz-card-body">
+                <h3 class="wz-card-title">Регистр сведений <span class="wz-soon">скоро</span></h3>
+                <p class="wz-card-desc">
+                    Периодические или непериодические регистры сведений. Например, курсы валют, цены номенклатуры, ставки налогов.
+                </p>
+            </div>
+        </label>
+
+        <div class="wz-footer">
+            <a href="/registers" class="btn-rl-ghost">Отмена</a>
+            <button type="submit" class="btn-rl-primary" id="wz_next">
+                Далее
+                <span class="material-symbols-outlined">arrow_forward</span>
+            </button>
+        </div>
+    </form>
+</div>
+
+<script>
+document.querySelectorAll('.wz-card').forEach(card => {
+    card.addEventListener('click', (e) => {
+        if (e.target.tagName === 'INPUT') return;
+        document.querySelectorAll('.wz-card').forEach(c => c.classList.remove('is-selected'));
+        card.classList.add('is-selected');
+        const input = card.querySelector('input[type="radio"]');
+        if (input) input.checked = true;
+    });
+});
+document.getElementById('wz_form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const sel = document.querySelector('.wz-card.is-selected');
+    if (!sel) return;
+    if (sel.dataset.soon === 'true') {
+        wzShowToast('Этот шаблон ещё в разработке. Пока доступен только «Регистр накопления + Документы».');
+        return;
+    }
+    const href = sel.dataset.href;
+    if (href) location.href = href;
+});
+
+function wzShowToast(msg) {
+    let t = document.getElementById('wz_toast');
+    if (!t) {
+        t = document.createElement('div');
+        t.id = 'wz_toast';
+        t.className = 'wz-toast';
+        document.body.appendChild(t);
+    }
+    t.innerHTML = '<span class="material-symbols-outlined">info</span><span>' + msg + '</span>';
+    t.classList.add('is-visible');
+    clearTimeout(t._timer);
+    t._timer = setTimeout(() => t.classList.remove('is-visible'), 3500);
+}
+</script>
+{% endblock %}
