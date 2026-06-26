@@ -18,6 +18,8 @@ from .binary import (
     binary_to_bool,
     process_binary_auto,
     binary_to_hex,
+    uuid_to_binary_1c,
+    uuid_to_mssql_hex_1c,
 )
 
 # Date functions
@@ -59,6 +61,8 @@ __all__ = [
     "binary_to_bool",
     "process_binary_auto",
     "binary_to_hex",
+    "uuid_to_binary_1c",
+    "uuid_to_mssql_hex_1c",
 
     # Dates
     "fix_year",

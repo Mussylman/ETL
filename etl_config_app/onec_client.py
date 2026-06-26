@@ -63,51 +63,102 @@ def resolve_document_names(type_numbers: List[int]) -> dict:
 
 def discover_document_with_vt(type_numbers: List[int]) -> dict:
     """
-    For each document type number, search 1C API to get the document name
-    AND all its tabular parts (VT tables).
+    Для каждого номера документа отдать русское имя шапки + VT-таблицы.
 
-    search?q=Document476 returns:
-      Document476           → Документ.ЧекККМ          (шапка)
-      Document476.VT13626   → Документ.ЧекККМ.Товары   (табличная часть)
-      ...
+    Источники:
+      • русское имя шапки — `/db_structure/Document{N}` (1С API)
+      • список VT — MSSQL `INFORMATION_SCHEMA.TABLES` LIKE `_Document{N}_VT%`
+      • русское имя каждой VT — `/db_structure/Document{N}.VT{M}` (1С API)
 
-    Returns: {
-      476: {
-        "onec_name": "Документ.ЧекККМ",
-        "vt_tables": [
-          {"vt_number": "13626",
-           "table_name_sql": "Document476.VT13626",
-           "mssql_table": "_Document476_VT13626",
-           "onec_name": "Документ.ЧекККМ.Товары"},
-          ...
-        ]
-      },
-      ...
-    }
+    Раньше использовали `/search`, но он по SQL-имени отдаёт пусто.
+
+    Returns: тот же контракт, что и раньше:
+      {476: {"onec_name": "Документ.ЧекККМ",
+             "vt_tables": [{"vt_number": "13626", "table_name_sql": "Document476.VT13626",
+                            "mssql_table": "_Document476_VT13626",
+                            "onec_name": "Документ.ЧекККМ.Товары"}, ...]},
+       ...}
     """
+    # MSSQL: найти физические VT-таблицы для каждого документа
+    vt_by_doc = _list_vt_tables_in_mssql(type_numbers)
+
+    # Собираем имена для одного batch-запроса к 1С API
+    all_names = []
+    for n in type_numbers:
+        all_names.append(f"Document{n}")
+        for vt_n in vt_by_doc.get(n, []):
+            all_names.append(f"Document{n}.VT{vt_n}")
+
+    structures = get_structure(all_names) if all_names else []
+    name_map = {s.get("table_name_sql", ""): s.get("table_name", "") for s in structures}
+
     result = {}
     for n in type_numbers:
-        doc_prefix = f"Document{n}"
-        items = search_1c(doc_prefix)
-        onec_name = None
+        doc_sql = f"Document{n}"
         vt_tables = []
-        for item in items:
-            sql_name = item.get("table_name_sql", "")
-            if sql_name == doc_prefix:
-                # Main document
-                onec_name = item.get("table_name")
-            elif sql_name.startswith(f"{doc_prefix}.VT"):
-                # Tabular part: Document476.VT13626
-                vt_part = sql_name.split(".VT")[-1]  # "13626"
-                mssql_table = f"_Document{n}_VT{vt_part}"
-                vt_tables.append({
-                    "vt_number": vt_part,
-                    "table_name_sql": sql_name,
-                    "mssql_table": mssql_table,
-                    "onec_name": item.get("table_name"),
-                })
+        for vt_n in vt_by_doc.get(n, []):
+            vt_sql = f"Document{n}.VT{vt_n}"
+            onec = name_map.get(vt_sql) or None
+            # Orphan-таблицы (физически есть в MSSQL, но в 1С Configurator
+            # реквизит удалён → API не возвращает имя) — отфильтровываем.
+            if not onec:
+                continue
+            vt_tables.append({
+                "vt_number": vt_n,
+                "table_name_sql": vt_sql,
+                "mssql_table": f"_Document{n}_VT{vt_n}",
+                "onec_name": onec,
+            })
         result[n] = {
-            "onec_name": onec_name,
+            "onec_name": name_map.get(doc_sql) or None,
             "vt_tables": vt_tables,
         }
+    return result
+
+
+def _list_vt_tables_in_mssql(type_numbers: List[int]) -> dict:
+    """
+    Из MSSQL INFORMATION_SCHEMA — список VT-номеров для каждого Document{N}.
+    Returns: {476: ["13626", "13671", ...], 254: [...], ...}
+    Пустой словарь при недоступности MSSQL — не валим discover.
+    """
+    try:
+        import mssql_client
+    except Exception:
+        return {n: [] for n in type_numbers}
+
+    result = {n: [] for n in type_numbers}
+    conn = None
+    try:
+        conn = mssql_client.get_conn()
+        cur = conn.cursor()
+        like_clauses = " OR ".join([f"TABLE_NAME LIKE '_Document{n}_VT%'" for n in type_numbers])
+        if not like_clauses:
+            return result
+        cur.execute(f"""
+            SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_TYPE='BASE TABLE' AND ({like_clauses})
+        """)
+        for (name,) in cur.fetchall():
+            # _Document476_VT13626 → 476, 13626
+            try:
+                rest = name[len("_Document"):]
+                doc_part, vt_part = rest.split("_VT", 1)
+                doc_n = int(doc_part)
+                if doc_n in result:
+                    result[doc_n].append(vt_part)
+            except Exception:
+                continue
+        cur.close()
+    except Exception:
+        pass
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    # стабильный порядок
+    for k in result:
+        result[k].sort()
     return result

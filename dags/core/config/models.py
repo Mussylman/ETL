@@ -37,6 +37,10 @@ class SourceConfig:
     where_clause: Optional[str] = None
     priority: int = 0
 
+    # Колонка периода для фильтра QueryBuilder:
+    #   '_Period' (default/legacy), '_Date_Time' (документы), None — не фильтровать
+    period_column: Optional[str] = "_Period"
+
     columns: List[ColumnMapping] = field(default_factory=list)
 
     # Ссылка на родительский source (заполняется при загрузке)
@@ -102,6 +106,9 @@ class RegisterConfig:
     name: str
     default_mode: str
     description: Optional[str] = None
+
+    # Тип пайплайна: None | 'accumrg_with_documents' (AccumRg + header LEFT JOIN + VT LEFT JOIN)
+    pipeline_type: Optional[str] = None
 
     # Для инкрементальной загрузки
     retail_table: Optional[str] = None

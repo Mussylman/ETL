@@ -160,6 +160,20 @@ async def register_create(
     return RedirectResponse("/registers", status_code=303)
 
 
+# Wizard страницы — обязательно ВЫШЕ /registers/{reg_id}, иначе FastAPI
+# попытается распарсить «wizard» как int и вернёт 422.
+@app.get("/registers/wizard", response_class=HTMLResponse)
+async def wizard_index(request: Request):
+    """Главный экран — список шаблонов 'Создать витрину'."""
+    return _tpl("registers/wizard_index.html", request)
+
+
+@app.get("/registers/wizard/accumrg", response_class=HTMLResponse)
+async def wizard_accumrg(request: Request):
+    """Шаблон 'Регистр накопления + документы + VT'."""
+    return _tpl("registers/wizard.html", request)
+
+
 @app.get("/registers/{reg_id}", response_class=HTMLResponse)
 async def register_detail(request: Request, reg_id: int):
     reg = dao.get_register(reg_id)
@@ -635,11 +649,50 @@ async def target_delete(tgt_id: int):
 #  API: Sync & 1C Meta (AJAX)
 # ────────────────────────────────────────────
 @app.post("/api/registers/{reg_id}/sync")
-async def api_sync_register(reg_id: int):
-    """Manual sync: ensure all target tables match etl_meta config."""
+async def api_sync_register(reg_id: int, confirm: bool = False):
+    """
+    Синхронизация config↔таблицы для всех target-ов регистра.
+
+    Поведение:
+      • Считаем план изменений для каждого target.
+      • Safe-actions применяются всегда.
+      • Если есть destructive (drop col / сужение типа / NOT NULL на ненулевую) —
+        и confirm=false → ничего не меняем, возвращаем plans с requires_confirm=true
+        и UI показывает модалку с предупреждением.
+      • При confirm=true — destructive применяются (recreate таблицы через
+        DROP CASCADE + CREATE). После recreate данные надо грузить заново (full_period).
+    """
     try:
-        dao.sync_all_targets_for_register(reg_id)
-        return JSONResponse({"ok": True})
+        targets = dao.list_targets_for_register(reg_id)
+        if not targets:
+            return JSONResponse({"ok": True, "plans": [], "message": "no targets"})
+
+        plans = [dao.compute_sync_plan(t["id"]) for t in targets]
+        # Если хотя бы один план требует confirm — собираем общий план для UI
+        needs_confirm = any(
+            (p.get("destructive_count") or 0) > 0 and not confirm
+            for p in plans
+        )
+
+        if needs_confirm:
+            return JSONResponse({
+                "ok": False,
+                "requires_confirm": True,
+                "plans": plans,
+            })
+
+        # Применяем
+        applied = []
+        for plan in plans:
+            result = dao.apply_sync_plan(plan, confirm=confirm)
+            applied.append(result)
+
+        any_error = any(p.get("errors") for p in applied)
+        return JSONResponse({
+            "ok": not any_error,
+            "applied": applied,
+            "recreated": any(p.get("recreated") for p in applied),
+        })
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 @app.post("/api/registers/{reg_id}/discover-recorder-types")
@@ -1297,6 +1350,42 @@ async def api_rename_column(request: Request, reg_id: int):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.post("/api/registers/{reg_id}/set-column-transform")
+async def api_set_column_transform(request: Request, reg_id: int):
+    """Set transform_type for all mappings of a given target_column.
+    Body: {column: str, transform_type: str|null}
+    """
+    try:
+        body = await request.json()
+        col = (body.get("column") or "").strip()
+        new_transform = body.get("transform_type")
+        if new_transform == "":
+            new_transform = None
+        if not col:
+            return JSONResponse({"error": "column required"}, status_code=400)
+
+        updated = 0
+        for s in dao.list_sources_for_register(reg_id):
+            for m in dao.list_mappings_for_source(s["id"]):
+                if m["target_column"] != col:
+                    continue
+                if m.get("transform_type") == "custom_python":
+                    continue
+                dao.update_mapping(m["id"], {
+                    "source_column": m["source_column"],
+                    "target_column": m["target_column"],
+                    "target_type": m.get("target_type"),
+                    "transform_type": new_transform,
+                    "transform_params": m.get("transform_params"),
+                    "is_expression": m.get("is_expression", False),
+                    "onec_name": m.get("onec_name"),
+                })
+                updated += 1
+        return JSONResponse({"ok": True, "updated": updated})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.post("/api/registers/{reg_id}/auto-transforms")
 async def api_auto_transforms(reg_id: int):
     """Auto-set target_type and transform_type for all mappings based on MSSQL column types."""
@@ -1509,39 +1598,48 @@ async def api_set_include_columns(tgt_id: int, request: Request):
 @app.post("/api/registers/{reg_id}/assign-column-target")
 async def api_assign_column_target(reg_id: int, request: Request):
     """
-    Назначить колонку конкретному target-у.
-    Body: {"column": "date", "target_id": 5}
-    target_id = null → убрать из всех (не хранить)
-    target_id = "all" → добавить во все
+    Атомарно установить во ВСЕ targets, в каких живёт колонка.
+    Body:
+      • {"column": "recorder", "target_ids": [80, 81]}  — в обоих
+      • {"column": "recorder", "target_ids": [80]}      — только sales
+      • {"column": "recorder", "target_ids": []}        — не грузить
+      • legacy: {"column": "x", "target_id": 5 | "all" | null} — старый формат
     """
     data = await request.json()
     col_name = data.get("column")
-    target_id = data.get("target_id")
-
     if not col_name:
         return JSONResponse({"error": "column is required"}, status_code=400)
 
     targets = dao.list_targets_for_register(reg_id)
 
+    # Resolve final set of target_ids
+    if "target_ids" in data:
+        raw = data.get("target_ids") or []
+        target_ids = {int(x) for x in raw}
+    else:
+        # legacy single-value
+        legacy = data.get("target_id")
+        if legacy == "all":
+            target_ids = {t["id"] for t in targets}
+        elif legacy in (None, ""):
+            target_ids = set()
+        else:
+            target_ids = {int(legacy)}
+
     for t in targets:
         current = t.get("include_columns") or []
         tid = t["id"]
-
-        if target_id == "all":
-            if col_name not in current:
-                current.append(col_name)
-        elif target_id and int(target_id) == tid:
+        if tid in target_ids:
             if col_name not in current:
                 current.append(col_name)
         else:
             current = [c for c in current if c != col_name]
-
         dao.execute(
             f"UPDATE {dao.SCHEMA}.register_targets SET include_columns=%s WHERE id=%s",
             [current if current else None, tid]
         )
 
-    return JSONResponse({"ok": True})
+    return JSONResponse({"ok": True, "target_ids": sorted(target_ids)})
 
 
 @app.get("/api/registers/{reg_id}/column-targets")
@@ -1609,6 +1707,263 @@ async def api_column_targets(reg_id: int):
         ],
         "column_map": col_map,
     })
+
+
+# ═══════════════ WIZARD «Создать регистр продажи» ═══════════════
+@app.get("/api/registers/wizard/probe-source")
+async def api_wizard_probe(mssql_table: str = Query("")):
+    """
+    Резолвит главный источник + находит документы-регистраторы и их VT-таблицы.
+
+    Args:
+        mssql_table: например '_AccumRg17844'
+
+    Returns:
+        {
+          "main_source": {"mssql_table":"_AccumRg17844",
+                          "onec_name":"РегистрНакопления.Продажи",
+                          "fields":[{...}]},
+          "documents": [
+            {"type_int":476, "mssql_table":"_Document476",
+             "onec_name":"Документ.ЧекККМ",
+             "vt_tables":[{"mssql_table":"_Document476_VT13626",
+                           "vt_number":"13626",
+                           "onec_name":"Документ.ЧекККМ.Товары"}, ...]},
+             ...
+          ],
+          "documents_without_vt": [443, ...]  # документы без VT.Товары — отметка для UI
+        }
+    """
+    if not mssql_table:
+        return JSONResponse({"error": "mssql_table required"}, status_code=400)
+
+    tbl = mssql_table.lstrip("_")
+    # Получить структуру главного источника
+    main_struct = onec_client.get_structure([tbl])
+    main_source = {"mssql_table": mssql_table, "onec_name": None, "fields": []}
+    if main_struct and main_struct[0]:
+        main_source["onec_name"] = main_struct[0].get("table_name")
+        main_source["fields"] = main_struct[0].get("fields") or []
+
+    # Найти документы-регистраторы (только для AccumRg/InfoRg)
+    documents = []
+    documents_without_vt = []
+    if tbl.lower().startswith(("accumrg", "inforg", "accrg")):
+        try:
+            type_numbers = mssql_client.query_distinct_recorder_types(mssql_table)
+            doc_info = onec_client.discover_document_with_vt(type_numbers)
+            for n in sorted(type_numbers):
+                info = doc_info.get(n, {})
+                vt_tables = info.get("vt_tables", [])
+                documents.append({
+                    "type_int": n,
+                    "mssql_table": f"_Document{n}",
+                    "onec_name": info.get("onec_name"),
+                    "vt_tables": vt_tables,
+                    "vt_count": len(vt_tables),
+                })
+                if not vt_tables:
+                    documents_without_vt.append(n)
+        except Exception as e:
+            return JSONResponse({"main_source": main_source, "documents": [],
+                                  "warning": f"recorder discover failed: {e}"})
+
+    return JSONResponse({
+        "main_source": main_source,
+        "documents": documents,
+        "documents_without_vt": documents_without_vt,
+    })
+
+
+@app.post("/api/registers/wizard/create")
+async def api_wizard_create(request: Request):
+    """
+    Создаёт регистр + источники + targets + маппинги одним вызовом.
+
+    Body:
+      {
+        "code": "sales",
+        "name": "Продажа",
+        "description": "...",
+        "main_mssql_table": "_AccumRg17844",
+        "target_dim_name": "sales",
+        "target_fact_name": "sales_positions",
+        "documents": [
+          {"type_int": 476, "vt_tables": ["_Document476_VT13626"]},
+          {"type_int": 415, "vt_tables": ["_Document415_VT11053"]},
+          ...
+        ]
+      }
+
+    Семантика:
+      • main_mssql_table — главный регистр (AccumRg). Source=standalone.
+      • Для каждого выбранного документа создаём header-source (для JOIN).
+      • Для каждой выбранной VT-таблицы — detail-source с parent=header.
+      • Два target: dim (target_dim_name) + fact (target_fact_name).
+      • Auto-маппинги системных полей через _AUTO_MAPPING_RULES.
+      • Auto-маппинги бизнес-полей VT — переименование в snake_case транслит.
+      • Если регистр с таким code уже есть — 409 Conflict.
+    """
+    try:
+        body = await request.json()
+        code = (body.get("code") or "").strip()
+        if not code:
+            return JSONResponse({"error": "code required"}, status_code=400)
+
+        # Валидация уникальности
+        existing = dao.query_one("SELECT id FROM etl_meta.registers WHERE code=%s", [code])
+        if existing:
+            return JSONResponse({
+                "error": f"register with code '{code}' already exists (id={existing['id']})"
+            }, status_code=409)
+
+        main_mssql_table = body.get("main_mssql_table") or ""
+        target_dim_name = (body.get("target_dim_name") or "").strip() or code
+        target_fact_name = (body.get("target_fact_name") or "").strip() or f"{code}_positions"
+        documents = body.get("documents") or []
+
+        if not main_mssql_table:
+            return JSONResponse({"error": "main_mssql_table required"}, status_code=400)
+
+        # 1. Регистр (витрина) с pipeline_type
+        reg_id = dao.create_register({
+            "code": code,
+            "name": body.get("name") or code,
+            "description": body.get("description") or "",
+            "default_mode": "full_period",
+            "pipeline_type": "accumrg_with_documents",
+        })
+
+        # 2. Главный источник AccumRg (standalone) — нужен сначала,
+        #    т.к. constraint требует source_id или union_id у target.
+        main_struct = onec_client.get_structure([main_mssql_table.lstrip("_")])
+        main_onec = main_struct[0].get("table_name") if main_struct else None
+        main_fields = main_struct[0].get("fields") if main_struct else []
+        try:
+            col_types = mssql_client.get_column_types(main_mssql_table)
+            _enrich_fields_with_mssql_types(main_fields, col_types)
+        except Exception:
+            pass
+
+        main_src_id = dao.create_source({
+            "register_id": reg_id,
+            "source_code": code,
+            "source_type": "standalone",
+            "mssql_schema": "dbo",
+            "mssql_table": main_mssql_table,
+            "onec_name": main_onec,
+            "fields_cache": main_fields,
+        })
+
+        # 3. Два target — dim + fact. parent_target_id у fact = dim (UI группировка).
+        dim_target_id = dao.create_target({
+            "register_id": reg_id,
+            "target_schema": "public",
+            "target_table": target_dim_name,
+            "source_id": main_src_id,
+            "load_mode": "upsert",
+            "upsert_keys": ["recorder"],
+            "priority": 0,
+            "target_role": "dimension",
+        })
+        post_load_sql = (
+            f"UPDATE public.{target_fact_name} AS f\n"
+            f"SET    sales_id = d.id\n"
+            f"FROM   public.{target_dim_name} AS d\n"
+            f"WHERE  f.recorder = d.recorder\n"
+            f"  AND  f.sales_id IS NULL;"
+        )
+        fact_target_id = dao.create_target({
+            "register_id": reg_id,
+            "target_schema": "public",
+            "target_table": target_fact_name,
+            "source_id": main_src_id,
+            "load_mode": "upsert",
+            "upsert_keys": ["recorder", "line_no"],
+            "priority": 1,
+            "target_role": "fact",
+            "post_load_sql": post_load_sql,
+            "parent_target_id": dim_target_id,
+        })
+
+        # 4. Маппинги главного source создаём ПОСЛЕ targets чтобы знать target_id.
+        #    Для AccumRg оставляем target_id=NULL (колонки идут и в dim, и в fact —
+        #    раскладываются через include_columns).
+        dao.auto_create_mappings(main_src_id, main_fields, target_id=None)
+
+        # 4. Для каждого документа: header-source + VT detail-sources
+        #    document_header → target_id = dim_target_id
+        #    document_detail (VT) → target_id = fact_target_id
+        created_headers = 0
+        created_vts = 0
+        for doc in documents:
+            type_int = doc.get("type_int")
+            doc_mssql = f"_Document{type_int}"
+            doc_struct = onec_client.get_structure([doc_mssql.lstrip("_")])
+            doc_onec = doc_struct[0].get("table_name") if doc_struct else None
+            doc_fields = doc_struct[0].get("fields") if doc_struct else []
+            try:
+                col_types = mssql_client.get_column_types(doc_mssql)
+                _enrich_fields_with_mssql_types(doc_fields, col_types)
+            except Exception:
+                pass
+
+            header_src_id = dao.create_source({
+                "register_id": reg_id,
+                "source_code": f"doc_{type_int}",
+                "source_type": "header",
+                "mssql_schema": "dbo",
+                "mssql_table": doc_mssql,
+                "onec_name": doc_onec,
+                "fields_cache": doc_fields,
+            })
+            dao.auto_create_mappings(header_src_id, doc_fields, target_id=dim_target_id)
+            created_headers += 1
+
+            for vt_mssql in doc.get("vt_tables") or []:
+                vt_api_name = vt_mssql.lstrip("_").replace("_VT", ".VT")
+                vt_struct = onec_client.get_structure([vt_api_name])
+                vt_onec = vt_struct[0].get("table_name") if vt_struct else None
+                vt_fields = vt_struct[0].get("fields") if vt_struct else []
+                try:
+                    col_types = mssql_client.get_column_types(vt_mssql)
+                    _enrich_fields_with_mssql_types(vt_fields, col_types)
+                except Exception:
+                    pass
+
+                vt_num = vt_mssql.split("_VT")[-1] if "_VT" in vt_mssql else ""
+
+                vt_src_id = dao.create_source({
+                    "register_id": reg_id,
+                    "source_code": f"doc_{type_int}_vt_{vt_num}",
+                    "source_type": "detail",
+                    "mssql_schema": "dbo",
+                    "mssql_table": vt_mssql,
+                    "onec_name": vt_onec,
+                    "parent_source_id": header_src_id,
+                    "join_type": "INNER JOIN",
+                    "join_key_source": f"_Document{type_int}_IDRRef",
+                    "join_key_parent": "_IDRRef",
+                    "fields_cache": vt_fields,
+                })
+                dao.auto_create_mappings(vt_src_id, vt_fields, target_id=fact_target_id)
+                created_vts += 1
+
+        # 5. Auto-распределение include_columns по target_role
+        #    Legacy путь работает: ETL Engine читает include_columns на target.
+        _sync_union_and_target(reg_id)
+
+        return JSONResponse({
+            "ok": True,
+            "register_id": reg_id,
+            "main_source_id": main_src_id,
+            "dim_target_id": dim_target_id,
+            "fact_target_id": fact_target_id,
+            "documents_created": created_headers,
+            "vt_sources_created": created_vts,
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 # ────────────────────────────────────────────

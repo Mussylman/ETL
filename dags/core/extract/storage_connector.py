@@ -129,8 +129,13 @@ class StorageConnector:
             where_parts.append(f"_Period >= '{start_date}'")
 
         if key_column and key_values:
-            hex_values = [f"0x{v.replace('-', '')}" for v in key_values]
-            where_parts.append(f"{key_column} IN ({', '.join(hex_values)})")
+            from ..transform.binary import uuid_to_mssql_hex_1c
+            hex_values = [uuid_to_mssql_hex_1c(v) for v in key_values]
+            hex_values = [h for h in hex_values if h is not None]
+            if hex_values:
+                where_parts.append(f"{key_column} IN ({', '.join(hex_values)})")
+            else:
+                where_parts.append("1=0")
 
         where_clause = " AND ".join(where_parts) if where_parts else ""
 
@@ -167,7 +172,12 @@ class StorageConnector:
         where = ""
 
         if key_column and key_value:
-            where = f"WHERE {key_column} = 0x{key_value.replace('-', '')}"   # binary сравнение
+            from ..transform.binary import uuid_to_mssql_hex_1c
+            hex_lit = uuid_to_mssql_hex_1c(key_value)
+            if hex_lit is None:
+                where = "WHERE 1=0"
+            else:
+                where = f"WHERE {key_column} = {hex_lit}"  # binary сравнение (1С-формат)
         elif start_date and end_date:
             where = f"WHERE _Period BETWEEN '{start_date}' AND '{end_date}'"
         elif start_date:

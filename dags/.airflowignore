@@ -1,0 +1,7 @@
+# Регулярки для имён файлов/директорий, которые Airflow НЕ должен парсить как DAGs.
+# core/ — это библиотека (ETLEngine, ConfigLoader и т.д.), не DAGs.
+# plugins/ — Airflow plugins, тоже не DAGs.
+# helpers/ — общие хелперы.
+core
+plugins
+helpers

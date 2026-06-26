@@ -139,6 +139,9 @@ class Loaders:
 
         with pg.get_conn() as conn:
             with conn.cursor() as cur:
+                # ETL audit-колонки в Asia/Almaty TZ (см. docs/sales_load_modes.md)
+                # Влияет на DEFAULT now() для etl_loaded_at.
+                cur.execute("SET TIME ZONE 'Asia/Almaty'")
                 for i, r in enumerate(rows):
                     cur.execute(sql, r)
                     if (i + 1) % batch_size == 0:
@@ -189,6 +192,67 @@ class Loaders:
         return self.insert_only(df, table_name)
 
     # ======================================================================
+    #  DELETE-INSERT BY RECORDER (для инкрементального fact-таргета)
+    # ======================================================================
+    def delete_insert_by_recorder(
+        self,
+        df: pd.DataFrame,
+        table_name: str,
+        recorder_column: str = "recorder",
+    ) -> int:
+        """
+        Удаляет из target все строки с recorder из DataFrame, потом INSERT.
+
+        Для инкрементальной загрузки FACT-таблицы (sales_positions),
+        у которой нет стабильного составного ключа — например, документ
+        перепровели и количество позиций изменилось.
+        Сценарий:
+          1. Триггер инкремента даёт список изменённых recorder (через retail)
+          2. По этим recorder читаем из 1С полные позиции
+          3. DELETE FROM target WHERE recorder IN (...) — убираем старые позиции
+          4. INSERT — кладём новые
+
+        Args:
+            df: DataFrame с новыми позициями (должен содержать recorder_column)
+            table_name: целевая таблица
+            recorder_column: имя колонки recorder в df и target (по умолчанию "recorder")
+
+        Returns:
+            Количество вставленных строк
+
+        Включение в register_targets: load_mode = "delete_insert_by_recorder".
+        Сейчас неактивен — для первой волны используем full_period+upsert.
+        Для перехода на инкремент: смени load_mode в etl_meta.register_targets.
+        """
+        if df.empty:
+            print(f"DELETE_INSERT: no data for {table_name}")
+            return 0
+
+        if recorder_column not in df.columns:
+            raise ValueError(
+                f"Column '{recorder_column}' not in DataFrame — "
+                f"delete_insert_by_recorder requires it"
+            )
+
+        recorders = df[recorder_column].dropna().unique().tolist()
+        if not recorders:
+            print(f"DELETE_INSERT: no recorders to delete for {table_name}")
+            return self.insert_only(df, table_name)
+
+        pg = PostgresHook(postgres_conn_id=self.dst_conn_id)
+        placeholders = ", ".join(["%s"] * len(recorders))
+        delete_sql = f'DELETE FROM {table_name} WHERE "{recorder_column}" IN ({placeholders})'
+
+        with pg.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(delete_sql, [str(r) for r in recorders])
+                deleted = cur.rowcount
+            conn.commit()
+
+        print(f"DELETE: {deleted} rows from {table_name} (recorders: {len(recorders)})")
+        return self.insert_only(df, table_name)
+
+    # ======================================================================
     #  Универсальный метод load() для ETLEngine
     # ======================================================================
     def load(
@@ -198,6 +262,7 @@ class Loaders:
         mode: str = "upsert",
         upsert_keys: Optional[List[str]] = None,
         where_clause: Optional[str] = None,
+        recorder_column: str = "recorder",
     ) -> int:
         """
         Универсальный метод загрузки.
@@ -205,9 +270,10 @@ class Loaders:
         Args:
             df: DataFrame с данными
             table_name: целевая таблица
-            mode: режим загрузки ('insert', 'upsert', 'replace')
+            mode: 'insert' / 'upsert' / 'replace' / 'delete_insert_by_recorder'
             upsert_keys: ключи для upsert
             where_clause: условие для replace
+            recorder_column: имя колонки recorder для delete_insert_by_recorder
 
         Returns:
             Количество обработанных строк
@@ -222,6 +288,9 @@ class Loaders:
 
         elif mode == "replace":
             return self.replace_all(df, table_name, where_clause)
+
+        elif mode == "delete_insert_by_recorder":
+            return self.delete_insert_by_recorder(df, table_name, recorder_column)
 
         else:
             raise ValueError(f"Unknown load mode: {mode}")

@@ -59,7 +59,7 @@ class ConfigLoader:
         """Загрузка основной информации о регистре."""
         sql = """
             SELECT id, code, name, description, default_mode,
-                   retail_table, retail_uid_column
+                   pipeline_type, retail_table, retail_uid_column
             FROM etl_meta.registers
             WHERE code = %s AND is_active = TRUE
         """
@@ -69,12 +69,14 @@ class ConfigLoader:
             raise ValueError(f"Register '{register_code}' not found or inactive")
 
         row = df.iloc[0]
+        import pandas as _pd  # noqa: F401 — для pd.notna ниже
         return RegisterConfig(
             id=int(row["id"]),
             code=row["code"],
             name=row["name"],
             description=row["description"],
             default_mode=row["default_mode"],
+            pipeline_type=row["pipeline_type"] if _pd.notna(row.get("pipeline_type")) else None,
             retail_table=row["retail_table"],
             retail_uid_column=row["retail_uid_column"],
         )
@@ -84,7 +86,7 @@ class ConfigLoader:
         sql = """
             SELECT id, source_code, source_type, mssql_schema, mssql_table,
                    parent_source_id, join_type, join_key_source, join_key_parent,
-                   where_clause, priority
+                   where_clause, priority, period_column
             FROM etl_meta.register_sources
             WHERE register_id = %s AND is_active = TRUE
             ORDER BY priority, id
@@ -93,6 +95,13 @@ class ConfigLoader:
 
         sources = []
         for _, row in df.iterrows():
+            # period_column: NULL → '_Period' (legacy), '' → None (без фильтра)
+            raw_period = row.get("period_column")
+            if raw_period is None or (isinstance(raw_period, float) and pd.isna(raw_period)):
+                period_column = "_Period"
+            else:
+                period_column = str(raw_period).strip() or None
+
             sources.append(SourceConfig(
                 id=int(row["id"]),
                 source_code=row["source_code"],
@@ -105,6 +114,7 @@ class ConfigLoader:
                 join_key_parent=row["join_key_parent"] if pd.notna(row["join_key_parent"]) else None,
                 where_clause=row["where_clause"] if pd.notna(row["where_clause"]) else None,
                 priority=int(row["priority"]) if pd.notna(row["priority"]) else 0,
+                period_column=period_column,
             ))
 
         return sources
@@ -205,7 +215,7 @@ class ConfigLoader:
         sql = """
             SELECT id, target_schema, target_table, union_id, source_id,
                    load_mode, upsert_keys, pre_load_sql, post_load_sql,
-                   include_columns, priority, is_active
+                   include_columns, priority, target_role, is_active
             FROM etl_meta.register_targets
             WHERE register_id = %s AND is_active = TRUE
             ORDER BY priority, id

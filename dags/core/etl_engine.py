@@ -20,6 +20,15 @@
 
 from typing import Optional, List, Dict
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+# TZ всех ETL audit-полей. Бизнес-дата `period` уже в Asia/Almaty (offset из 1С),
+# держим всё в одной TZ для согласованности (см. docs/sales_load_modes.md).
+ETL_TZ = ZoneInfo("Asia/Almaty")
+
+def _now_local():
+    """now() в Asia/Almaty, без tzinfo — для записи в timestamp WITHOUT time zone."""
+    return datetime.now(ETL_TZ).replace(tzinfo=None)
 
 from .config import ConfigLoader, RegisterConfig, TargetConfig
 from .builder import QueryBuilder
@@ -103,7 +112,9 @@ class ETLEngine:
 
         results = {}
 
-        if self.mode == "full_period":
+        if self.mode in ("full_period", "full"):
+            # full — полная выгрузка БЕЗ периода (справочники и т.п.);
+            # full_period — как раньше, период обязателен
             results = self._run_full_period()
         elif self.mode in ("incremental", "consistency"):
             results = self._run_incremental()
@@ -130,58 +141,519 @@ class ETLEngine:
     #  FULL PERIOD MODE
     # ======================================================================
     def _run_full_period(self) -> Dict[str, int]:
-        """Полная загрузка по периоду."""
-        if not self.start_date or not self.end_date:
+        """
+        Полная загрузка по периоду + load_history + post-load validation.
+
+        Контур:
+          1. INSERT load_history(run_mode=full_period, status=running)
+          2. retail snapshot → updated_at для dim
+          3. Прогон targets, считаем total rows
+          4. _validate_full_period_load() — counts/null/duplicates/FK
+          5. UPDATE load_history(success/failed, error_message)
+          6. На любой ошибке — status=failed + raise (DAG увидит failure)
+        """
+        if self.mode == "full_period" and (not self.start_date or not self.end_date):
             raise ValueError("start_date and end_date required for full_period mode")
 
-        results = {}
-        targets = self._get_active_targets()
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+        pg_meta = PostgresHook(postgres_conn_id=self.config_conn_id)
 
-        for target in targets:
-            rows = self._process_target(
-                target=target,
-                period_start=self.start_date,
-                period_end=self.end_date,
+        run_id = self._open_history_run(pg_meta, run_mode="full_period")
+        results: Dict[str, int] = {}
+        total_rows = 0
+        # Базовый checkpoint — заполнится позже точным snapshot_ts.
+        checkpoint = f"{self.start_date or 'NULL'}..{self.end_date or 'NULL'}"
+
+        try:
+            # Снимок retail ДО запроса в MSSQL.
+            # Это retail_snapshot_at для всех строк этого full_period —
+            # см. docs/sales_load_modes.md.
+            snapshot_ts = self._get_retail_snapshot()
+            print(f"Full-period retail snapshot: {snapshot_ts}")
+            checkpoint = (
+                f"{self.start_date or 'NULL'}..{self.end_date or 'NULL'}; "
+                f"retail_snapshot_at={snapshot_ts}"
             )
-            results[target.target_table] = rows
 
-        return results
+            for target in self._get_active_targets():
+                rows = self._process_target(
+                    target=target,
+                    period_start=self.start_date,
+                    period_end=self.end_date,
+                    snapshot_ts=snapshot_ts,
+                )
+                results[target.target_table] = rows
+                total_rows += rows
+
+            # Post-load validation
+            self._validate_full_period_load()
+
+            self._close_history_run(
+                pg_meta, run_id, status="success",
+                checkpoint=checkpoint,
+                rows_loaded=total_rows,
+            )
+            return results
+
+        except Exception as e:
+            err = (str(e) or e.__class__.__name__)[:2000]
+            try:
+                self._close_history_run(
+                    pg_meta, run_id, status="failed",
+                    checkpoint=checkpoint,
+                    rows_loaded=total_rows,
+                    error=err,
+                )
+            except Exception as close_err:
+                print(f"WARN: не смогли записать status=failed в load_history: {close_err}")
+            raise
+
+    def _validate_full_period_load(self) -> None:
+        """
+        Минимальный набор проверок целостности после загрузки.
+        Бросает RuntimeError при любом нарушении — caller пишет failed в history.
+        """
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+        pg = PostgresHook(postgres_conn_id=self.dst_conn_id)
+
+        def _scalar(sql: str) -> int:
+            row = pg.get_first(sql)
+            return int(row[0]) if row and row[0] is not None else 0
+
+        targets = self._get_active_targets()
+        dim = next((t for t in targets if t.target_role == "dimension"), None)
+        fact = next((t for t in targets if t.target_role == "fact"), None)
+
+        errors = []
+
+        # 1. counts > 0
+        for t in targets:
+            n = _scalar(f"SELECT COUNT(*) FROM {t.full_table_name}")
+            print(f"  validation: {t.full_table_name} rows={n}")
+            if n == 0:
+                errors.append(f"{t.full_table_name}: 0 rows (ожидаем > 0)")
+
+        # 2. NULL checks
+        def _check_not_null(tbl: str, col: str, include: List[str]):
+            if col not in (include or []):
+                return
+            n = _scalar(f"SELECT COUNT(*) FROM public.{tbl} WHERE {col} IS NULL")
+            if n > 0:
+                errors.append(f"{tbl}.{col} IS NULL = {n}")
+
+        if dim:
+            _check_not_null(dim.target_table, "recorder_type", dim.include_columns)
+        if fact:
+            _check_not_null(fact.target_table, "recorder_type", fact.include_columns)
+            _check_not_null(fact.target_table, "line_no", fact.include_columns)
+            # FK column ({dim_table}_id) — генерируется DDL, заполняется post_load_sql
+            if dim:
+                fk_col = f"{dim.target_table}_id"
+                n = _scalar(
+                    f"SELECT COUNT(*) FROM public.{fact.target_table} "
+                    f"WHERE {fk_col} IS NULL"
+                )
+                if n > 0:
+                    errors.append(
+                        f"{fact.target_table}.{fk_col} IS NULL = {n} "
+                        f"(post_load_sql FK resolve не отработал?)"
+                    )
+
+        # ETL audit-поля (см. docs/sales_load_modes.md):
+        #   retail_snapshot_at — обязателен после full_period
+        #   etl_updated_at     — обязателен после любой загрузки
+        #   retail_updated_at  — может быть NULL после full_period (OK), но
+        #                         после incremental все обработанные строки
+        #                         должны иметь значение (это проверяется в
+        #                         _run_incremental отдельно)
+        for t in targets:
+            for col in ("retail_snapshot_at", "etl_updated_at"):
+                # Колонки могут отсутствовать в DDL у старых register-ов — мягко
+                exists = _scalar(
+                    f"SELECT COUNT(*) FROM information_schema.columns "
+                    f"WHERE table_schema='public' AND table_name='{t.target_table}' "
+                    f"AND column_name='{col}'"
+                )
+                if not exists:
+                    continue
+                n = _scalar(f"SELECT COUNT(*) FROM {t.full_table_name} WHERE {col} IS NULL")
+                if n > 0:
+                    errors.append(f"{t.full_table_name}.{col} IS NULL = {n}")
+
+        # 3. Duplicates по upsert_keys
+        for t in targets:
+            if not t.upsert_keys:
+                continue
+            cols = ", ".join(t.upsert_keys)
+            n = _scalar(
+                f"SELECT COUNT(*) FROM ("
+                f"  SELECT 1 FROM {t.full_table_name} GROUP BY {cols} HAVING COUNT(*) > 1"
+                f") d"
+            )
+            if n > 0:
+                errors.append(f"{t.full_table_name}: дубли по ({cols}) = {n} групп")
+
+        if errors:
+            msg = "POST-LOAD VALIDATION FAILED:\n  - " + "\n  - ".join(errors)
+            print(msg)
+            raise RuntimeError(msg)
+
+        print(f"POST-LOAD VALIDATION PASSED ({len(targets)} targets)")
+
+    def _get_retail_snapshot(self) -> "datetime":
+        """
+        SELECT COALESCE(MAX(updated_at), '1970-01-01'::timestamp) FROM bd_retail.{table}.
+
+        Если retail_table не настроен в регистре — fallback на 1970-01-01,
+        чтобы NULL не ломал инкремент.
+        """
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+        from datetime import datetime
+        if not self.config.retail_table:
+            print("retail_table не задан в регистре — snapshot=1970-01-01")
+            return datetime(1970, 1, 1)
+        pg = PostgresHook(postgres_conn_id=self.retail_conn_id)
+        # retail.updated_at в UTC — конвертируем в Almaty чтобы retail_snapshot_at
+        # был в одной TZ с остальными нашими аудит-полями.
+        rows = pg.get_records(
+            f"SELECT COALESCE("
+            f"  MAX((updated_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Almaty')::timestamp), "
+            f"  '1970-01-01'::timestamp"
+            f") FROM public.{self.config.retail_table}"
+        )
+        ts = rows[0][0] if rows and rows[0][0] else datetime(1970, 1, 1)
+        return ts
 
     # ======================================================================
     #  INCREMENTAL MODE
     # ======================================================================
     def _run_incremental(self) -> Dict[str, int]:
-        """Инкрементальная загрузка по изменениям."""
-        # Получаем список изменённых документов
-        if not self.config.retail_table or not self.config.retail_uid_column:
-            raise ValueError("retail_table and retail_uid_column required for incremental mode")
+        """
+        Инкрементальная загрузка по изменениям.
 
-        checker = DataChecker(
-            retail_table=self.config.retail_table,
-            retail_conn_id=self.retail_conn_id,
-            key_column=self.config.retail_uid_column,
+        Транзакционный контур (на уровне load_history):
+          • открытие: INSERT load_history(status='running', started_at=NOW())
+          • захват pg_advisory_lock per-register (защита от параллельных прогонов)
+          • DataChecker: окно [from_ts, to_ts) — read-skew guard внутри
+          • для каждого target: extract → transform → split → load
+          • missing-обработка: changed_uids − returned_recorders → DELETE из dim/fact
+          • watermark двигается ДО to_ts (не до MAX) — окно закрывается даже на пустой пачке
+          • закрытие: UPDATE load_history(status='success'|'failed', checkpoint_value=to_ts)
+        """
+        if not self.config.retail_table or not self.config.retail_uid_column:
+            raise ValueError(
+                "retail_table and retail_uid_column required for incremental mode"
+            )
+
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+        pg_meta = PostgresHook(postgres_conn_id=self.config_conn_id)
+
+        # 1. Открыть load_history
+        run_id = self._open_history_run(pg_meta, run_mode="incremental")
+
+        try:
+            with self._advisory_lock(pg_meta, self.config.id):
+                # 2. Окно изменений (DataChecker сам делает COALESCE на 1970)
+                checker = DataChecker(
+                    retail_table=self.config.retail_table,
+                    retail_conn_id=self.retail_conn_id,
+                    config_conn_id=self.config_conn_id,
+                    register_id=self.config.id,
+                    key_column=self.config.retail_uid_column,
+                    # Источник watermark — dim-таблица ЭТОГО регистра
+                    # (MAX(updated_at)); fallback на public.sales — поведение
+                    # до этапа 0.2, когда имя было захардкожено.
+                    etl_table=self._get_watermark_table(),
+                    etl_conn_id=self.dst_conn_id,
+                )
+                changed_df, from_ts, to_ts = checker.get_changed_uids()
+
+                if changed_df.empty:
+                    print(f"No changes in window [{from_ts}, {to_ts}) — advance watermark only")
+                    self._close_history_run(
+                        pg_meta, run_id,
+                        status="success",
+                        checkpoint=(
+                            f"watermark_from={from_ts}; to={to_ts}; "
+                            f"overlap={checker.WATERMARK_OVERLAP}; new_changes=0"
+                        ),
+                        rows_extracted=0, rows_loaded=0,
+                    )
+                    return {}
+
+                # Карта recorder(uid, lower-case UUID-строка) → retail.updated_at
+                uid_to_updated_at = {
+                    str(self._normalize_uid(u)): ts
+                    for u, ts in zip(changed_df["uid"].tolist(), changed_df["updated_at"].tolist())
+                    if u and self._normalize_uid(u)
+                }
+                changed_uids = list(uid_to_updated_at.keys())
+                print(f"Found {len(changed_uids)} changed documents in window [{from_ts}, {to_ts})")
+
+                # 3. Прогон по target-ам (sorted by priority)
+                results: Dict[str, int] = {}
+                total_extracted = 0
+                returned_recorders: set = set()  # заполнится первым target-ом
+
+                targets = self._get_active_targets()
+                for idx, target in enumerate(targets):
+                    rows = self._process_target_incremental(
+                        target=target,
+                        changed_uids=changed_uids,
+                        uid_to_updated_at=uid_to_updated_at,
+                    )
+                    results[target.target_table] = rows.get("loaded", 0)
+                    total_extracted += rows.get("extracted", 0)
+                    if rows.get("recorders"):
+                        returned_recorders |= set(rows["recorders"])
+
+                # 4. Missing — кого ретейл изменил, а MSSQL не отдал (удалённые)
+                missing = [u for u in changed_uids if u not in returned_recorders]
+                if missing:
+                    print(f"Missing recorders (deleted in 1C): {len(missing)}")
+                    self._delete_missing(targets, missing)
+
+                # 5. Закрыть load_history
+                max_retail_updated = changed_df["updated_at"].max() if not changed_df.empty else None
+                self._close_history_run(
+                    pg_meta, run_id,
+                    status="success",
+                    checkpoint=(
+                        f"watermark_from={from_ts}; to={to_ts}; "
+                        f"overlap={checker.WATERMARK_OVERLAP}; "
+                        f"max_retail_updated_at={max_retail_updated}; "
+                        f"changes={len(changed_uids)}"
+                    ),
+                    rows_extracted=total_extracted,
+                    rows_loaded=sum(results.values()),
+                )
+                return results
+
+        except Exception as e:
+            self._close_history_run(
+                pg_meta, run_id,
+                status="failed",
+                error=str(e)[:2000],
+            )
+            raise
+
+    # ------------------------------------------------------------------
+    # incremental helpers
+    # ------------------------------------------------------------------
+    def _get_watermark_table(self) -> str:
+        """
+        Таблица-источник watermark для инкремента: dim-target регистра
+        (target_role='dimension', минимальный priority). У dim есть updated_at,
+        который движок проставляет из retail — это и есть точка отсечки.
+        Fallback: 'public.sales' (легаси-хардкод до этапа 0.2) — для конфигов
+        без target_role поведение не меняется.
+        """
+        dim = next(
+            (t for t in self._get_active_targets() if t.target_role == "dimension"),
+            None,
+        )
+        if dim:
+            return dim.full_table_name
+        return "public.sales"
+
+    def _open_history_run(self, pg_meta, run_mode: str) -> int:
+        sql = """
+            INSERT INTO etl_meta.load_history
+                (register_id, run_mode, status, started_at)
+            VALUES (%s, %s, 'running', NOW())
+            RETURNING id
+        """
+        rows = pg_meta.get_records(sql, parameters=(self.config.id, run_mode))
+        run_id = rows[0][0]
+        print(f"load_history.id={run_id} status=running")
+        return run_id
+
+    def _close_history_run(
+        self, pg_meta, run_id: int, status: str,
+        checkpoint: Optional[str] = None,
+        rows_extracted: Optional[int] = None,
+        rows_loaded: Optional[int] = None,
+        error: Optional[str] = None,
+    ):
+        sql = """
+            UPDATE etl_meta.load_history
+            SET status = %s,
+                finished_at = NOW(),
+                checkpoint_value = COALESCE(%s, checkpoint_value),
+                rows_extracted = COALESCE(%s, rows_extracted),
+                rows_loaded = COALESCE(%s, rows_loaded),
+                error_message = COALESCE(%s, error_message)
+            WHERE id = %s
+        """
+        pg_meta.run(sql, parameters=(status, checkpoint, rows_extracted, rows_loaded, error, run_id))
+        print(f"load_history.id={run_id} status={status} checkpoint={checkpoint}")
+
+    def _advisory_lock(self, pg_meta, register_id: int):
+        """
+        pg_advisory_lock per-register — блокирует параллельные прогоны того же
+        регистра. Возвращает context manager.
+        """
+        from contextlib import contextmanager
+        @contextmanager
+        def _lock():
+            conn = pg_meta.get_conn()
+            cur = conn.cursor()
+            try:
+                # неблокирующая попытка — если уже взят, падаем сразу
+                cur.execute("SELECT pg_try_advisory_lock(%s)", (register_id,))
+                got = cur.fetchone()[0]
+                if not got:
+                    raise RuntimeError(
+                        f"Another incremental run is in progress for register_id={register_id}"
+                    )
+                conn.commit()
+                print(f"advisory_lock({register_id}) acquired")
+                yield
+            finally:
+                try:
+                    cur.execute("SELECT pg_advisory_unlock(%s)", (register_id,))
+                    conn.commit()
+                    print(f"advisory_lock({register_id}) released")
+                except Exception:
+                    pass
+                cur.close()
+                conn.close()
+        return _lock()
+
+    @staticmethod
+    def _normalize_uid(u):
+        """Толерантный парсинг uid → стандартная UUID-строка с дефисами (lowercase)."""
+        from .transform.binary import _parse_uuid_lenient
+        parsed = _parse_uuid_lenient(u)
+        return str(parsed) if parsed else None
+
+    def _process_target_incremental(
+        self,
+        target: "TargetConfig",
+        changed_uids: List[str],
+        uid_to_updated_at: Optional[Dict[str, "datetime"]] = None,
+    ) -> dict:
+        """
+        Извлечение/трансформация/загрузка одного target в инкременте.
+
+        Args:
+            uid_to_updated_at: карта recorder(UUID-строка) → retail.updated_at.
+                               Для dim-target проставляется как updated_at у строки.
+
+        Возвращает {loaded, extracted, recorders} для статистики и missing-логики.
+        """
+        print(f"Processing target [incremental]: {target.full_table_name}")
+
+        # 1. SQL по списку UID
+        sql = self._build_sql_for_target(target=target, key_values=changed_uids)
+        print(f"Generated SQL:\n{sql[:500]}...")
+
+        # 2. Extract
+        df, binary_columns = self.storage.execute_query(sql)
+        extracted = len(df)
+        if df.empty:
+            print(f"No data for {target.target_table} in incremental")
+            return {"loaded": 0, "extracted": 0, "recorders": set()}
+
+        # 3. Transform
+        column_transforms = self._build_column_transforms(target)
+        df = self.transform.transform_dataframe_by_config(
+            df=df, binary_columns=binary_columns, column_transforms=column_transforms,
         )
 
-        changed_df = checker.get_changed_uids()
+        # Сохраняем recorder перед include_columns фильтрацией
+        returned_recorders = set()
+        if "recorder" in df.columns:
+            returned_recorders = set(df["recorder"].dropna().astype(str).tolist())
 
-        if changed_df.empty:
-            print("No changes detected")
-            return {}
+        # 4. Split по include_columns
+        if target.include_columns:
+            available = [c for c in target.include_columns if c in df.columns]
+            if "etl_loaded_at" in df.columns and "etl_loaded_at" not in available:
+                available.append("etl_loaded_at")
+            df = df[available]
 
-        uids = changed_df["uid"].tolist()
-        print(f"Found {len(uids)} changed documents")
+        # 4b. Dedup для dim
+        if target.target_role == "dimension" and target.upsert_keys:
+            df = df.drop_duplicates(subset=target.upsert_keys, keep="last")
 
-        results = {}
-        targets = self._get_active_targets()
+        # 4c-new. ETL audit-поля для incremental (см. docs/sales_load_modes.md):
+        #     retail_updated_at  — per-row retail.updated_at (через map recorder→ts)
+        #     retail_snapshot_at — snapshot самого запуска (MAX(retail_updated_at) batch'а)
+        #     etl_updated_at     — now()
+        #     updated_at (legacy)— оставляем синхронным с retail_updated_at у dim
+        # ETL audit-поля в Asia/Almaty TZ (см. docs/sales_load_modes.md)
+        # etl_loaded_at не трогаем — он DEFAULT now() в DDL, обновляется только при INSERT
+        # TZ сессии Postgres задаётся в Loader (SET TIME ZONE 'Asia/Almaty')
+        df["etl_updated_at"] = _now_local()
+        if uid_to_updated_at and "recorder" in df.columns:
+            mapped = df["recorder"].astype(str).map(uid_to_updated_at)
+            df["retail_updated_at"] = mapped
+            if mapped.notna().any():
+                df["retail_snapshot_at"] = mapped.max()
+            # legacy
+            if target.target_role == "dimension":
+                df["updated_at"] = mapped
 
+        # 4c. updated_at для dim — берём из uid_to_updated_at по recorder каждой строки.
+        #     Не из now()! Время хранится в часах retail, чтобы watermark двигался корректно.
+        if (
+            target.target_role == "dimension"
+            and uid_to_updated_at
+            and "updated_at" in (target.include_columns or [])
+            and "recorder" in df.columns
+        ):
+            df["updated_at"] = df["recorder"].astype(str).map(uid_to_updated_at)
+            n_mapped = df["updated_at"].notna().sum()
+            print(f"Dim updated_at: {n_mapped}/{len(df)} строк замаплено из retail")
+
+        # 5. Pre-load SQL
+        if target.pre_load_sql:
+            df = self._apply_pre_load_sql(df, target.pre_load_sql)
+
+        # 6. Load — для fact используем delete_insert_by_recorder, если так настроено;
+        #    для dim — обычный upsert. Режим читаем из target.load_mode.
+        loaded = self.loader.load(
+            df=df,
+            table_name=target.full_table_name,
+            mode=target.load_mode,
+            upsert_keys=target.upsert_keys,
+        )
+
+        # 7. Post-load SQL (FK resolve)
+        if target.post_load_sql:
+            self._execute_post_load_sql(target.post_load_sql)
+
+        return {"loaded": loaded, "extracted": extracted, "recorders": returned_recorders}
+
+    def _delete_missing(self, targets: List["TargetConfig"], missing_uids: List[str]):
+        """
+        Удаление строк по recorder из target-ов для документов, которых нет в MSSQL
+        (удалены в 1С). Для fact — DELETE из public.{fact} WHERE recorder IN (missing).
+        Для dim  — DELETE из public.{dim}  WHERE recorder IN (missing).
+        """
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+        from .transform.binary import _parse_uuid_lenient
+
+        # Нормализуем uid в стандартные UUID-строки (recorder в PG хранится как uuid)
+        normalized = [str(_parse_uuid_lenient(u)) for u in missing_uids if _parse_uuid_lenient(u)]
+        if not normalized:
+            return
+
+        pg = PostgresHook(postgres_conn_id=self.dst_conn_id)
+        placeholders = ", ".join(["%s"] * len(normalized))
         for target in targets:
-            rows = self._process_target(
-                target=target,
-                key_values=uids,
-            )
-            results[target.target_table] = rows
-
-        return results
+            # Колонка-ключ удаления — первый upsert-ключ target-а:
+            # sales dim/fact → 'recorder', справочник → 'id', VT → 'doc_id'.
+            # Fallback 'recorder' — поведение до этапа 0.2 (target без ключей).
+            key_col = target.upsert_keys[0] if target.upsert_keys else "recorder"
+            sql = f'DELETE FROM {target.full_table_name} WHERE "{key_col}" IN ({placeholders})'
+            with pg.get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, normalized)
+                    deleted = cur.rowcount
+                conn.commit()
+            print(f"missing DELETE {target.target_table}: {deleted} rows")
 
     # ======================================================================
     #  PROCESS TARGET
@@ -192,9 +664,14 @@ class ETLEngine:
         period_start: Optional[str] = None,
         period_end: Optional[str] = None,
         key_values: Optional[List[str]] = None,
+        snapshot_ts: Optional["datetime"] = None,
     ) -> int:
         """
         Обрабатывает одну целевую таблицу.
+
+        Args:
+            snapshot_ts: для full_period — общий retail-снимок MAX(updated_at),
+                         проставляется как updated_at у dim-строк.
 
         Returns:
             Количество загруженных строк
@@ -237,6 +714,36 @@ class ETLEngine:
             df = df[available]
             print(f"Filtered to {len(available)} columns for {target.target_table}")
 
+        # 4b. Dedup for dimension targets (один документ = одна строка)
+        #     Для регистра накопления один документ порождает N строк по позициям,
+        #     при upsert по ключу dim это N бессмысленных операций + случайный
+        #     порядок перезаписи. Делаем dedup по upsert_keys явно.
+        if target.target_role == "dimension" and target.upsert_keys:
+            before = len(df)
+            df = df.drop_duplicates(subset=target.upsert_keys, keep="last")
+            after = len(df)
+            if before != after:
+                print(f"Dim dedup: {before} → {after} rows by keys {target.upsert_keys}")
+
+        # 4c. ETL audit-поля — пишутся ВСЕМ строкам в обоих режимах.
+        #     Это служебные колонки (см. docs/sales_load_modes.md), которые
+        #     не управляются include_columns / маппингами:
+        #       retail_snapshot_at — MAX(updated_at) из retail на старте full_period
+        #       retail_updated_at  — заполняется только в incremental (per-row)
+        #       etl_updated_at     — момент изменения строки этим прогоном
+        #       updated_at (legacy) — для совместимости копируем туда retail_snapshot
+        #                             у dim. Новый код должен использовать
+        #                             retail_snapshot_at, не updated_at.
+        # TZ всех аудит-полей — Asia/Almaty (см. docs/sales_load_modes.md)
+        df["etl_updated_at"] = _now_local()
+
+        if snapshot_ts is not None:
+            df["retail_snapshot_at"] = snapshot_ts
+            if target.target_role == "dimension":
+                # legacy: оставляем запись в updated_at для существующих BI-запросов
+                df["updated_at"] = snapshot_ts
+            print(f"retail_snapshot_at={snapshot_ts} (всем строкам {target.target_table})")
+
         # 5. Pre-load SQL (агрегация, дедупликация)
         if target.pre_load_sql:
             df = self._apply_pre_load_sql(df, target.pre_load_sql)
@@ -264,15 +771,48 @@ class ETLEngine:
     ) -> str:
         """Генерирует SQL для целевой таблицы."""
 
-        # Определяем ключевую колонку для incremental
+        # Определяем ключевую колонку для incremental.
+        # _AccumRg (standalone)    → _RecorderRRef (UUID документа-регистратора)
+        # _Document* (header)      → _IDRRef       (UUID самой шапки)
+        # _Document*_VT* (detail)  → _Document*_IDRRef через JOIN — фильтруем по parent
+        # Берём первый подходящий источник, у которого настроен этот ключ.
         key_column = None
         if key_values:
-            # Ищем в источниках колонку для фильтрации по UID
-            for source in self.config.sources:
-                if source.source_type == "header":
-                    # Предполагаем _IDRRef как стандартный ключ
+            # 1. Если target привязан к конкретному источнику — берём его тип
+            primary = None
+            if target.source_config:
+                primary = target.source_config
+            elif target.union_config and target.union_config.members:
+                primary = next(
+                    (m.source for m in target.union_config.members if m.source),
+                    None,
+                )
+            elif self.config.sources:
+                primary = self.config.sources[0]
+
+            if primary:
+                if primary.source_type == "standalone":
+                    key_column = "_RecorderRRef"
+                elif primary.source_type == "header":
                     key_column = "_IDRRef"
-                    break
+                elif primary.source_type == "detail":
+                    # detail JOIN-ится на родителя — фильтр через parent
+                    parent = primary.parent_source
+                    if parent and parent.source_type == "header":
+                        key_column = "_IDRRef"
+                    else:
+                        key_column = "_RecorderRRef"
+
+        # Специальный путь: AccumRg + headers + VTs через LEFT JOIN
+        if (self.config.pipeline_type or "").lower() == "accumrg_with_documents":
+            return self.query_builder.build_accumrg_with_documents(
+                register=self.config,
+                target=target,
+                period_start=period_start,
+                period_end=period_end,
+                key_column=key_column,
+                key_values=key_values,
+            )
 
         if target.union_config:
             # UNION нескольких источников

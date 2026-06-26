@@ -5,7 +5,7 @@ Data Access Layer for etl_meta schema — standalone (no Airflow dependency).
 import json
 import psycopg2
 import psycopg2.extras
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 
 DB_CONFIG = {
@@ -80,12 +80,20 @@ def insert_returning(sql: str, params=None) -> int:
 
 def list_registers(include_inactive=False) -> List[dict]:
     sql = f"""
-        SELECT id, code, name, description, default_mode,
-               retail_table, retail_uid_column, is_active,
-               created_at, updated_at
-        FROM {SCHEMA}.registers
-        {"" if include_inactive else "WHERE is_active = TRUE"}
-        ORDER BY code
+        SELECT r.id, r.code, r.name, r.description, r.default_mode,
+               r.retail_table, r.retail_uid_column, r.is_active,
+               r.created_at, r.updated_at,
+               (SELECT array_agg(t.target_table ORDER BY t.priority, t.id)
+                  FROM {SCHEMA}.register_targets t
+                  WHERE t.register_id = r.id AND t.is_active) AS target_tables,
+               (SELECT MAX(h.finished_at) FROM {SCHEMA}.load_history h
+                  WHERE h.register_id = r.id AND h.status = 'success') AS last_success_at,
+               (SELECT h.status FROM {SCHEMA}.load_history h
+                  WHERE h.register_id = r.id
+                  ORDER BY h.started_at DESC NULLS LAST, h.id DESC LIMIT 1) AS last_status
+        FROM {SCHEMA}.registers r
+        {"" if include_inactive else "WHERE r.is_active = TRUE"}
+        ORDER BY r.code
     """
     return query(sql)
 
@@ -100,8 +108,8 @@ def create_register(data: dict) -> int:
     sql = f"""
         INSERT INTO {SCHEMA}.registers
             (code, name, description, default_mode, retail_table, retail_uid_column,
-             parent_id, parent_join_key, child_join_key)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+             parent_id, parent_join_key, child_join_key, pipeline_type)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
     """
     return insert_returning(sql, [
         data["code"], data["name"], data.get("description"),
@@ -109,6 +117,7 @@ def create_register(data: dict) -> int:
         data.get("retail_table"), data.get("retail_uid_column"),
         data.get("parent_id"),
         data.get("parent_join_key"), data.get("child_join_key"),
+        data.get("pipeline_type"),
     ])
 
 
@@ -203,10 +212,30 @@ def get_source(source_id: int) -> Optional[dict]:
     return query_one(sql, [source_id])
 
 
+def _normalize_source_type(source_type: str, mssql_table: str) -> str:
+    """
+    Корректировка source_type по физическому имени таблицы 1С.
+    Регистры накопления/сведений (`_AccumRg*`, `_InfoRg*`, `_AccRg*`) — это
+    всегда standalone, независимо от того что пришло из формы / Discover.
+    UI иногда ставит 'header' для этих таблиц по ошибке — фиксим централизованно.
+    """
+    if not mssql_table:
+        return source_type
+    t = mssql_table.lstrip("_").lower()
+    if t.startswith(("accumrg", "inforg", "accrg")):
+        return "standalone"
+    return source_type
+
+
 def create_source(data: dict) -> int:
     fc = data.get("fields_cache")
     if fc and not isinstance(fc, str):
         fc = json.dumps(fc, ensure_ascii=False)
+    # Нормализуем тип — для регистров накопления/сведений всегда standalone
+    source_type = _normalize_source_type(
+        data.get("source_type", "standalone"),
+        data.get("mssql_table", ""),
+    )
     sql = f"""
         INSERT INTO {SCHEMA}.register_sources
             (register_id, source_code, source_type, mssql_schema, mssql_table,
@@ -216,7 +245,7 @@ def create_source(data: dict) -> int:
         RETURNING id
     """
     return insert_returning(sql, [
-        data["register_id"], data["source_code"], data["source_type"],
+        data["register_id"], data["source_code"], source_type,
         data.get("mssql_schema", "dbo"), data["mssql_table"],
         data.get("onec_name") or None,
         data.get("parent_source_id") or None,
@@ -262,12 +291,18 @@ _AUTO_MAPPING_RULES = {
 }
 
 
-def auto_create_mappings(source_id: int, fields: list):
+def auto_create_mappings(source_id: int, fields: list, target_id: Optional[int] = None):
     """
     Auto-create column_mappings for known system fields from 1C API structure.
     fields = [{"field_name": "Период", "field_name_sql": "Period"}, ...]
     Skips fields that already have a mapping for this source.
     source_column stored as actual MSSQL name (with _ prefix).
+
+    Args:
+        target_id: если известно куда колонки этого source направлены (например
+                   document_header source → dim target, document_detail → fact),
+                   маппинги получат это значение. Если NULL — определится позже
+                   через target.include_columns (legacy путь).
 
     For RecorderTRef: if register has recorder_type_map, uses recorder_type_lookup
     transform with the map as params (converts binary→document name).
@@ -279,6 +314,7 @@ def auto_create_mappings(source_id: int, fields: list):
     source = get_source(source_id)
     reg = get_register(source["register_id"]) if source else None
     type_map = None
+    register_id = reg["id"] if reg else None
     if reg and reg.get("recorder_type_map"):
         raw = reg["recorder_type_map"]
         if isinstance(raw, str):
@@ -303,6 +339,11 @@ def auto_create_mappings(source_id: int, fields: list):
                 "source_id": source_id,
                 "source_column": mssql_col,
                 "onec_name": f["field_name"],
+                # Новые поля
+                "target_id": target_id,
+                "register_id": register_id,
+                "is_auto": True,
+                "is_required": False,
                 **{k: v for k, v in rule.items() if k != "source_column"},
             }
             # If RecorderTRef and we have a type_map, inject it as transform_params
@@ -315,6 +356,11 @@ def auto_create_mappings(source_id: int, fields: list):
 
 
 def update_source(source_id: int, data: dict):
+    # Та же нормализация, что в create_source — фикс UI ставит 'header' для _AccumRg
+    source_type = _normalize_source_type(
+        data.get("source_type", "standalone"),
+        data.get("mssql_table", ""),
+    )
     sql = f"""
         UPDATE {SCHEMA}.register_sources SET
             source_code=%s, source_type=%s, mssql_schema=%s, mssql_table=%s,
@@ -324,7 +370,7 @@ def update_source(source_id: int, data: dict):
         WHERE id=%s
     """
     execute(sql, [
-        data["source_code"], data["source_type"],
+        data["source_code"], source_type,
         data.get("mssql_schema", "dbo"), data["mssql_table"],
         data.get("onec_name") or None,
         data.get("parent_source_id") or None,
@@ -397,8 +443,10 @@ def create_mapping(data: dict) -> int:
         INSERT INTO {SCHEMA}.column_mappings
             (source_id, source_column, target_column, is_expression,
              target_type, transform_type, transform_params,
-             default_value, is_nullable, onec_name)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+             default_value, is_nullable, onec_name,
+             target_id, register_id, is_required, is_auto)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                %s,%s,%s,%s) RETURNING id
     """
     return insert_returning(sql, [
         data["source_id"], data["source_column"], data["target_column"],
@@ -408,6 +456,11 @@ def create_mapping(data: dict) -> int:
         data.get("default_value") or None,
         data.get("is_nullable", True),
         data.get("onec_name") or None,
+        # Новые поля (NULLABLE / defaults)
+        data.get("target_id"),     # NULL если не известно (определится через include_columns)
+        data.get("register_id"),   # для быстрых запросов
+        bool(data.get("is_required", False)),
+        bool(data.get("is_auto", True)),
     ])
 
 
@@ -595,8 +648,9 @@ def create_target(data: dict) -> int:
         INSERT INTO {SCHEMA}.register_targets
             (register_id, target_schema, target_table,
              union_id, source_id, load_mode, upsert_keys,
-             pre_load_sql, post_load_sql, include_columns, priority, target_role)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+             pre_load_sql, post_load_sql, include_columns, priority, target_role,
+             parent_target_id)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
     """
     return insert_returning(sql, [
         data["register_id"],
@@ -608,6 +662,7 @@ def create_target(data: dict) -> int:
         ic,
         data.get("priority", 0),
         data.get("target_role") or None,
+        data.get("parent_target_id"),
     ])
 
 
@@ -698,96 +753,554 @@ def _resolve_pg_type(target_type: Optional[str]) -> str:
     return _PG_TYPE_MAP.get(t, "TEXT")
 
 
-def sync_target_table(target_id: int):
-    """
-    Ensure the real PostgreSQL table matches the etl_meta config.
-    - Creates the table if it doesn't exist
-    - Adds missing columns
-    - Renames columns if target_column changed
-    - Changes column types if target_type changed
-    Does NOT drop columns (safety).
-    """
-    target = get_target(target_id)
-    if not target:
-        return
+def _collect_mappings_for_target(target: dict) -> List[dict]:
+    """Маппинги, формирующие DDL target-таблицы.
 
-    schema = target.get("target_schema", "public")
-    table = target["target_table"]
+    Если у target есть include_columns — собираем колонки со ВСЕХ источников
+    register (main + header + detail), оставляем только перечисленные в
+    include_columns. Это нужно чтобы header-поля (например doc_number) попали
+    в DDL sales, а fact-поля (nomenklatura, kolichestvo) — в DDL sales_positions.
 
-    # Gather columns from ALL sources linked to this target
+    Если include_columns не задан — старая логика: маппинги от target.source_id
+    или union_id (обратная совместимость).
+    """
+    include = target.get("include_columns") or []
+    register_id = target.get("register_id")
     source_id = target.get("source_id")
     union_id = target.get("union_id")
 
-    mappings = []
-    if source_id:
-        mappings = list_mappings_for_source(source_id)
+    mappings: List[dict] = []
+    seen = set()
+
+    def _is_keepable(cm: dict) -> bool:
+        # Сразу отбрасываем неактивные и custom_python — иначе они «съедают» dedup-имя.
+        return cm.get("is_active", True) and cm.get("transform_type") != "custom_python"
+
+    if include and register_id:
+        include_set = set(include)
+        for src in list_sources_for_register(register_id):
+            for cm in list_mappings_for_source(src["id"]):
+                if not _is_keepable(cm):
+                    continue
+                tc = cm["target_column"]
+                if tc in include_set and tc not in seen:
+                    mappings.append(cm)
+                    seen.add(tc)
     elif union_id:
-        # Union: gather mappings from all member sources
-        members = list_members_for_union(union_id)
-        seen = set()
-        for m in members:
+        for m in list_members_for_union(union_id):
             for cm in list_mappings_for_source(m["source_id"]):
+                if not _is_keepable(cm):
+                    continue
                 if cm["target_column"] not in seen:
                     mappings.append(cm)
                     seen.add(cm["target_column"])
+    elif source_id:
+        mappings = [m for m in list_mappings_for_source(source_id) if _is_keepable(m)]
 
-    if not mappings:
-        return
+    return mappings
 
-    # Check if table exists
-    exists = query_one(
+
+def _table_row_count(schema: str, table: str) -> int:
+    """COUNT(*) для таблицы или 0 если её нет."""
+    try:
+        r = query_one(f'SELECT COUNT(*) AS n FROM "{schema}"."{table}"')
+        return int(r["n"]) if r else 0
+    except Exception:
+        return 0
+
+
+def _table_exists(schema: str, table: str) -> bool:
+    return query_one(
         "SELECT 1 FROM information_schema.tables WHERE table_schema=%s AND table_name=%s",
         [schema, table],
-    )
+    ) is not None
 
-    if not exists:
-        # CREATE TABLE with all mapped columns + system columns
-        cols = []
-        for m in mappings:
-            if not m.get("is_active", True):
-                continue
-            pg_type = _resolve_pg_type(m.get("target_type"))
-            nullable = "NULL" if m.get("is_nullable", True) else "NOT NULL"
-            default = f"DEFAULT {m['default_value']}" if m.get("default_value") else ""
-            cols.append(f'    "{m["target_column"]}" {pg_type} {nullable} {default}'.rstrip())
 
-        # Add standard ETL system columns
-        cols.append('    "etl_loaded_at" TIMESTAMP DEFAULT NOW()')
-        cols.append('    "etl_hash" TEXT')
-
-        ddl = f'CREATE TABLE "{schema}"."{table}" (\n' + ",\n".join(cols) + "\n)"
-        execute(ddl)
-        return
-
-    # Table exists — sync columns (ADD missing, ALTER types)
-    existing_cols = {
+def _existing_columns(schema: str, table: str) -> Dict[str, dict]:
+    return {
         r["column_name"]: r
         for r in query(
-            """SELECT column_name, data_type, character_maximum_length, numeric_precision, numeric_scale, is_nullable
+            """SELECT column_name, data_type, character_maximum_length, numeric_precision,
+                      numeric_scale, is_nullable
                FROM information_schema.columns
                WHERE table_schema=%s AND table_name=%s""",
             [schema, table],
         )
     }
 
-    for m in mappings:
-        if not m.get("is_active", True):
-            continue
-        col_name = m["target_column"]
-        pg_type = _resolve_pg_type(m.get("target_type"))
 
-        if col_name not in existing_cols:
-            # ADD column
-            nullable = "" if m.get("is_nullable", True) else "NOT NULL"
+def _existing_constraints(schema: str, table: str) -> List[dict]:
+    """PK/UNIQUE/FK констрейнты таблицы: [{name, type('p'|'u'|'f'), cols:set}]."""
+    rows = query("""
+        SELECT con.conname AS name, con.contype AS type,
+               ARRAY(SELECT att.attname
+                     FROM unnest(con.conkey) k
+                     JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = k
+               ) AS cols
+        FROM pg_constraint con
+        JOIN pg_class c ON c.oid = con.conrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = %s AND c.relname = %s AND con.contype IN ('p', 'u', 'f')
+    """, [schema, table])
+    return [{"name": r["name"], "type": r["type"], "cols": set(r["cols"] or [])} for r in rows]
+
+
+def _duplicate_key_groups(schema: str, table: str, keys: List[str]) -> int:
+    """Сколько групп дублей по ключу — преграда для UNIQUE на непустой таблице."""
+    cols = ", ".join(f'"{k}"' for k in keys)
+    try:
+        r = query_one(
+            f'SELECT COUNT(*) AS n FROM '
+            f'(SELECT 1 FROM "{schema}"."{table}" GROUP BY {cols} HAVING COUNT(*) > 1) d'
+        )
+        return int(r["n"]) if r else 0
+    except Exception:
+        return 0
+
+
+def _find_dim_sibling(target: dict) -> Optional[dict]:
+    """Dimension-target того же регистра (для FK-колонки fact→dim)."""
+    rows = query(f"""
+        SELECT * FROM {SCHEMA}.register_targets
+        WHERE register_id = %s AND target_role = 'dimension' AND is_active = TRUE
+        ORDER BY priority, id
+    """, [target["register_id"]])
+    return rows[0] if rows else None
+
+
+def _dim_pk_info(dim_target: dict) -> dict:
+    """
+    PK dim-таблицы: натуральный 'id' из маппингов (uuid и т.п.) или
+    синтетический BIGSERIAL. Возвращает {natural: bool, pg_type: str}.
+    pg_type — тип FK-колонки в fact (BIGSERIAL → BIGINT).
+    """
+    for m in _collect_mappings_for_target(dim_target):
+        if m["target_column"] == "id":
+            return {"natural": True, "pg_type": _resolve_pg_type(m.get("target_type"))}
+    return {"natural": False, "pg_type": "BIGINT"}
+
+
+def _target_ddl_extras(target: dict, mappings: List[dict]) -> dict:
+    """
+    Контрактные DDL-инварианты target-таблицы (этап 0.2):
+      • pk_natural    : маппинги порождают 'id' → он и есть PK (иначе BIGSERIAL)
+      • unique_keys   : UNIQUE(upsert_keys) для load_mode=upsert (если ключ ≠ PK id)
+      • add_updated_at: у dimension — колонка updated_at (источник watermark)
+      • fk            : у fact — колонка {dim_table}_id → dim(id)
+    """
+    extras = {
+        "pk_natural": any(m["target_column"] == "id" for m in mappings),
+        "unique_keys": None,
+        "add_updated_at": target.get("target_role") == "dimension",
+        "fk": None,
+    }
+
+    upsert_keys = list(target.get("upsert_keys") or [])
+    if (target.get("load_mode") or "upsert") == "upsert" and upsert_keys and upsert_keys != ["id"]:
+        extras["unique_keys"] = upsert_keys
+
+    if target.get("target_role") == "fact":
+        dim = _find_dim_sibling(target)
+        if dim and dim["id"] != target["id"]:
+            pk = _dim_pk_info(dim)
+            extras["fk"] = {
+                "column": f'{dim["target_table"]}_id',
+                "pg_type": pk["pg_type"],
+                "ref_schema": dim.get("target_schema", "public"),
+                "ref_table": dim["target_table"],
+            }
+    return extras
+
+
+# Какие переходы типов считаются безопасным расширением (без потери данных)
+_SAFE_TYPE_WIDENING = {
+    ("integer", "BIGINT"): True,
+    ("integer", "NUMERIC(18,4)"): True,
+    ("smallint", "INTEGER"): True,
+    ("smallint", "BIGINT"): True,
+    # text/varchar взаимные — текстовые типы между собой
+}
+
+
+def _is_type_widening(from_data_type: str, to_pg_type: str, from_maxlen=None) -> bool:
+    """
+    Расширяющая смена типа (безопасная на данных)?
+    - integer → bigint, integer → numeric, smallint → integer/bigint
+    - varchar(N) → varchar(M) при M > N или → text
+    - timestamp → timestamp without time zone (тождество)
+    """
+    if not from_data_type:
+        return True
+    from_data_type = from_data_type.lower()
+    to_upper = to_pg_type.upper()
+
+    if (from_data_type, to_upper) in _SAFE_TYPE_WIDENING:
+        return True
+    # тождество
+    if to_upper.startswith("VARCHAR") and from_data_type in ("character varying", "varchar"):
+        # varchar(N) → varchar(M) where M >= N OR → varchar без ограничения
+        m = None
+        try:
+            inside = to_upper.split("(")[1].rstrip(")") if "(" in to_upper else None
+            m = int(inside) if inside else None
+        except Exception:
+            m = None
+        if from_maxlen is None or m is None or m >= int(from_maxlen):
+            return True
+        return False
+    if to_upper == "TEXT" and from_data_type in ("character varying", "varchar", "text"):
+        return True
+    # одинаковые
+    same_map = {
+        "integer": "INTEGER", "bigint": "BIGINT", "smallint": "SMALLINT",
+        "numeric": "NUMERIC(18,4)", "text": "TEXT", "boolean": "BOOLEAN",
+        "uuid": "UUID", "date": "DATE",
+        "timestamp without time zone": "TIMESTAMP",
+        "jsonb": "JSONB", "bytea": "BYTEA",
+    }
+    if same_map.get(from_data_type, "").startswith(to_upper.split("(")[0]):
+        return True
+    return False
+
+
+def compute_sync_plan(target_id: int) -> dict:
+    """
+    План синхронизации одной таблицы.
+
+    Принципы:
+      • Новые колонки на НЕПУСТОЙ таблице добавляются как NULLABLE.
+      • NOT NULL ставится только при CREATE TABLE (пустая таблица).
+      • DROP COLUMN и сужение типа на таблице с данными — destructive.
+      • На пустой таблице любые правки безопасны (терять нечего).
+
+    Returns:
+      {
+        "target_id": ..., "schema": ..., "table": ...,
+        "exists": bool, "rows_in_table": int,
+        "actions": [
+          {"kind": "create_table"|"add_column"|"alter_type"|"drop_column"|"recreate",
+           "col": ..., "ddl": ..., "destructive": bool, "reason": ""}
+        ],
+        "safe_count": int, "destructive_count": int,
+        "applied": False,
+      }
+    """
+    target = get_target(target_id)
+    if not target:
+        return {"error": f"target {target_id} not found"}
+
+    schema = target.get("target_schema", "public")
+    table = target["target_table"]
+    mappings = _collect_mappings_for_target(target)
+
+    plan = {
+        "target_id": target_id,
+        "schema": schema, "table": table,
+        "full_table_name": f"{schema}.{table}",
+        "exists": _table_exists(schema, table),
+        "rows_in_table": 0,
+        "actions": [],
+        "applied": False,
+    }
+    if not mappings:
+        plan["error"] = "no mappings for target"
+        plan["safe_count"] = 0; plan["destructive_count"] = 0
+        return plan
+
+    extras = _target_ddl_extras(target, mappings)
+
+    if not plan["exists"]:
+        # CREATE TABLE: одна action с полным DDL, не destructive.
+        # Контрактные инварианты: PK(id), UNIQUE(upsert_keys), updated_at у dim,
+        # FK-колонка fact→dim — без них upsert/post_load_sql движка не работают.
+        cols = []
+        if not extras["pk_natural"]:
+            cols.append('    "id" BIGSERIAL PRIMARY KEY')
+        for m in mappings:
+            pg_type = _resolve_pg_type(m.get("target_type"))
+            nullable = "NULL" if m.get("is_nullable", True) else "NOT NULL"
             default = f"DEFAULT {m['default_value']}" if m.get("default_value") else ""
-            execute(f'ALTER TABLE "{schema}"."{table}" ADD COLUMN "{col_name}" {pg_type} {nullable} {default}'.rstrip())
+            pk = " PRIMARY KEY" if (extras["pk_natural"] and m["target_column"] == "id") else ""
+            cols.append(f'    "{m["target_column"]}" {pg_type}{pk} {nullable} {default}'.rstrip())
+        if extras["fk"]:
+            fk = extras["fk"]
+            cols.append(
+                f'    "{fk["column"]}" {fk["pg_type"]} NULL '
+                f'REFERENCES "{fk["ref_schema"]}"."{fk["ref_table"]}" ("id")'
+            )
+        if extras["add_updated_at"]:
+            cols.append('    "updated_at" TIMESTAMP NULL')
+        cols.append('    "etl_loaded_at" TIMESTAMP DEFAULT NOW()')
+        cols.append('    "etl_hash" TEXT')
+        if extras["unique_keys"]:
+            uk = ", ".join(f'"{k}"' for k in extras["unique_keys"])
+            cols.append(f"    UNIQUE ({uk})")
+        ddl = f'CREATE TABLE "{schema}"."{table}" (\n' + ",\n".join(cols) + "\n)"
+        plan["actions"].append({
+            "kind": "create_table",
+            "col": None,
+            "ddl": ddl,
+            "destructive": False,
+            "reason": "table does not exist — creating from scratch",
+        })
+        plan["safe_count"] = 1; plan["destructive_count"] = 0
+        return plan
+
+    # Таблица существует
+    rows = _table_row_count(schema, table)
+    plan["rows_in_table"] = rows
+    is_empty = (rows == 0)
+
+    existing_cols = _existing_columns(schema, table)
+    expected_cols = {m["target_column"] for m in mappings}
+    # системные колонки всегда оставляем
+    # ('sales_id' — legacy-литерал до шаблонной FK-колонки, не дропаем старые таблицы)
+    # Системные колонки таблицы, которые НЕ нужно дропать при sync даже если
+    # их нет в маппингах. Включает legacy updated_at и три новые ETL-аудит-поля
+    # (см. dags/core/migrations/006_etl_audit_columns.sql + docs/sales_load_modes.md).
+    SYSTEM_COLS = {
+        "id", "etl_loaded_at", "etl_hash", "sales_id",
+        "updated_at",  # legacy — оставляем чтобы старый код продолжал работать
+        "retail_snapshot_at", "retail_updated_at", "etl_updated_at",
+    }
+    if extras["fk"]:
+        SYSTEM_COLS.add(extras["fk"]["column"])
+
+    # 1. Найти лишние колонки → DROP
+    for col_name in existing_cols:
+        if col_name in expected_cols or col_name in SYSTEM_COLS:
+            continue
+        destructive = not is_empty
+        plan["actions"].append({
+            "kind": "drop_column",
+            "col": col_name,
+            "ddl": f'ALTER TABLE "{schema}"."{table}" DROP COLUMN "{col_name}"',
+            "destructive": destructive,
+            "reason": "" if is_empty else f"data loss: {rows} rows lose this column",
+        })
+
+    # 2. Найти недостающие колонки → ADD
+    for m in mappings:
+        col_name = m["target_column"]
+        if col_name in existing_cols:
+            continue
+        pg_type = _resolve_pg_type(m.get("target_type"))
+        # На непустой таблице — всегда NULLABLE; NOT NULL только при CREATE.
+        if is_empty:
+            nullable_sql = "" if m.get("is_nullable", True) else "NOT NULL"
         else:
-            # Column exists — check if type needs update
-            # ALTER TYPE only if explicitly set and different
-            if m.get("target_type"):
-                execute(
-                    f'ALTER TABLE "{schema}"."{table}" ALTER COLUMN "{col_name}" TYPE {pg_type} USING "{col_name}"::{pg_type.split("(")[0]}'
-                )
+            nullable_sql = ""  # NULLABLE на непустой
+        default = f"DEFAULT {m['default_value']}" if m.get("default_value") else ""
+        plan["actions"].append({
+            "kind": "add_column",
+            "col": col_name,
+            "ddl": f'ALTER TABLE "{schema}"."{table}" ADD COLUMN "{col_name}" {pg_type} {nullable_sql} {default}'.rstrip(),
+            "destructive": False,
+            "reason": "" if is_empty else "added as NULLABLE (table has rows)",
+        })
+
+    # 3. Найти изменения типа → ALTER TYPE
+    for m in mappings:
+        col_name = m["target_column"]
+        if col_name not in existing_cols:
+            continue
+        if not m.get("target_type"):
+            continue
+        pg_type = _resolve_pg_type(m.get("target_type"))
+        ex = existing_cols[col_name]
+        # сравнить грубо: data_type vs target_type
+        current_type = ex.get("data_type", "")
+        if _is_type_widening(current_type, pg_type, ex.get("character_maximum_length")):
+            # либо тождество, либо безопасное расширение — пропускаем (не двигаем тип)
+            continue
+        # сужение или несовместимая смена
+        destructive = not is_empty
+        plan["actions"].append({
+            "kind": "alter_type",
+            "col": col_name,
+            "ddl": f'ALTER TABLE "{schema}"."{table}" ALTER COLUMN "{col_name}" TYPE {pg_type} USING "{col_name}"::{pg_type.split("(")[0]}',
+            "destructive": destructive,
+            "reason": "" if is_empty else f"narrowing type {current_type} → {pg_type} on {rows} rows",
+        })
+
+    # 4. Контрактные колонки (этап 0.2): updated_at у dim, FK-колонка у fact —
+    #    добавляются NULLABLE, всегда safe.
+    contract_cols = []
+    if extras["add_updated_at"] and "updated_at" not in existing_cols:
+        contract_cols.append(("updated_at", "TIMESTAMP", "dimension требует updated_at (watermark)"))
+    if extras["fk"] and extras["fk"]["column"] not in existing_cols:
+        fk = extras["fk"]
+        contract_cols.append((fk["column"], fk["pg_type"],
+                              f'FK-колонка fact → {fk["ref_schema"]}.{fk["ref_table"]}'))
+    for col_name, pg_type, reason in contract_cols:
+        plan["actions"].append({
+            "kind": "add_column",
+            "col": col_name,
+            "ddl": f'ALTER TABLE "{schema}"."{table}" ADD COLUMN "{col_name}" {pg_type} NULL',
+            "destructive": False,
+            "reason": reason,
+        })
+
+    # 5. Контрактные констрейнты: PK(id) и UNIQUE(upsert_keys).
+    #    На непустой таблице — предварительная проверка дублей: если дубли есть,
+    #    констрейнт невозможен без recreate → destructive (показывается в confirm).
+    constraints = _existing_constraints(schema, table)
+    has_pk = any(c["type"] == "p" for c in constraints)
+
+    if not has_pk:
+        if extras["pk_natural"] or "id" in existing_cols:
+            # натуральный id (из маппингов либо уже есть в таблице) → PK на нём;
+            # дубли проверяем только если колонка физически существует и есть строки
+            dups = (_duplicate_key_groups(schema, table, ["id"])
+                    if (not is_empty and "id" in existing_cols) else 0)
+            plan["actions"].append({
+                "kind": "add_pk",
+                "col": "id",
+                "ddl": f'ALTER TABLE "{schema}"."{table}" ADD PRIMARY KEY ("id")',
+                "destructive": dups > 0,
+                "reason": (f"{dups} групп дублей по id — PK требует recreate"
+                           if dups else "контракт: PK по id"),
+            })
+        else:
+            # нет натурального id — добавляем синтетический BIGSERIAL PK (safe)
+            plan["actions"].append({
+                "kind": "add_pk",
+                "col": "id",
+                "ddl": f'ALTER TABLE "{schema}"."{table}" ADD COLUMN "id" BIGSERIAL PRIMARY KEY',
+                "destructive": False,
+                "reason": "контракт: суррогатный PK id",
+            })
+
+    if extras["unique_keys"]:
+        uk = extras["unique_keys"]
+        covered = any(c["type"] in ("p", "u") and c["cols"] == set(uk) for c in constraints)
+        if not covered:
+            dups = _duplicate_key_groups(schema, table, uk) if not is_empty else 0
+            uk_sql = ", ".join(f'"{k}"' for k in uk)
+            plan["actions"].append({
+                "kind": "add_unique",
+                "col": ",".join(uk),
+                "ddl": f'ALTER TABLE "{schema}"."{table}" ADD UNIQUE ({uk_sql})',
+                "destructive": dups > 0,
+                "reason": (f"{dups} групп дублей по ({', '.join(uk)}) — UNIQUE требует recreate"
+                           if dups else "контракт: upsert по ON CONFLICT требует UNIQUE"),
+            })
+
+    plan["safe_count"] = sum(1 for a in plan["actions"] if not a["destructive"])
+    plan["destructive_count"] = sum(1 for a in plan["actions"] if a["destructive"])
+    return plan
+
+
+def _drop_dependents_cascade(schema: str, table: str) -> List[str]:
+    """
+    Найти таблицы которые ссылаются FK на {schema}.{table} и вернуть их
+    в порядке зависимостей. Используется для recreate dim → fact:
+    дропать fact (с CASCADE), потом dim.
+    """
+    deps = query("""
+        SELECT tc.table_schema AS s, tc.table_name AS t
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.constraint_column_usage ccu
+            ON ccu.constraint_name = tc.constraint_name
+           AND ccu.constraint_schema = tc.table_schema
+        WHERE tc.constraint_type = 'FOREIGN KEY'
+          AND ccu.table_schema = %s
+          AND ccu.table_name = %s
+    """, [schema, table])
+    return [f'{r["s"]}.{r["t"]}' for r in deps]
+
+
+def apply_sync_plan(plan: dict, confirm: bool = False) -> dict:
+    """
+    Применяет план. Возвращает копию plan с applied=True/False и executed_actions.
+
+    Правила:
+      - все safe actions применяются всегда
+      - destructive actions — только при confirm=True
+      - если рекомендуется recreate (несовместимый ADD NOT NULL или сужение типа
+        + есть строки) — делается DROP TABLE CASCADE + CREATE TABLE заново
+        в порядке: сначала dependents (через CASCADE), потом сама таблица
+      - после recreate данные надо загружать заново через full_period
+    """
+    if "error" in plan:
+        return {**plan, "applied": False, "executed": [], "errors": [plan["error"]]}
+
+    safe = [a for a in plan["actions"] if not a["destructive"]]
+    destructive = [a for a in plan["actions"] if a["destructive"]]
+
+    executed: List[dict] = []
+    errors: List[str] = []
+
+    # Если есть destructive, но confirm не дали — применяем только safe и возвращаем
+    if destructive and not confirm:
+        for a in safe:
+            try:
+                execute(a["ddl"])
+                executed.append(a)
+            except Exception as e:
+                errors.append(f'{a["kind"]} {a["col"]}: {e}')
+        return {
+            **plan,
+            "applied": False,
+            "requires_confirm": True,
+            "executed": executed,
+            "errors": errors,
+        }
+
+    # Если destructive подтверждены — пересоздаём целиком (проще и консистентнее)
+    if destructive and confirm:
+        schema = plan["schema"]; table = plan["table"]
+        # 1. Найти таблицы которые ссылаются FK на нас (dependents — fact на dim)
+        dependents = _drop_dependents_cascade(schema, table)
+        # 2. DROP CASCADE — сама таблица (это снесёт и FK от dependents)
+        try:
+            execute(f'DROP TABLE IF EXISTS "{schema}"."{table}" CASCADE')
+            executed.append({
+                "kind": "drop_table",
+                "col": None,
+                "ddl": f'DROP TABLE IF EXISTS "{schema}"."{table}" CASCADE',
+                "destructive": True,
+                "reason": "recreate triggered by destructive change",
+            })
+        except Exception as e:
+            errors.append(f"DROP TABLE: {e}")
+        # 3. CREATE TABLE из новых маппингов
+        new_plan = compute_sync_plan(plan["target_id"])
+        create_action = next((a for a in new_plan["actions"] if a["kind"] == "create_table"), None)
+        if create_action:
+            try:
+                execute(create_action["ddl"])
+                executed.append(create_action)
+            except Exception as e:
+                errors.append(f"CREATE TABLE: {e}")
+        # 4. dependents — их recreate должен инициироваться отдельно владельцем
+        return {
+            **plan,
+            "applied": True,
+            "executed": executed,
+            "errors": errors,
+            "recreated": True,
+            "dependents_dropped": dependents,
+            "note": "после recreate надо запустить full_period — данные потеряны",
+        }
+
+    # Нет destructive — просто применяем safe
+    for a in safe:
+        try:
+            execute(a["ddl"])
+            executed.append(a)
+        except Exception as e:
+            errors.append(f'{a["kind"]} {a["col"]}: {e}')
+    return {**plan, "applied": True, "executed": executed, "errors": errors}
+
+
+def sync_target_table(target_id: int):
+    """
+    Backward-compat обёртка: применяет план без подтверждения destructive.
+    Возвращает план применения (с requires_confirm если нужен confirm).
+    """
+    plan = compute_sync_plan(target_id)
+    return apply_sync_plan(plan, confirm=False)
 
 
 def ensure_target_column(target_id: int, column_name: str, column_type: Optional[str] = None):

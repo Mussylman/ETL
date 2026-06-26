@@ -33,6 +33,7 @@ class TransformUtils:
       - binary_to_uuid : binary(16) → UUID
       - binary_to_int  : binary(4) → int
       - binary_to_bool : binary(1) → bool
+      - invert_bool    : binary(1)/bool → NOT bool (для _Folder: 0x00 = группа)
       - fix_year       : 4025 → 2025
       - cast           : приведение типа (int, float, decimal, str)
       - constant       : константное значение
@@ -51,11 +52,26 @@ class TransformUtils:
             "binary_to_uuid": lambda v, p: binary_to_uuid(v),
             "binary_to_int": lambda v, p: binary_to_int(v),
             "binary_to_bool": lambda v, p: binary_to_bool(v),
+            "invert_bool": self._invert_bool,
             "fix_year": lambda v, p: fix_year(v),
             "cast": lambda v, p: cast(v, (p or {}).get("type", "str")),
             "constant": lambda v, p: (p or {}).get("value"),
             "recorder_type_lookup": self._recorder_type_lookup,
         }
+
+    @staticmethod
+    def _invert_bool(value, params=None):
+        """
+        Инверсия булевого значения (binary(1) конвертируется сначала).
+
+        Для справочников 1С: _Folder хранит 0x00 = ГРУППА, 0x01 = элемент,
+        поэтому is_folder = NOT binary_to_bool(_Folder). NULL остаётся NULL.
+        """
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            value = binary_to_bool(value)
+        if value is None:
+            return None
+        return not bool(value)
 
     def _recorder_type_lookup(self, value, params):
         """
