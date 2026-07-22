@@ -94,6 +94,13 @@ COMMIT;
 11. Missing recorders (есть в retail, нет в MSSQL → удалён в 1С) → DELETE из dim/fact.
 12. `load_history.checkpoint_value`:
     `watermark_from=<old>; to=<now-skew>; overlap=5min; max_retail_updated_at=<new>; changes=<n>`
+13. **Добор хвоста** (`DataChecker.TAIL_LOOKBACK = 48h`, с 2026-07-22): помимо окна,
+    каждый тик перепроверяются uid из retail за последние 48ч, отсутствующие в DWH
+    (анти-джойн по `recorder`). Зачем: 1С проводит документ с задержкой до часов после
+    сигнала retail — overlap 5 мин не спасал, документы терялись навсегда (~23% оборота,
+    см. [[Инкремент терял документы из-за лага проведения 1С больше overlap]] и
+    `docs/audits/sales_aggregate_recon_2026-07-21.md`). Хвостовые документы пишутся со
+    своей старой retail-датой и watermark не двигают; не-продажи сами выходят из окна 48ч.
 
 ## Что запрещено
 
@@ -115,7 +122,8 @@ COMMIT;
 ## Связанные файлы
 
 - [[etl_engine]] — `_run_full_period`, `_run_incremental`, `_process_target*`, `_validate_full_period_load`
-- [[data_checker]] — `get_last_update`, `get_changed_uids`, константы `WATERMARK_OVERLAP`, `READ_SKEW_GUARD`
+- [[data_checker]] — `get_last_update`, `get_changed_uids`, `_get_tail_uids`, константы `WATERMARK_OVERLAP`, `READ_SKEW_GUARD`, `TAIL_LOOKBACK`
+- `docs/audits/sql/sales_recon.py` — еженедельная проверка дельты витрины с 1С
 - [[006_etl_audit_columns]] — миграция, создавшая три новых поля
 - [[dao]] — `SYSTEM_COLS` (Sync игнорирует все 4 audit-колонки)
 - `dags/core/tools/run_full_period.py` — CLI для ручного запуска

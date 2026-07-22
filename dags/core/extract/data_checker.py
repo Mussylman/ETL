@@ -28,6 +28,13 @@ class DataChecker:
     # компенсировать read-skew между retail и нашей dim-таблицей. См.
     # docs/sales_load_modes.md.
     WATERMARK_OVERLAP = timedelta(minutes=5)
+    # Добор хвоста: 1С проводит документ с задержкой (иногда часы) после
+    # сигнала retail, поэтому overlap не спасает — uid, чьих данных ещё нет
+    # в MSSQL на момент тика, навсегда выпадали из окна (аудит 2026-07-21:
+    # ~23% документов, см. docs/audits/sales_aggregate_recon_2026-07-21.md).
+    # Каждый тик дополнительно перепроверяем uid за TAIL_LOOKBACK, которых
+    # нет в DWH, — пока документ не появится в 1С или не выйдет из окна.
+    TAIL_LOOKBACK = timedelta(hours=48)
     DEFAULT_SINCE = "1970-01-01 00:00:00"
 
     def __init__(
@@ -143,7 +150,91 @@ class DataChecker:
             f"🔵 Incremental window [{from_ts}, {to_ts}): "
             f"{len(df)} changed docs in {self.retail_table}"
         )
+
+        # Добор хвоста: uid за TAIL_LOOKBACK, отсутствующие в DWH
+        tail = self._get_tail_uids(window_from=from_ts)
+        if tail is not None and not tail.empty:
+            df = pd.concat([df, tail], ignore_index=True)
+            # один uid мог попасть и в окно, и в хвост — оставляем максимальный updated_at
+            df = (
+                df.sort_values("updated_at")
+                .drop_duplicates(subset=["uid"], keep="last")
+                .reset_index(drop=True)
+            )
+
         return df, from_ts, to_ts
+
+    # ------------------------------------------------------------------
+    # 2b) Добор хвоста недогруженных uid
+    # ------------------------------------------------------------------
+    def _get_tail_uids(self, window_from: str) -> Optional[pd.DataFrame]:
+        """
+        uid, изменённые в retail за TAIL_LOOKBACK ДО начала основного окна
+        и отсутствующие в DWH (etl_table). Это документы, чьё проведение в 1С
+        отстало от сигнала retail сильнее overlap'а: обычное окно их уже не
+        увидит, а retail второй раз про них не сигналит. Перепроверяются
+        каждый тик, пока не появятся в регистре 1С (тогда загрузятся штатным
+        upsert) или не выйдут за TAIL_LOOKBACK (не-продажи отбрасываются сами).
+
+        Возвращает df[uid, updated_at] (Almaty) или None.
+        """
+        if not (self.etl_table and self.etl_conn_id):
+            return None
+
+        from zoneinfo import ZoneInfo
+        ALMATY = ZoneInfo("Asia/Almaty")
+        tail_from = (
+            datetime.now(ALMATY).replace(tzinfo=None) - self.TAIL_LOOKBACK
+        ).strftime("%Y-%m-%d %H:%M:%S.%f")
+        # хвост = [tail_from, window_from): только то, что старше основного окна
+        if tail_from >= str(window_from):
+            return None
+
+        pg = PostgresHook(postgres_conn_id=self.retail_conn_id)
+        sql = f"""
+            SELECT {self.key_column} AS uid,
+                   MAX((updated_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Almaty')::timestamp) AS updated_at
+            FROM   public.{self.retail_table}
+            WHERE  (updated_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Almaty')::timestamp >= %s
+              AND  (updated_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Almaty')::timestamp <  %s
+            GROUP BY {self.key_column}
+        """
+        cand = pg.get_pandas_df(sql, parameters=(tail_from, window_from))
+        if cand.empty:
+            return None
+
+        # нормализуем в валидные uuid (recorder в DWH — тип uuid, lower-case)
+        from uuid import UUID
+
+        def _norm(u) -> Optional[str]:
+            try:
+                return str(UUID(str(u).strip()))
+            except Exception:
+                return None
+
+        cand["uid_norm"] = cand["uid"].map(_norm)
+        cand = cand[cand["uid_norm"].notna()]
+        if cand.empty:
+            return None
+
+        # анти-джойн: кого из кандидатов уже нет в DWH.
+        # recorder — конвенция движка для uid документа-регистратора.
+        dwh = PostgresHook(postgres_conn_id=self.etl_conn_id)
+        rows = dwh.get_records(
+            f"SELECT DISTINCT recorder::text FROM {self.etl_table} "
+            f"WHERE recorder = ANY(%s::uuid[])",
+            parameters=(cand["uid_norm"].tolist(),),
+        )
+        present = {r[0] for r in rows}
+        missing = cand[~cand["uid_norm"].isin(present)]
+        if missing.empty:
+            return None
+
+        print(
+            f"🟡 Tail pickup: {len(missing)} uid за {self.TAIL_LOOKBACK} "
+            f"нет в {self.etl_table} — добираем"
+        )
+        return missing[["uid", "updated_at"]]
 
     # ------------------------------------------------------------------
     # Точка входа (старая сигнатура — для обратной совместимости)

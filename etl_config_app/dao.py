@@ -761,6 +761,13 @@ def _collect_mappings_for_target(target: dict) -> List[dict]:
     include_columns. Это нужно чтобы header-поля (например doc_number) попали
     в DDL sales, а fact-поля (nomenklatura, kolichestvo) — в DDL sales_positions.
 
+    upsert_keys считаются ИМПЛИЦИТНО включёнными в DDL: без них ON CONFLICT не
+    имеет смысла. Если пользователь не добавил их в include_columns — DDL builder
+    всё равно подтянет, иначе CREATE TABLE упадёт на UNIQUE(...) с ссылкой на
+    несуществующую колонку. Маппинг для upsert_key ищется во всех источниках
+    register; если ни в одном нет — колонка просто не появится в DDL, и ошибка
+    будет более понятной (а валидация target должна предупреждать на этом этапе).
+
     Если include_columns не задан — старая логика: маппинги от target.source_id
     или union_id (обратная совместимость).
     """
@@ -768,6 +775,7 @@ def _collect_mappings_for_target(target: dict) -> List[dict]:
     register_id = target.get("register_id")
     source_id = target.get("source_id")
     union_id = target.get("union_id")
+    upsert_keys = target.get("upsert_keys") or []
 
     mappings: List[dict] = []
     seen = set()
@@ -777,7 +785,9 @@ def _collect_mappings_for_target(target: dict) -> List[dict]:
         return cm.get("is_active", True) and cm.get("transform_type") != "custom_python"
 
     if include and register_id:
-        include_set = set(include)
+        # Implicit-include: upsert_keys ВСЕГДА должны быть в DDL,
+        # даже если пользователь забыл добавить их в include_columns.
+        include_set = set(include) | set(upsert_keys)
         for src in list_sources_for_register(register_id):
             for cm in list_mappings_for_source(src["id"]):
                 if not _is_keepable(cm):
