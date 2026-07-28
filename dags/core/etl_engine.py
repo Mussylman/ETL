@@ -259,6 +259,33 @@ class ETLEngine:
                         f"(post_load_sql FK resolve не отработал?)"
                     )
 
+            # dim-FK колонки (пилот guid→id, шаг 5.1): для каждой пары колонок
+            # (<x> uuid, <x>_id) факта все строки с валидным guid должны быть
+            # разрезолвлены post_load-ом (stub-механика гарантирует id всегда).
+            # Пустая ссылка 1С (0000…) намеренно остаётся с <x>_id IS NULL.
+            fk_pairs = pg.get_records(
+                "SELECT a.column_name FROM information_schema.columns a "
+                "JOIN information_schema.columns b "
+                "  ON b.table_schema = a.table_schema "
+                " AND b.table_name  = a.table_name "
+                " AND b.column_name = a.column_name || '_id' "
+                "WHERE a.table_schema = 'public' "
+                "  AND a.table_name = %s AND a.data_type = 'uuid'",
+                parameters=(fact.target_table,),
+            )
+            for (guid_col,) in fk_pairs:
+                n = _scalar(
+                    f"SELECT COUNT(*) FROM public.{fact.target_table} "
+                    f"WHERE {guid_col}_id IS NULL "
+                    f"  AND {guid_col} IS NOT NULL "
+                    f"  AND {guid_col} <> '00000000-0000-0000-0000-000000000000'::uuid"
+                )
+                if n > 0:
+                    errors.append(
+                        f"{fact.target_table}.{guid_col}_id IS NULL = {n} "
+                        f"при валидном {guid_col} (stub-резолв в post_load_sql не отработал?)"
+                    )
+
         # ETL audit-поля (см. docs/sales_load_modes.md):
         #   retail_snapshot_at — обязателен после full_period
         #   etl_updated_at     — обязателен после любой загрузки

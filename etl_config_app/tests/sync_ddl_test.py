@@ -93,13 +93,22 @@ def main():
         check(f"{tbl}: повторный план пуст (идемпотентно)", plan["actions"] == [],
               str([(a["kind"], a["col"]) for a in plan["actions"]]))
 
+    # 4b. FK-колонки dim-слоя (*_id) не дропаются Sync-ом (пилот dim_nomenklatura)
+    dao.execute(f'ALTER TABLE "etl_test"."{FACT}" ADD COLUMN "nomenklatura_id" integer')
+    plan = dao.compute_sync_plan(fact_id)
+    drops = [a["col"] for a in plan["actions"] if a["kind"] == "drop_column"]
+    check("fact: nomenklatura_id не предлагается к DROP", "nomenklatura_id" not in drops, str(drops))
+    check("fact: план без действий при живой *_id", plan["actions"] == [],
+          str([(a["kind"], a["col"]) for a in plan["actions"]]))
+    dao.execute(f'ALTER TABLE "etl_test"."{FACT}" DROP COLUMN "nomenklatura_id"')
+
     # 5. UNIQUE на непустой таблице с дублями → destructive + requires_confirm
     uq = next(c["name"] for c in constraints(DIM) if c["type"] == "u")
     dao.execute(f'ALTER TABLE "etl_test"."{DIM}" DROP CONSTRAINT "{uq}"')
     dao.execute(f'''
-        INSERT INTO "etl_test"."{DIM}" (period, recorder, line_no)
-        VALUES ('2025-01-01', 'a1b2c3d4-e5f6-7788-99aa-bbccddeeff00', 1),
-               ('2025-01-02', 'a1b2c3d4-e5f6-7788-99aa-bbccddeeff00', 2)
+        INSERT INTO "etl_test"."{DIM}" (period, recorder)
+        VALUES ('2025-01-01', 'a1b2c3d4-e5f6-7788-99aa-bbccddeeff00'),
+               ('2025-01-02', 'a1b2c3d4-e5f6-7788-99aa-bbccddeeff00')
     ''')
     plan = dao.compute_sync_plan(dim_id)
     uq_action = next((a for a in plan["actions"] if a["kind"] == "add_unique"), None)

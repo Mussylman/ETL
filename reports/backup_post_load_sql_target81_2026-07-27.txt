@@ -1,0 +1,6 @@
+UPDATE public.sales_positions AS f
+SET    sales_id = d.id
+FROM   public.sales AS d
+WHERE  f.recorder      = d.recorder
+  AND  f.recorder_type = d.recorder_type
+  AND  f.sales_id IS NULL;

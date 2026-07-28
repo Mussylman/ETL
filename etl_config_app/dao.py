@@ -1080,6 +1080,11 @@ def compute_sync_plan(target_id: int) -> dict:
     for col_name in existing_cols:
         if col_name in expected_cols or col_name in SYSTEM_COLS:
             continue
+        if col_name.endswith("_id"):
+            # FK-колонки dim-слоя (nomenklatura_id и т.п.): заполняются
+            # post_load_sql и в мэппингах отсутствуют по определению —
+            # Sync их не трогает. См. reports/pilot_dim_nomenklatura_plan_2026-07-27.md
+            continue
         destructive = not is_empty
         plan["actions"].append({
             "kind": "drop_column",
