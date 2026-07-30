@@ -259,30 +259,35 @@ class ETLEngine:
                         f"(post_load_sql FK resolve не отработал?)"
                     )
 
-            # dim-FK колонки (пилот guid→id, шаг 5.1): для каждой пары колонок
-            # (<x> uuid, <x>_id) факта все строки с валидным guid должны быть
-            # разрезолвлены post_load-ом (stub-механика гарантирует id всегда).
-            # Пустая ссылка 1С (0000…) намеренно остаётся с <x>_id IS NULL.
+        # dim-FK колонки (guid→id, шаг 5.1): для каждой пары колонок
+        # (<x> uuid, <x>_id) КАЖДОГО target-а все строки с валидным guid должны
+        # быть разрезолвлены post_load-ом (stub-механика гарантирует id всегда).
+        # Правило имён: FK = guid-колонка без суффикса '_uid' + '_id'
+        # (nomenklatura → nomenklatura_id, otvetstvennyy_uid → otvetstvennyy_id).
+        # Пустая ссылка 1С (0000…) намеренно остаётся с <x>_id IS NULL.
+        for t in targets:
             fk_pairs = pg.get_records(
-                "SELECT a.column_name FROM information_schema.columns a "
+                "SELECT a.column_name, "
+                "       regexp_replace(a.column_name, '_uid$', '') || '_id' AS fk "
+                "FROM information_schema.columns a "
                 "JOIN information_schema.columns b "
                 "  ON b.table_schema = a.table_schema "
                 " AND b.table_name  = a.table_name "
-                " AND b.column_name = a.column_name || '_id' "
+                " AND b.column_name = regexp_replace(a.column_name, '_uid$', '') || '_id' "
                 "WHERE a.table_schema = 'public' "
                 "  AND a.table_name = %s AND a.data_type = 'uuid'",
-                parameters=(fact.target_table,),
+                parameters=(t.target_table,),
             )
-            for (guid_col,) in fk_pairs:
+            for (guid_col, fk_col) in fk_pairs:
                 n = _scalar(
-                    f"SELECT COUNT(*) FROM public.{fact.target_table} "
-                    f"WHERE {guid_col}_id IS NULL "
+                    f"SELECT COUNT(*) FROM public.{t.target_table} "
+                    f"WHERE {fk_col} IS NULL "
                     f"  AND {guid_col} IS NOT NULL "
                     f"  AND {guid_col} <> '00000000-0000-0000-0000-000000000000'::uuid"
                 )
                 if n > 0:
                     errors.append(
-                        f"{fact.target_table}.{guid_col}_id IS NULL = {n} "
+                        f"{t.target_table}.{fk_col} IS NULL = {n} "
                         f"при валидном {guid_col} (stub-резолв в post_load_sql не отработал?)"
                     )
 

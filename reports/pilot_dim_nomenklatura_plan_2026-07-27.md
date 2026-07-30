@@ -159,3 +159,37 @@ guid номенклатуры пока живёт в двух местах: в d
 | 6 | Инкремент: тик 9530 success, 23 строки, unresolved=0. Full_period 1 день (id 9534): success, POST-LOAD VALIDATION PASSED, 3 новых stub'а на лету (9905→9908), unresolved=0 |
 
 Паттерн guid→id ОБКАТАН на обоих путях загрузки. dim: 9 908 строк, все is_stub=true (имена ждут шаг 7 — источник справочника 1С).
+
+## Шаг 7 выполнен (2026-07-29, по «ок»)
+- Физическая таблица найдена через meta API: Справочник.Номенклатура = **_Reference123**
+  (_Code, _Description, артикул=_Fld1897 — на будущее).
+- Обогащение SCOPED: только существующие stub'ы (полный каталог — задача будущего
+  register'а справочника, не пилота). Батчи по 500 uuid → uuid_to_mssql_hex_1c.
+- Результат: **9 910 из 9 910 stub'ов найдены и обогащены** (100%); групп (_Folder) — 0,
+  помеченных на удаление — 0; still_stub = 0, пустых имён = 0. id не менялись (UPDATE без id).
+- Контроль: BI-запрос топ-10 по int-связке даёт осмысленные имена (iPhone 17 Pro Max,
+  DualSense, Epson…); join по id vs join по guid — mismatch = 0.
+
+ПИЛОТ ЗАВЕРШЁН ПОЛНОСТЬЮ. Паттерн guid→id→имя обкатан от 1С до BI-запроса.
+
+## Тираж на остальные справочники (2026-07-29, по «гоу» с боевым тестом)
+Порядок: сначала otvetstvennyy (45% пустышек — боевой тест защиты), после чистого прохода — остальные 5.
+vidoperatsii исключён по решению пользователя (перечисление на 5 значений — не справочник).
+
+| dim | _Reference | строк | обогащено | FK-колонки |
+|---|---|---:|---|---|
+| dim_otvetstvennyy | _Reference145 (Пользователи) | 379 | 100% | sales.otvetstvennyy_id |
+| dim_kontragent | _Reference108 | 598 | 100% | sales.kontragent_id |
+| dim_podrazdelenie | _Reference141 | 102 | 100% | sales.podrazdelenie_id |
+| dim_sklad | _Reference169 | 67 | 100% | sales.sklad_id + sales_positions.sklad_id (один справочник) |
+| dim_organizatsiya | _Reference131 | 1 | 100% | sales.organizatsiya_id |
+| dim_dogovor | _Reference75 | 663 | 100% | sales.dogovor_id |
+| dim_kachestvo | _Reference97 | 5 | 100% | sales_positions.kachestvo_id |
+
+- Боевой тест пустышек: 39 291 строка `0000…` → id NULL, в dim не попала ни одна; unresolved среди валидных = 0 везде.
+- Валидация расширена: правило имён `_uid`-суффикса (otvetstvennyy_uid → otvetstvennyy_id) + проверка пар на ВСЕХ target-ах.
+- post_load: target 80 — 6 резолверов (sales), target 81 — 3 (positions; sklad кормится stub-ами из обеих таблиц).
+- Контроль: тик 9574 success; full_period 9575 — POST-LOAD VALIDATION PASSED (9 пар guid/_id).
+
+ТИРАЖ ЗАВЕРШЁН: 8 справочников (incl. пилот), 9 FK-колонок, все обогащены на 100%.
+Осталось вне тиража: vidoperatsii (перечисление — мини-словарь через meta API), полиморфные zakaz/doc_sale (raw_refs-этап), bi.* витрины.
