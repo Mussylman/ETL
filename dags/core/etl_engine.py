@@ -26,6 +26,36 @@ from zoneinfo import ZoneInfo
 # держим всё в одной TZ для согласованности (см. docs/sales_load_modes.md).
 ETL_TZ = ZoneInfo("Asia/Almaty")
 
+def _format_error(e: Exception, limit: int = 2000) -> str:
+    """
+    Компактное сообщение об ошибке для load_history.error_message.
+
+    Проблема: исключения драйвера выглядят как
+    "Execution failed on sql '<2 КБ SQL-текста>': <настоящая причина>" —
+    при простом обрезании до limit причина терялась и падения приходилось
+    диагностировать по логам Airflow (кейс 2026-07-30: 19 deadlock-ов,
+    причина не сохранилась ни в одной строке load_history).
+
+    Решение: тип исключения и ХВОСТ сообщения (где причина от драйвера)
+    ставим в начало, голову оставляем как контекст в остатке лимита.
+    """
+    msg = str(e) or e.__class__.__name__
+    head = f"{e.__class__.__name__}: "
+
+    # Вырезаем тело SQL: "Execution failed on sql '<SQL>': <причина>".
+    # Берём ПОСЛЕДНЕЕ "': " — после него у драйвера идёт настоящая причина.
+    marker = "': "
+    if msg.startswith("Execution failed on sql") and marker in msg:
+        cut = msg.rfind(marker)
+        cause = msg[cut + len(marker):].strip()
+        sql_head = msg[len("Execution failed on sql '"):][:120].replace("\n", " ")
+        msg = f"{cause}  [sql ~{cut} симв., начало: {sql_head}…]"
+
+    if len(msg) <= limit - len(head):
+        return head + msg
+    return head + msg[: limit - len(head) - 1] + "…"
+
+
 def _now_local():
     """now() в Asia/Almaty, без tzinfo — для записи в timestamp WITHOUT time zone."""
     return datetime.now(ETL_TZ).replace(tzinfo=None)
@@ -196,7 +226,7 @@ class ETLEngine:
             return results
 
         except Exception as e:
-            err = (str(e) or e.__class__.__name__)[:2000]
+            err = _format_error(e)
             try:
                 self._close_history_run(
                     pg_meta, run_id, status="failed",
@@ -465,7 +495,7 @@ class ETLEngine:
             self._close_history_run(
                 pg_meta, run_id,
                 status="failed",
-                error=str(e)[:2000],
+                error=_format_error(e),
             )
             raise
 

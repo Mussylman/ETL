@@ -25,8 +25,22 @@ class QueryBuilder:
       - UNION ALL (несколько документов в один регистр)
     """
 
+    # Читаем боевую базу 1С, которая одновременно пишется пользователями.
+    # Без хинта наши SELECT-ы с JOIN-ами по горячим таблицам регулярно
+    # становились жертвой deadlock (MSSQL 1205: "deadlocked on lock |
+    # communication buffer resources") — 19 падений DAG за неделю, см.
+    # docs/knowledge/debugging/. Грязное чтение здесь приемлемо: данные
+    # аналитические, а расхождения ловит еженедельная сверка sales_recon.py.
+    TABLE_HINT = "WITH (NOLOCK)"
+
     def __init__(self, database: str = "UPP_JAN"):
         self.database = database
+
+    def _table_ref(self, schema: str, table: str, alias: str) -> str:
+        """[db].[schema].[table] AS [alias] WITH (NOLOCK) — единая точка для хинтов."""
+        return (
+            f"[{self.database}].[{schema}].[{table}] AS [{alias}] {self.TABLE_HINT}"
+        )
 
     def build_source_query(
         self,
@@ -152,14 +166,14 @@ class QueryBuilder:
         if len(tables) == 1:
             # Одна таблица
             t = tables[0]
-            return f"[{self.database}].[{t.mssql_schema}].[{t.mssql_table}] AS [{t.source_code}]"
+            return self._table_ref(t.mssql_schema, t.mssql_table, t.source_code)
 
         # Есть JOIN (parent + detail)
         parent = tables[0]
         detail = tables[1]
 
-        parent_table = f"[{self.database}].[{parent.mssql_schema}].[{parent.mssql_table}] AS [{parent.source_code}]"
-        detail_table = f"[{self.database}].[{detail.mssql_schema}].[{detail.mssql_table}] AS [{detail.source_code}]"
+        parent_table = self._table_ref(parent.mssql_schema, parent.mssql_table, parent.source_code)
+        detail_table = self._table_ref(detail.mssql_schema, detail.mssql_table, detail.source_code)
 
         join_type = self._normalize_join_type(detail.join_type)
 
@@ -424,9 +438,8 @@ class QueryBuilder:
         select_clause = ",\n       ".join(select_parts) if select_parts else "*"
 
         # FROM + JOINs
-        from_main = (
-            f"[{self.database}].[{main_src.mssql_schema}].[{main_src.mssql_table}] "
-            f"AS [{main_alias}]"
+        from_main = self._table_ref(
+            main_src.mssql_schema, main_src.mssql_table, main_alias
         )
 
         join_lines: List[str] = []
@@ -437,7 +450,7 @@ class QueryBuilder:
             a = "d_" + h.source_code
             hex_tc = f"0x{tc:08X}"
             join_lines.append(
-                f"LEFT JOIN [{self.database}].[{h.mssql_schema}].[{h.mssql_table}] AS [{a}]\n"
+                f"LEFT JOIN {self._table_ref(h.mssql_schema, h.mssql_table, a)}\n"
                 f"    ON [{main_alias}].[_RecorderRRef] = [{a}].[_IDRRef]\n"
                 f"   AND [{main_alias}].[_RecorderTRef] = {hex_tc}"
             )
@@ -449,7 +462,7 @@ class QueryBuilder:
             a = "vt_" + vt.source_code
             hex_tc = f"0x{meta['doc_n']:08X}"
             join_lines.append(
-                f"LEFT JOIN [{self.database}].[{vt.mssql_schema}].[{vt.mssql_table}] AS [{a}]\n"
+                f"LEFT JOIN {self._table_ref(vt.mssql_schema, vt.mssql_table, a)}\n"
                 f"    ON [{a}].[{meta['fk_col']}] = [{main_alias}].[_RecorderRRef]\n"
                 f"   AND [{main_alias}].[_RecorderTRef] = {hex_tc}\n"
                 f"   AND [{a}].[{meta['line_col']}] = [{main_alias}].[_LineNo]"
