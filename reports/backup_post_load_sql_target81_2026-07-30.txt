@@ -1,0 +1,36 @@
+UPDATE public.sales_positions AS f
+SET    sales_id = d.id
+FROM   public.sales AS d
+WHERE  f.recorder      = d.recorder
+  AND  f.recorder_type = d.recorder_type
+  AND  f.sales_id IS NULL;
+
+-- dim_nomenklatura: stub + резолв id (пилот guid→id, 2026-07-27)
+INSERT INTO public.dim_nomenklatura (guid)
+SELECT DISTINCT p.nomenklatura
+FROM   public.sales_positions p
+WHERE  p.nomenklatura_id IS NULL
+  AND  p.nomenklatura IS NOT NULL
+  AND  p.nomenklatura <> '00000000-0000-0000-0000-000000000000'::uuid
+ON CONFLICT (guid) DO NOTHING;
+
+UPDATE public.sales_positions p
+SET    nomenklatura_id = d.id
+FROM   public.dim_nomenklatura d
+WHERE  p.nomenklatura = d.guid
+  AND  p.nomenklatura_id IS NULL;
+
+-- тираж guid→id (2026-07-29): sklad, kachestvo (позиции)
+INSERT INTO public.dim_sklad (guid)
+SELECT DISTINCT sklad FROM public.sales_positions
+WHERE sklad_id IS NULL AND sklad IS NOT NULL AND sklad <> '00000000-0000-0000-0000-000000000000'::uuid
+ON CONFLICT (guid) DO NOTHING;
+UPDATE public.sales_positions p SET sklad_id = d.id FROM public.dim_sklad d
+WHERE p.sklad = d.guid AND p.sklad_id IS NULL;
+
+INSERT INTO public.dim_kachestvo (guid)
+SELECT DISTINCT kachestvo FROM public.sales_positions
+WHERE kachestvo_id IS NULL AND kachestvo IS NOT NULL AND kachestvo <> '00000000-0000-0000-0000-000000000000'::uuid
+ON CONFLICT (guid) DO NOTHING;
+UPDATE public.sales_positions p SET kachestvo_id = d.id FROM public.dim_kachestvo d
+WHERE p.kachestvo = d.guid AND p.kachestvo_id IS NULL;
