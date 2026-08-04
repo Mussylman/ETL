@@ -895,13 +895,25 @@ def _target_ddl_extras(target: dict, mappings: List[dict]) -> dict:
     Контрактные DDL-инварианты target-таблицы (этап 0.2):
       • pk_natural    : маппинги порождают 'id' → он и есть PK (иначе BIGSERIAL)
       • unique_keys   : UNIQUE(upsert_keys) для load_mode=upsert (если ключ ≠ PK id)
-      • add_updated_at: у dimension — колонка updated_at (источник watermark)
+      • add_updated_at: у dimension — колонка updated_at (источник watermark).
+                        ИСКЛЮЧЕНИЕ — справочники (pipeline_type='reference_dim'):
+                        они не участвуют в инкременте и watermark не дают,
+                        их свежесть — etl_updated_at, проставляемый загрузчиком
+                        имён. Без исключения Sync каждый раз предлагал бы
+                        добавить в dim_* мёртвую колонку updated_at.
       • fk            : у fact — колонка {dim_table}_id → dim(id)
     """
+    _reg = query_one(
+        f"SELECT pipeline_type FROM {SCHEMA}.registers WHERE id = %s",
+        [target.get("register_id")],
+    ) if target.get("register_id") else None
+    is_reference_dim = bool(_reg and _reg.get("pipeline_type") == "reference_dim")
     extras = {
         "pk_natural": any(m["target_column"] == "id" for m in mappings),
         "unique_keys": None,
-        "add_updated_at": target.get("target_role") == "dimension",
+        "add_updated_at": (
+            target.get("target_role") == "dimension" and not is_reference_dim
+        ),
         "fk": None,
     }
 
@@ -1072,6 +1084,10 @@ def compute_sync_plan(target_id: int) -> dict:
         "id", "etl_loaded_at", "etl_hash", "sales_id",
         "updated_at",  # legacy — оставляем чтобы старый код продолжал работать
         "retail_snapshot_at", "retail_updated_at", "etl_updated_at",
+        # служебный флаг dim-слоя: строка создана stub-резолвом и ещё не
+        # обогащена именем из 1С. Источника в мэппингах нет и быть не может —
+        # без этой защиты Sync предложил бы дропнуть колонку.
+        "is_stub",
     }
     if extras["fk"]:
         SYSTEM_COLS.add(extras["fk"]["column"])

@@ -23,6 +23,8 @@ ap = argparse.ArgumentParser()
 ap.add_argument('--start', default=None, help='начало периода YYYY-MM-DD (включительно)')
 ap.add_argument('--end', default=None, help='конец периода YYYY-MM-DD (исключительно)')
 ap.add_argument('--full', action='store_true', help='показать все дни, не только с дельтой')
+ap.add_argument('--strict', action='store_true',
+                help='выйти с кодом 1, если закрытые дни не сошлись (для rebuild-оркестратора)')
 args = ap.parse_args()
 
 today = datetime.now(ZoneInfo('Asia/Almaty')).date()
@@ -96,3 +98,10 @@ if bad:
     print(f"❌ дни с дельтой: {', '.join(bad)} — виновника ищи анти-джойном (см. журнал в sales_aggregate_recon_2026-07-21.md)")
 else:
     print("Закрытые дни сходятся с 1С полностью.")
+
+# --strict: ненулевой код возврата, если закрытые дни не сошлись.
+# Нужен оркестратору rebuild (dags/core/tools/rebuild_sales.py), чтобы
+# сборка падала по критерию «recon в ноль», а не просто печатала отчёт.
+# Сегодняшний (частичный) день в критерий не входит — он всегда неполный.
+if args.strict and bad:
+    sys.exit(1)
