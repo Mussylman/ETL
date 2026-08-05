@@ -37,6 +37,10 @@ def main():
     parser.add_argument("--targets", default=None, help="target_table через запятую, опционально")
     parser.add_argument("--log-dir", default="/tmp", help="каталог для лога")
     parser.add_argument("--truncate", action="store_true", help="TRUNCATE целевых таблиц перед загрузкой")
+    parser.add_argument("--skip-names", action="store_true",
+                        help="не догружать имена справочников после загрузки "
+                             "(по умолчанию догружаются — иначе витрина остаётся "
+                             "со stub-строками без имён)")
     args = parser.parse_args()
 
     warnings.filterwarnings("ignore")
@@ -99,6 +103,17 @@ def main():
     etl = ETLEngine(**kwargs)
     result = etl.run()
     elapsed = time.time() - t0
+
+    # Имена справочников: post_load создаёт stub-строки с id, но без имени —
+    # без этого шага витрина остаётся безымянной до ручного прогона.
+    if not args.skip_names:
+        print("\n[dim-names] догружаю имена справочников…")
+        try:
+            from core.tools.load_dim_names import enrich_all
+            totals = enrich_all(only_stub=True, raise_on_error=False)
+            print(f"[dim-names] {totals}")
+        except Exception as e:
+            print(f"[dim-names] ПРОПУЩЕНО из-за ошибки: {str(e)[:200]}")
 
     print("\n" + "=" * 70)
     print(f"  RESULT  ({elapsed:.1f}s)")

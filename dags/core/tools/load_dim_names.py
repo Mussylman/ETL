@@ -175,6 +175,49 @@ def load_dim(
     }
 
 
+def enrich_all(
+    pg_conn_id: str = "postgre_test_base",
+    mssql_conn_id: str = "mssql_1c_conn",
+    only_stub: bool = True,
+    dims: Optional[List[str]] = None,
+    raise_on_error: bool = True,
+) -> Dict[str, int]:
+    """
+    Обогатить все справочники — общая точка входа для DAG, CLI и оркестратора.
+
+    Дешёвая при пустой работе: если stub-строк нет, load_dim выходит ДО похода
+    в meta API и MSSQL (только 8 быстрых SELECT). Поэтому вызов безопасно
+    вешать на каждый инкрементальный тик.
+
+    raise_on_error=False — режим «не мешать основному потоку»: ошибки
+    логируются и возвращаются в счётчике `failed`, исключение не бросается
+    (для DAG, где загрузка фактов уже завершена и не должна страдать).
+    """
+    totals = {"candidates": 0, "found": 0, "updated": 0, "still_stub": 0, "failed": 0}
+    failed: List[str] = []
+    for dim_table in (dims or list(DIM_SOURCES)):
+        onec_name, fallback = DIM_SOURCES[dim_table]
+        try:
+            res = load_dim(
+                dim_table=dim_table,
+                onec_name=onec_name,
+                fallback_table=fallback,
+                pg_conn_id=pg_conn_id,
+                mssql_conn_id=mssql_conn_id,
+                only_stub=only_stub,
+            )
+            for k in ("candidates", "found", "updated", "still_stub"):
+                totals[k] += res[k]
+        except Exception as e:
+            print(f"  ✗ {dim_table}: {str(e)[:200]}")
+            failed.append(dim_table)
+            totals["failed"] += 1
+
+    if failed and raise_on_error:
+        raise RuntimeError(f"обогащение имён не прошло для {failed}")
+    return totals
+
+
 def main():
     parser = argparse.ArgumentParser(description="Загрузка имён справочников из 1С")
     parser.add_argument("--dim", nargs="*", default=None, help="какие dim (default: все)")

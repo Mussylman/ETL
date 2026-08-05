@@ -356,26 +356,16 @@ def run_full_period(register_code: str, start_1c: str, end_1c: str,
 # Шаг 7: имена справочников (обязательный)
 # ──────────────────────────────────────────────────────────────────────
 def run_dim_names(pg_conn_id: str, mssql_conn_id: str) -> None:
-    from .load_dim_names import DIM_SOURCES, load_dim
+    from .load_dim_names import enrich_all
 
-    failed = []
-    still_stub_total = 0
-    for dim_table, (onec_name, fallback) in DIM_SOURCES.items():
-        try:
-            res = load_dim(
-                dim_table=dim_table,
-                onec_name=onec_name,
-                fallback_table=fallback,
-                pg_conn_id=pg_conn_id,
-                mssql_conn_id=mssql_conn_id,
-                only_stub=True,
-            )
-            still_stub_total += res["still_stub"]
-        except Exception as e:
-            print(f"  ✗ {dim_table}: {str(e)[:200]}")
-            failed.append(dim_table)
-    if failed:
-        raise StepFailed(f"обогащение имён не прошло для {failed}")
+    try:
+        totals = enrich_all(
+            pg_conn_id=pg_conn_id, mssql_conn_id=mssql_conn_id,
+            only_stub=True, raise_on_error=True,
+        )
+    except RuntimeError as e:
+        raise StepFailed(str(e))
+    still_stub_total = totals["still_stub"]
     if still_stub_total:
         print(
             f"  ⚠ осталось {still_stub_total} строк без имени — это объекты, "
