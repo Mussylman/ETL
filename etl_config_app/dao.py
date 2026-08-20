@@ -1350,6 +1350,30 @@ def ensure_target_column(target_id: int, column_name: str, column_type: Optional
         execute(f'ALTER TABLE "{schema}"."{table}" ADD COLUMN "{column_name}" {pg_type} NULL')
 
 
+def add_include_column(target_id: int, column: str):
+    """
+    Дописывает колонку в target.include_columns (идемпотентно).
+
+    include_columns — то, по чему Sync собирает DDL (_collect_mappings_for_target).
+    Если таргет им пользуется, а колонки там нет, новый мэппинг в таблицу не
+    попадёт. У таргетов без include_columns список не заводим — там действует
+    старая логика «все мэппинги источника».
+    """
+    target = get_target(target_id)
+    if not target:
+        return
+    include = target.get("include_columns")
+    if not include:          # NULL или [] — режим «все колонки источника»
+        return
+    if column in include:
+        return
+    execute(
+        f"UPDATE {SCHEMA}.register_targets "
+        f"SET include_columns = array_append(include_columns, %s) WHERE id=%s",
+        [column, target_id],
+    )
+
+
 def sync_all_targets_for_register(register_id: int):
     """Sync all target tables for a register."""
     targets = list_targets_for_register(register_id)

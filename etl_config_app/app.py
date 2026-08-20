@@ -438,13 +438,67 @@ async def mapping_toggle(map_id: int):
 # Batch save mappings from 1C API columns
 @app.post("/sources/{src_id}/mappings/batch")
 async def mapping_batch(request: Request, src_id: int):
+    """
+    Добавляет колонки в источник и доводит их до реальной таблицы.
+
+    Без привязки к register_id/target_id мэппинг остаётся «сиротой»: Sync его
+    не видит (собирает по target.include_columns), движок не читает (читает по
+    register_id) — колонка молча не появляется в БД. Поэтому здесь мы:
+      1) проставляем register_id/target_id,
+      2) дописываем target_column в include_columns таргета,
+      3) только потом запускаем Sync.
+    """
     body = await request.json()
     mappings = body.get("mappings", [])
+    if not mappings:
+        return JSONResponse({"ok": False, "error": "не передано ни одной колонки"},
+                            status_code=400)
+
+    source = dao.get_source(src_id)
+    if not source:
+        return JSONResponse({"ok": False, "error": f"источник {src_id} не найден"},
+                            status_code=404)
+    reg_id = source["register_id"]
+
+    # Колонки, которых нет в источнике, добавлять нельзя: SELECT к 1С упадёт
+    # на первом же прогоне. Такое приезжает из meta API, когда реквизит есть в
+    # конфигурации, но физической колонки в этой базе нет (см. fields_cache
+    # с пустым mssql_column).
+    known = set()
+    try:
+        cache = source.get("fields_cache") or []
+        if isinstance(cache, str):
+            cache = json.loads(cache)
+        known = {(f.get("mssql_column") or "").lower() for f in cache if f.get("mssql_column")}
+    except Exception:
+        known = set()
+    if known:
+        unknown = [m["source_column"] for m in mappings
+                   if (m.get("source_column") or "").lower() not in known]
+        if unknown:
+            return JSONResponse({
+                "ok": False,
+                "error": "нет таких колонок в источнике: " + ", ".join(unknown)
+                         + ". Реквизит есть в конфигурации 1С, но колонки в этой базе нет.",
+            }, status_code=400)
+
+    targets = dao.list_targets_for_register(reg_id)
+    created = 0
     for m in mappings:
         m["source_id"] = src_id
+        m["register_id"] = reg_id
+        tgt = next((t for t in targets if t.get("source_id") == src_id), None)
+        if tgt is None and len(targets) == 1:
+            tgt = targets[0]
+        if tgt:
+            m["target_id"] = tgt["id"]
         dao.create_mapping(m)
+        created += 1
+        if tgt:
+            dao.add_include_column(tgt["id"], m["target_column"])
+
     _sync_targets_for_source(src_id)
-    return JSONResponse({"ok": True, "count": len(mappings)})
+    return JSONResponse({"ok": True, "count": created})
 
 
 # ────────────────────────────────────────────

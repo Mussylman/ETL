@@ -216,13 +216,17 @@ function loadFields() {
             + '<th>Имя 1С</th><th>Колонка MSSQL</th><th>MSSQL тип</th><th>Целевой тип</th><th>Преобразование</th><th>Статус</th>'
             + '</tr></thead><tbody>';
         fields.forEach(f => {
+            // Реквизит из конфигурации 1С, которому не нашлось колонки в этой
+            // базе. Раньше имя достраивалось как '_' + field_name_sql — оно
+            // выглядело правдоподобно (_Fld25945), но SELECT по нему падал.
+            const noColumn = !f.mssql_column;
             const col = f.mssql_column || ('_' + f.field_name_sql);
             const isMapped = mapped.has(col.toLowerCase());
             const targetType = f.target_type || 'text';
             const transform = f.transform_type || '';
             const targetCol = (f.field_name_sql || col).toLowerCase().replace(/^_/, '').replace(/rref$/i, '');
             html += '<tr class="' + (isMapped ? 'sd-row-mapped' : '') + '">'
-                + '<td>' + (isMapped ? '' : '<input type="checkbox" class="field-cb"'
+                + '<td>' + (isMapped || noColumn ? '' : '<input type="checkbox" class="field-cb"'
                     + ' data-source-col="' + col + '"'
                     + ' data-target-col="' + targetCol + '"'
                     + ' data-target-type="' + targetType + '"'
@@ -230,11 +234,15 @@ function loadFields() {
                     + ' data-onec-name="' + (f.field_name || '') + '"'
                     + '>') + '</td>'
                 + '<td class="sd-cell-onec">' + (f.field_name || '—') + '</td>'
-                + '<td><code class="sd-mono">' + col + '</code></td>'
+                + '<td>' + (noColumn
+                    ? '<span class="sd-mute" title="Реквизит есть в конфигурации 1С, но колонки в этой базе нет">нет в базе</span>'
+                    : '<code class="sd-mono">' + col + '</code>') + '</td>'
                 + '<td class="sd-type">' + (f.mssql_type || '—') + (f.mssql_length ? '(' + f.mssql_length + ')' : '') + '</td>'
                 + '<td class="sd-type">' + targetType + '</td>'
                 + '<td>' + (transform ? '<span class="sd-transform">' + transform + '</span>' : '<span class="sd-mute">—</span>') + '</td>'
-                + '<td>' + (isMapped ? '<span class="sd-mapped-badge"><span class="material-symbols-outlined">check_circle</span>замаплено</span>' : '') + '</td>'
+                + '<td>' + (isMapped
+                    ? '<span class="sd-mapped-badge"><span class="material-symbols-outlined">check_circle</span>замаплено</span>'
+                    : (noColumn ? '<span class="sd-mute">недоступно</span>' : '')) + '</td>'
                 + '</tr>';
         });
         html += '</tbody></table></div>';
