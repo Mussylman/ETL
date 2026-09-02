@@ -64,8 +64,11 @@ def run_one_dim(dim_code: str):
     # Зовём process (а не process_incremental напрямую): он единая точка входа и
     # ведёт etl_meta.load_history — без этой записи UI-портал показывает
     # «никогда не запускался», хотя DAG отработал.
+    # set_mark не передаём: incremental всегда per-row, метка выбирается
+    # режимом, а не флагом. Явный True здесь выглядел бы как просьба
+    # проштамповать всё — и стал бы миной при любой правке _process_inner.
     res = process(dim_code, pg, rt, ms, mode="incremental", batch=500,
-                  dry_run=False, set_mark=True)
+                  dry_run=False)
     print(f"  {dim_code} DONE: {res}")
     return res
 

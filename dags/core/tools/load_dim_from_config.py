@@ -23,14 +23,23 @@
     PYTHONPATH=dags python3 -m core.tools.load_dim_from_config --dim dim_sklad --dry-run
     PYTHONPATH=dags python3 -m core.tools.load_dim_from_config --dim dim_sklad
     PYTHONPATH=dags python3 -m core.tools.load_dim_from_config            # все reference_dim
-    PYTHONPATH=dags python3 -m core.tools.load_dim_from_config --mode reload
+    PYTHONPATH=dags python3 -m core.tools.load_dim_from_config --mode reload   # поля из 1С, метку не трогает
 
 Параметры:
     --dim       какие справочники (по умолчанию все с pipeline_type='reference_dim')
-    --mode      initial | reload — обе ставят одну max-дату (различие смысловое)
+    --mode      initial     — первичная: поля из 1С + ОДНА max retail-дата всем строкам
+                reload      — ресинк полей из 1С; retail_updated_at НЕ трогает (безопасный дефолт)
+                incremental — только изменённые в retail, per-row метки
+                hierarchy   — догрузить недостающих предков по _ParentIDRRef
     --dry-run   ничего не писать: показать план, поля из конфига, что изменилось бы
     --batch     размер батча uid в IN-списке MSSQL и в execute_values (default 500)
-    --no-retail-mark  не трогать retail_updated_at (только поля из 1С)
+    --set-mark  reload: всё-таки переставить метку всем строкам (с WARNING — см. _resolve_set_mark)
+    --no-retail-mark  initial: не трогать retail_updated_at. Для reload устарел, игнорируется.
+
+Почему reload по умолчанию метку не трогает: stamp_all перетирает per-row метки
+инкремента одной MAX(updated_at) и сдвигает watermark вперёд. Объект, уже изменённый
+в retail, но ещё не обновлённый в 1С, получит чужую позднюю метку — и следующий
+инкремент его не увидит. Тихая потеря обновлений без единой ошибки.
 """
 
 import argparse
@@ -589,7 +598,7 @@ def process_hierarchy(cfg: dict, pg, ms, batch: int, dry_run: bool) -> dict:
 
 
 def process(dim_code: str, pg, rt, ms, mode: str, batch: int,
-            dry_run: bool, set_mark: bool) -> Optional[dict]:
+            dry_run: bool, set_mark: bool = False) -> Optional[dict]:
     """Обёртка с журналированием в load_history — для видимости в UI-портале."""
     cfg_probe = read_config(pg, dim_code)
     run_id = None
@@ -612,7 +621,7 @@ def process(dim_code: str, pg, rt, ms, mode: str, batch: int,
 
 
 def _process_inner(dim_code: str, pg, rt, ms, mode: str, batch: int,
-                   dry_run: bool, set_mark: bool) -> Optional[dict]:
+                   dry_run: bool, set_mark: bool = False) -> Optional[dict]:
     cfg = read_config(pg, dim_code)
     if not cfg:
         print(f"  ✗ {dim_code}: нет конфига (registers / register_sources) — заведите привязку")
@@ -654,6 +663,53 @@ def _process_inner(dim_code: str, pg, rt, ms, mode: str, batch: int,
             "touched": touched, "stamped": stamped, "mark": mark}
 
 
+def _warn(text: str) -> None:
+    """WARNING, который видно и в терминале, и в логе Airflow-таски."""
+    import logging
+    bar = "!" * 100
+    print(f"\n{bar}\n  WARNING: {text}\n{bar}\n", flush=True)
+    logging.getLogger(__name__).warning(text)
+
+
+def _resolve_set_mark(args) -> bool:
+    """
+    Контракт метки retail_updated_at по режимам.
+
+    initial      — метка ставится (одна MAX-дата всем), --no-retail-mark выключает.
+                   Первичная заливка: per-row меток ещё нет, терять нечего.
+    reload       — метка по умолчанию ВЫКЛЮЧЕНА, включается только --set-mark.
+                   Причина: stamp_all перетирает все per-row метки инкремента одной
+                   MAX(updated_at) и сдвигает watermark вперёд. Объект, который retail
+                   уже пометил, а 1С ещё не обновил, получит чужую позднюю метку —
+                   и следующий инкремент его изменение уже не увидит. Ничего не
+                   падает, просто часть справочника тихо перестаёт обновляться.
+    incremental  — per-row метки из retail, флаги не влияют.
+    hierarchy    — метки не трогает, флаги не влияют.
+    """
+    mode = args.mode
+    if mode == "initial":
+        if args.set_mark:
+            _warn("--set-mark для initial не нужен: первичная заливка ставит метку и так")
+        return not args.no_retail_mark
+
+    if mode == "reload":
+        if args.no_retail_mark:
+            _warn("--no-retail-mark для reload устарел и игнорируется: "
+                  "reload по умолчанию метку не трогает")
+        if args.set_mark:
+            _warn("reload --set-mark: retail_updated_at будет ПЕРЕСТАВЛЕН ВСЕМ строкам dim "
+                  "одной MAX-датой из retail. Per-row метки инкремента затрутся, watermark "
+                  "сдвинется вперёд. Объекты, изменённые в retail, но ещё не доехавшие до "
+                  "1С, следующий инкремент НЕ УВИДИТ. Делайте это только осознанно.")
+            return True
+        return False
+
+    # incremental / hierarchy — метка управляется внутри режима, флаги не про них
+    if args.set_mark or args.no_retail_mark:
+        _warn(f"--set-mark / --no-retail-mark на режим {mode} не влияют")
+    return False
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Универсальная заливка справочника по конфигу")
     ap.add_argument("--dim", nargs="*", default=None,
@@ -664,13 +720,19 @@ def main() -> None:
                     help="hierarchy — догрузить недостающих предков по _ParentIDRRef")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--batch", type=int, default=500)
+    ap.add_argument("--set-mark", action="store_true",
+                    help="reload: поставить ОДНУ max retail-дату всем строкам dim. "
+                         "По умолчанию reload метку НЕ трогает — иначе per-row метки "
+                         "инкремента затираются и watermark уезжает вперёд")
     ap.add_argument("--no-retail-mark", action="store_true",
-                    help="не трогать retail_updated_at (только поля из 1С)")
+                    help="initial: не трогать retail_updated_at (только поля из 1С). "
+                         "Для reload — устарел и игнорируется: там метка и так выключена")
     ap.add_argument("--pg-conn", default="postgre_test_base")
     ap.add_argument("--retail-conn", default="bd_retail")
     ap.add_argument("--mssql-conn", default="mssql_1c_conn")
     args = ap.parse_args()
     warnings.filterwarnings("ignore")
+    set_mark = _resolve_set_mark(args)
 
     from airflow.providers.postgres.hooks.postgres import PostgresHook
     from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
@@ -688,7 +750,8 @@ def main() -> None:
     print("=" * 100)
     mark_kind = ("PER-ROW метка (только инкремент)" if args.mode == "incremental"
                  else "метки не трогаем" if args.mode == "hierarchy"
-                 else "ОДНА max-дата всем строкам")
+                 else "ОДНА max-дата всем строкам" if set_mark
+                 else "метку НЕ трогаем (только поля из 1С)")
     print(f"  СПРАВОЧНИКИ ПО КОНФИГУ, режим '{args.mode}' — поля из etl_meta, "
           f"{mark_kind}{'  [DRY-RUN]' if args.dry_run else ''}")
     print("=" * 100)
@@ -697,7 +760,7 @@ def main() -> None:
     for code in targets:
         try:
             r = process(code, pg, rt, ms, args.mode, args.batch,
-                        args.dry_run, not args.no_retail_mark)
+                        args.dry_run, set_mark)
             (results if r else failed).append(r or code)
         except Exception as e:
             print(f"    ✗ ОШИБКА: {str(e)[:200]}")
