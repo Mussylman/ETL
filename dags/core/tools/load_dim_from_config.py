@@ -27,7 +27,8 @@
 
 Параметры:
     --dim       какие справочники (по умолчанию все с pipeline_type='reference_dim')
-    --mode      initial     — первичная: поля из 1С + ОДНА max retail-дата всем строкам
+    --mode      initial     — первичная: поля из 1С + ОДНА max retail-дата всем строкам;
+                              на ПУСТОМ справочнике — полная заливка всех объектов из 1С
                 reload      — ресинк полей из 1С; retail_updated_at НЕ трогает (безопасный дефолт)
                 incremental — с retail-привязкой: изменённые в retail (per-row метки),
                               затем stub-pass; без привязки (source-only): только
@@ -53,6 +54,7 @@ Source-only справочник (без registers.retail_table / retail_uid_col
 """
 
 import argparse
+import re
 import sys
 import warnings
 from typing import Any, Dict, List, Optional, Tuple
@@ -125,7 +127,7 @@ def read_config(pg, dim_code: str) -> Optional[dict]:
         return None
 
     maps = pg.get_records("""
-        SELECT source_column, target_column, transform_type
+        SELECT source_column, target_column, transform_type, is_expression
         FROM   etl_meta.column_mappings
         WHERE  source_id = %s AND is_active
         ORDER  BY target_column
@@ -136,7 +138,11 @@ def read_config(pg, dim_code: str) -> Optional[dict]:
         "retail_uid_column": reg[5],
         "dim_schema": reg[3] or "public", "dim_table": reg[4] or dim_code,
         "mssql_schema": src[1], "mssql_table": src[2], "onec_name": src[3],
-        "mappings": [{"src": m[0], "tgt": m[1], "transform": m[2]} for m in maps],
+        # is_expression — как у фактов (QueryBuilder): source_column — готовое
+        # SQL-выражение над строкой источника, а не имя колонки. Так бренд
+        # приезжает из _Reference25969 подзапросом прямо в строку номенклатуры,
+        # без отдельного справочника.
+        "mappings": [{"src": m[0], "tgt": m[1], "transform": m[2], "expr": bool(m[3])} for m in maps],
     }
 
 
@@ -243,6 +249,14 @@ def retail_mark(rt, retail_table: str):
     return row[0] if row else None
 
 
+def _select_list(cfg: dict) -> str:
+    """Колонки мэппинга для SELECT из 1С: имя → [имя], выражение → как есть с алиасом."""
+    parts = []
+    for i, m in enumerate(cfg["mappings"]):
+        parts.append(f"({m['src']}) AS [__e{i}]" if m.get("expr") else f"[{m['src']}]")
+    return ", ".join(parts)
+
+
 def fetch_from_1c(ms, cfg: dict, guids: List[str], batch: int) -> List[Tuple]:
     """
     Забирает из 1С ВСЕ поля мэппинга по списку guid.
@@ -266,7 +280,7 @@ def fetch_from_1c(ms, cfg: dict, guids: List[str], batch: int) -> List[Tuple]:
                 f"{cfg['code']}.{m['tgt']}: неизвестный transform_type "
                 f"'{m['transform']}' — добавьте его в _transformers()")
 
-    select = ", ".join(f"[{c}]" for c in cols)
+    select = _select_list(cfg)
     table = f"[{cfg['mssql_schema']}].[{cfg['mssql_table']}]"
     out: List[Tuple] = []
 
@@ -279,19 +293,72 @@ def fetch_from_1c(ms, cfg: dict, guids: List[str], batch: int) -> List[Tuple]:
             f"SELECT {select} FROM {table} WITH (NOLOCK) "
             f"WHERE [{key_src}] IN ({','.join(hexes)})")
         for r in rows:
-            vals = []
-            for m, raw in zip(cfg["mappings"], r):
-                v = tf[m["transform"]](raw) if m["transform"] else raw
-                if isinstance(v, str):
-                    v = v.strip() or None
-                # Пустая ссылка 1С — семантический NULL, а не значение:
-                # у корней иерархии _ParentIDRRef именно такой. Иначе
-                # parent_guid ссылается «в никуда» и выглядит битым FK.
-                if v == EMPTY_REF:
-                    v = None
-                vals.append(v)
-            out.append(tuple(vals))
+            out.append(_transform_row(cfg, tf, r))
     return out
+
+
+def _transform_row(cfg: dict, tf: Dict[str, Any], r: Tuple) -> Tuple:
+    """Одна строка 1С → значения в порядке cfg["mappings"] с трансформациями."""
+    vals = []
+    for m, raw in zip(cfg["mappings"], r):
+        v = tf[m["transform"]](raw) if m["transform"] else raw
+        if isinstance(v, str):
+            v = v.strip() or None
+        # Пустая ссылка 1С — семантический NULL, а не значение:
+        # у корней иерархии _ParentIDRRef именно такой. Иначе
+        # parent_guid ссылается «в никуда» и выглядит битым FK.
+        if v == EMPTY_REF:
+            v = None
+        vals.append(v)
+    return tuple(vals)
+
+
+def full_load_from_1c(ms, pg, cfg: dict, batch: int, dry_run: bool) -> Tuple[int, int]:
+    """
+    Первичная заливка ПУСТОГО справочника целиком из 1С: (прочитано, вставлено).
+
+    Зачем: initial по контракту идёт по guid, уже лежащим в dim («строки заводят
+    факты»). На новой базе фактов нет — и initial честно говорил «нечего
+    заполнять». Для PROD-порядка «сначала справочники, потом регистры» этого
+    мало: справочник должен появиться до первого факта.
+
+    Что берём: ВСЕ объекты таблицы 1С по мэппингу — включая группы иерархии
+    и помеченные на удаление (факты могут ссылаться на любые). Пустой guid
+    (EMPTY_REF) отсекается запросом. Чтение потоковое, батчами через курсор —
+    у контрагентов и договоров по 1.4–1.5 млн строк, IN(...) здесь не годится.
+    Запись — insert_rows: ON CONFLICT (guid) DO NOTHING, id раздаёт IDENTITY.
+    Работает только когда dim пуст; на непустом initial ведёт себя как раньше.
+    """
+    from ..transform.binary import uuid_to_mssql_hex_1c
+
+    key_src = next(m["src"] for m in cfg["mappings"] if m["tgt"] == resolve_dwh_key(cfg))
+    cols = _select_list(cfg)
+    table = f"[{cfg['mssql_schema']}].[{cfg['mssql_table']}]"
+    tf = _transformers()
+    for m in cfg["mappings"]:
+        if m["transform"] and m["transform"] not in tf:
+            raise RuntimeError(
+                f"{cfg['code']}.{m['tgt']}: неизвестный transform_type "
+                f"'{m['transform']}' — добавьте его в _transformers()")
+
+    conn = ms.get_conn()
+    read = inserted = 0
+    try:
+        cur = conn.cursor()
+        cur.execute(f"SELECT {cols} FROM {table} WITH (NOLOCK) "
+                    f"WHERE [{key_src}] <> {uuid_to_mssql_hex_1c(EMPTY_REF)}")
+        while True:
+            chunk = cur.fetchmany(batch)
+            if not chunk:
+                break
+            rows = [_transform_row(cfg, tf, r) for r in chunk]
+            read += len(rows)
+            inserted += insert_rows(pg, cfg, rows, batch, dry_run)
+            if read % (batch * 40) == 0:
+                print(f"      … прочитано {read:,}".replace(",", " "), flush=True)
+    finally:
+        conn.close()
+    return read, inserted
 
 
 def _col_types(pg, cfg: dict) -> Dict[str, str]:
@@ -463,12 +530,14 @@ def process_incremental(cfg: dict, pg, rt, ms, batch: int, dry_run: bool) -> dic
     rows = fetch_from_1c(ms, cfg, guids, batch)
     marks = dict(fetch_retail_marks(rt, cfg, guids))
     touched = apply_rows_per_row(pg, cfg, rows, marks, batch, dry_run)
+    key_pos = [m["tgt"] for m in cfg["mappings"]].index(resolve_dwh_key(cfg))
+    touched_guids = [str(r[key_pos]) for r in rows]
 
     print(f"    watermark {watermark} | изменений в retail {len(changed)} | "
           f"из них в dim {len(guids)} | найдено в 1С {len(rows)} | "
           f"{'обновилось бы' if dry_run else 'обновлено'} {touched}")
     return {"dim": cfg["code"], "changed": len(changed), "in_dim": len(guids),
-            "touched": touched, "watermark": watermark}
+            "touched": touched, "watermark": watermark, "touched_guids": touched_guids}
 
 
 def fetch_retail_marks(rt, cfg: dict, guids: List[str]) -> List[Tuple[str, Any]]:
@@ -562,8 +631,10 @@ def process_stub_pass(cfg: dict, pg, ms, batch: int, dry_run: bool) -> dict:
         f"SELECT count(*) FROM {dim} WHERE is_stub")[0]
     print(f"    stub-pass: было {before} | найдено в 1С {len(rows)} | "
           f"{'заполнилось бы' if dry_run else 'заполнено'} {filled} | осталось {after}")
+    key_pos = [m["tgt"] for m in cfg["mappings"]].index(key)
     return {"stub_before": before, "stub_found": len(rows),
-            "stub_filled": filled, "stub_after": after}
+            "stub_filled": filled, "stub_after": after,
+            "stub_guids": [str(r[key_pos]) for r in rows]}
 
 
 def parent_col(cfg: dict) -> Optional[str]:
@@ -617,6 +688,114 @@ def insert_rows(pg, cfg: dict, rows: List[Tuple], batch: int, dry_run: bool) -> 
         return total
     finally:
         conn.close()
+
+
+def _dim_columns(pg, cfg: dict) -> set:
+    return {r[0] for r in pg.get_records(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema=%s AND table_name=%s",
+        parameters=(cfg["dim_schema"], cfg["dim_table"]))}
+
+
+def hierarchy_levels(pg, cfg: dict) -> List[str]:
+    """
+    Колонки плоской иерархии этого справочника — из САМОЙ таблицы, не из конфига.
+
+    Иерархия включена, если (а) в мэппинге есть _ParentIDRRef (parent_col) и
+    (б) в dim есть колонка category. Число уровней = 1 + сколько колонок
+    subcategoryN существует. Так глубина задаётся DDL под фактическое дерево
+    (аудит: номенклатура 8 предков, контрагенты 5, склады 3), а loader ничего
+    про конкретный справочник не знает и не ограничивает глубину заранее.
+    Новых полей в etl_meta для этого не нужно.
+    """
+    if not parent_col(cfg):
+        return []
+    cols = {r[0] for r in pg.get_records(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema=%s AND table_name=%s",
+        parameters=(cfg["dim_schema"], cfg["dim_table"]))}
+    if "category" not in cols:
+        return []
+    subs = sorted((c for c in cols if re.fullmatch(r"subcategory\d+", c)),
+                  key=lambda c: int(c[len("subcategory"):]))
+    # уровни должны идти подряд: category, subcategory1, subcategory2, ...
+    levels = ["category"]
+    for i, c in enumerate(subs, start=1):
+        if c != f"subcategory{i}":
+            break
+        levels.append(c)
+    return levels
+
+
+def flatten_hierarchy(pg, cfg: dict, guids: Optional[List[str]], dry_run: bool) -> int:
+    """
+    Заполняет category / subcategory1..N именами ПРЕДКОВ узла сверху вниз.
+
+    Для каждой строки: подъём по parent_guid до корня (рекурсивный CTE, любая
+    глубина, защита от цикла по длине пути), разворот от корня; category —
+    первый предок, subcategory1 — второй, ... , недостающие уровни — NULL.
+    Сам узел в свой путь не входит: у товара уровни = его группы, у группы —
+    её надгруппы, у корня — всё NULL. Так у листа и у группы одинаковый смысл
+    колонок, а число уровней = максимум предков в дереве.
+
+    guids=None — пересчитать все строки (initial/reload/hierarchy),
+    список — только их (incremental/stub-pass). id и метки не трогаются.
+    """
+    levels = hierarchy_levels(pg, cfg)
+    if not levels:
+        return 0
+    dim = f'{cfg["dim_schema"]}.{cfg["dim_table"]}'
+    pcol = parent_col(cfg)
+    key = resolve_dwh_key(cfg)
+    n = len(levels)
+    sets = ", ".join(f'"{c}" = p.path[{i}]' for i, c in enumerate(levels, start=1))
+    diff = " OR ".join(f'd."{c}" IS DISTINCT FROM p.path[{i}]' for i, c in enumerate(levels, start=1))
+    scope = f"WHERE d.{key} = ANY(%(guids)s::uuid[])" if guids is not None else ""
+    sql = f"""
+        WITH RECURSIVE up AS (
+            SELECT d.{key} AS node, d."{pcol}" AS anc, 1 AS dist,
+                   ARRAY[d.{key}] AS seen
+            FROM {dim} d {scope}
+            UNION ALL
+            SELECT up.node, a."{pcol}", up.dist + 1, up.seen || a.{key}
+            FROM up JOIN {dim} a ON a.{key} = up.anc
+            WHERE up.anc IS NOT NULL AND NOT (a.{key} = ANY(up.seen)) AND up.dist < 64
+        ),
+        paths AS (
+            SELECT up.node,
+                   (array_agg(a.name ORDER BY up.dist DESC))[1:{n}] AS path
+            FROM up JOIN {dim} a ON a.{key} = up.anc
+            WHERE up.anc IS NOT NULL
+            GROUP BY up.node
+        ),
+        p AS (
+            SELECT d.{key} AS node,
+                   COALESCE(paths.path, ARRAY[]::text[]) AS path
+            FROM {dim} d LEFT JOIN paths ON paths.node = d.{key} {scope}
+        )
+        UPDATE {dim} d SET {sets}
+        FROM p WHERE d.{key} = p.node AND ({diff})
+    """
+    conn = pg.get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, {"guids": guids} if guids is not None else None)
+            touched = max(cur.rowcount, 0)
+        conn.rollback() if dry_run else conn.commit()
+        return touched
+    finally:
+        conn.close()
+
+
+def post_hierarchy(pg, cfg: dict, guids: Optional[List[str]], dry_run: bool) -> dict:
+    """Плоская иерархия после записи полей; guids=None — весь справочник."""
+    levels = hierarchy_levels(pg, cfg)
+    if not levels:
+        return {}
+    flat = flatten_hierarchy(pg, cfg, guids, dry_run)
+    scope = "все строки" if guids is None else f"{len(guids)} затронутых"
+    print(f"    иерархия     : {scope} | уровней {len(levels)} | "
+          f"{'пересчиталось бы' if dry_run else 'пересчитано'} {flat}")
+    return {"flat_touched": flat}
 
 
 def process_hierarchy(cfg: dict, pg, ms, batch: int, dry_run: bool) -> dict:
@@ -720,15 +899,45 @@ def _process_inner(dim_code: str, pg, rt, ms, mode: str, batch: int,
             print("    инкремент    : source-only — retail-части нет, только stub-pass")
             res = {"dim": cfg["code"], "touched": 0, "source_only": True}
         res.update(process_stub_pass(cfg, pg, ms, batch, dry_run))
+        # Плоская иерархия и lookups — только для затронутых строк. Если среди
+        # них есть ГРУППА со сменившимся parent, путь её потомков устареет до
+        # следующего reload — см. предупреждение ниже; массовый пересчёт
+        # потомков намеренно не делаем на каждом тике.
+        affected = list({*res.get("touched_guids", []), *res.get("stub_guids", [])})
+        if affected and hierarchy_levels(pg, cfg):
+            res.update(post_hierarchy(pg, cfg, affected, dry_run))
+            moved = pg.get_first(
+                f'SELECT count(*) FROM {cfg["dim_schema"]}.{cfg["dim_table"]} '
+                f'WHERE is_group AND {resolve_dwh_key(cfg)} = ANY(%s::uuid[])',
+                parameters=(affected,))[0] if "is_group" in _dim_columns(pg, cfg) else 0
+            if moved:
+                print(f"    ⚠ среди изменённых {moved} групп(ы): если у них сменился parent, "
+                      f"путь потомков обновится при следующем reload")
         return res
     if mode == "hierarchy":
-        return process_hierarchy(cfg, pg, ms, batch, dry_run)
+        res = process_hierarchy(cfg, pg, ms, batch, dry_run)
+        if not dry_run:
+            res.update(post_hierarchy(pg, cfg, None, dry_run))
+        return res
 
-    guids = [r[0] for r in pg.get_records(
-        f'SELECT guid::text FROM {cfg["dim_schema"]}.{cfg["dim_table"]}')]
+    dim_full = f'{cfg["dim_schema"]}.{cfg["dim_table"]}'
+    guids = [r[0] for r in pg.get_records(f'SELECT guid::text FROM {dim_full}')]
     if not guids:
-        print(f"    строк в dim 0 — нечего заполнять (строки создают факты)")
-        return {"dim": dim_code, "rows": 0, "found": 0, "touched": 0, "stamped": 0}
+        if mode != "initial":
+            print(f"    строк в dim 0 — нечего перезаливать (строки создают факты или initial)")
+            return {"dim": dim_code, "rows": 0, "found": 0, "touched": 0, "stamped": 0}
+        # Пустой справочник на первичной заливке — берём его из 1С целиком.
+        print(f"    dim пуст → полная заливка из 1С ({cfg['mssql_schema']}.{cfg['mssql_table']})")
+        read, inserted = full_load_from_1c(ms, pg, cfg, batch, dry_run)
+        mark = retail_mark(rt, cfg["retail_table"]) if set_mark else None
+        stamped = stamp_all(pg, cfg, mark, dry_run) if (set_mark and mark) else 0
+        print(f"    прочитано из 1С {read} | {'вставилось бы' if dry_run else 'вставлено'} {inserted} | "
+              f"метка {mark or '—'} {'(проставилась бы всем: %d)' % stamped if dry_run else '(проставлена: %d)' % stamped}")
+        res = {"dim": dim_code, "rows": inserted, "found": read, "touched": inserted,
+               "stamped": stamped, "mark": mark, "full_load": True}
+        if not dry_run:   # в dry-run вставки откатаны — считать путь не по чему
+            res.update(post_hierarchy(pg, cfg, None, dry_run))
+        return res
 
     mark = retail_mark(rt, cfg["retail_table"]) if set_mark else None
     rows = fetch_from_1c(ms, cfg, guids, batch)
@@ -742,8 +951,10 @@ def _process_inner(dim_code: str, pg, rt, ms, mode: str, batch: int,
           f"метка {mark or '—'} {'(проставилась бы всем: %d)' % stamped if dry_run else '(проставлена: %d)' % stamped}")
     if not dry_run and stub_left:
         print(f"    ⚠ осталось stub {stub_left} — этих guid нет в справочнике 1С (удалены/архив)")
-    return {"dim": dim_code, "rows": len(guids), "found": len(rows),
-            "touched": touched, "stamped": stamped, "mark": mark}
+    res = {"dim": dim_code, "rows": len(guids), "found": len(rows),
+           "touched": touched, "stamped": stamped, "mark": mark}
+    res.update(post_hierarchy(pg, cfg, None, dry_run))   # весь справочник: reload меняет parent'ы
+    return res
 
 
 def _warn(text: str) -> None:

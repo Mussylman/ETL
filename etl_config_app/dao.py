@@ -3,6 +3,7 @@ Data Access Layer for etl_meta schema — standalone (no Airflow dependency).
 """
 
 import json
+import re
 import psycopg2
 import psycopg2.extras
 from typing import List, Optional, Dict
@@ -1100,6 +1101,12 @@ def compute_sync_plan(target_id: int) -> dict:
             # FK-колонки dim-слоя (nomenklatura_id и т.п.): заполняются
             # post_load_sql и в мэппингах отсутствуют по определению —
             # Sync их не трогает. См. reports/pilot_dim_nomenklatura_plan_2026-07-27.md
+            continue
+        if col_name == "category" or re.fullmatch(r"subcategory\d+", col_name):
+            # Плоская иерархия справочника (category, subcategory1..N): считается
+            # loader'ом из parent_guid рекурсивно, в мэппингах не живёт по той же
+            # причине, что *_id. Число уровней задаёт DDL под фактическую глубину
+            # дерева — Sync их не создаёт и не дропает.
             continue
         destructive = not is_empty
         plan["actions"].append({
