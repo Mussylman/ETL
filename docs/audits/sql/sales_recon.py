@@ -23,6 +23,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument('--start', default=None, help='начало периода YYYY-MM-DD (включительно)')
 ap.add_argument('--end', default=None, help='конец периода YYYY-MM-DD (исключительно)')
 ap.add_argument('--full', action='store_true', help='показать все дни, не только с дельтой')
+ap.add_argument('--dbname', default='test', help='база PostgreSQL с витриной (test | etl_prod)')
 ap.add_argument('--strict', action='store_true',
                 help='выйти с кодом 1, если закрытые дни не сошлись (для rebuild-оркестратора)')
 args = ap.parse_args()
@@ -46,7 +47,7 @@ mdf = pd.read_sql(f"""
 ms.close()
 mdf['d'] = mdf['d'].apply(lambda x: (pd.Timestamp(x) - pd.DateOffset(years=2000)).date())
 
-pg = psycopg2.connect(host='10.10.1.142', user='airflow_admin', password='1234Aa', dbname='test')
+pg = psycopg2.connect(host='10.10.1.142', user='airflow_admin', password='1234Aa', dbname=args.dbname)
 gdf = pd.read_sql(f"""
     SELECT s.period::date AS d, p.recorder_type AS tref,
            COUNT(DISTINCT p.recorder) AS docs, COUNT(*) AS rows_cnt,

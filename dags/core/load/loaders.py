@@ -34,10 +34,21 @@ class Loaders:
                     df[col] = df[col].apply(lambda x: str(x) if x else None)
         return df
 
+    def _normalize_json(self, df: pd.DataFrame) -> pd.DataFrame:
+        """dict/list в ячейках (raw_refs) → psycopg2 Json, иначе адаптер не знает dict."""
+        from psycopg2.extras import Json
+        df = df.copy()
+        for col in df.columns:
+            sample = df[col].dropna().head(1)
+            if not sample.empty and isinstance(sample.iloc[0], (dict, list)):
+                df[col] = df[col].apply(lambda x: Json(x) if isinstance(x, (dict, list)) else None)
+        return df
+
     def _prepare_df(self, df: pd.DataFrame) -> pd.DataFrame:
         """Подготовка DataFrame для загрузки."""
         df = self._normalize_datetimes(df)
         df = self._normalize_uuids(df)
+        df = self._normalize_json(df)
         return df
 
     # ======================================================================

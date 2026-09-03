@@ -18,7 +18,7 @@
     etl.run()
 """
 
-from typing import Optional, List, Dict
+from typing import Any, Optional, List, Dict
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -66,6 +66,65 @@ from .extract.storage_connector import StorageConnector
 from .extract.data_checker import DataChecker
 from .transform.transform_utils import TransformUtils
 from .load.loaders import Loaders
+
+
+
+RAW_REFS_PREFIX = "raw_refs."
+_EMPTY_REF = "00000000-0000-0000-0000-000000000000"
+
+
+def _pack_raw_refs(df: "pd.DataFrame") -> "pd.DataFrame":
+    """
+    Колонки мэппингов вида raw_refs.<key>[.<sub>] → одна JSONB-колонка raw_refs.
+
+    Стандарт ссылок (2026-09-03): исходные GUID/UID из 1С не живут отдельными
+    физическими колонками — только в raw_refs для диагностики и повторного
+    resolve. Справочник: raw_refs.kontragent → {"kontragent": "<guid>"};
+    полиморфная/документная ссылка: raw_refs.doc_sale.uid + raw_refs.doc_sale.type
+    → {"doc_sale": {"uid": ..., "type": 476}}. Пустая ссылка 1С (0000…), NULL и
+    NaN в JSON не пишутся. Если таких колонок нет — df не меняется (TEST-контур
+    со старыми мэппингами работает как раньше).
+    """
+    cols = [c for c in df.columns if isinstance(c, str) and c.startswith(RAW_REFS_PREFIX)]
+    if not cols:
+        return df
+    import math
+    from uuid import UUID
+
+    def _clean(v):
+        if v is None:
+            return None
+        if isinstance(v, float) and math.isnan(v):
+            return None
+        if isinstance(v, UUID):
+            v = str(v)
+        if isinstance(v, str):
+            v = v.strip()
+            if not v or v == _EMPTY_REF:
+                return None
+            return v
+        if hasattr(v, "item"):          # numpy scalar → python
+            v = v.item()
+        return v
+
+    paths = [c[len(RAW_REFS_PREFIX):].split(".") for c in cols]
+    packed = []
+    for row in df[cols].itertuples(index=False, name=None):
+        obj: Dict[str, Any] = {}
+        for path, val in zip(paths, row):
+            val = _clean(val)
+            if val is None:
+                continue
+            node = obj
+            for k in path[:-1]:
+                node = node.setdefault(k, {})
+            node[path[-1]] = val
+        # полиморфная ссылка без uid (только type) — мусор, не пишем
+        obj = {k: v for k, v in obj.items() if not (isinstance(v, dict) and "uid" not in v)}
+        packed.append(obj)
+    df = df.drop(columns=cols)
+    df["raw_refs"] = packed
+    return df
 
 
 class ETLEngine:
@@ -289,13 +348,40 @@ class ETLEngine:
                         f"(post_load_sql FK resolve не отработал?)"
                     )
 
-        # dim-FK колонки (guid→id, шаг 5.1): для каждой пары колонок
-        # (<x> uuid, <x>_id) КАЖДОГО target-а все строки с валидным guid должны
-        # быть разрезолвлены post_load-ом (stub-механика гарантирует id всегда).
-        # Правило имён: FK = guid-колонка без суффикса '_uid' + '_id'
-        # (nomenklatura → nomenklatura_id, otvetstvennyy_uid → otvetstvennyy_id).
-        # Пустая ссылка 1С (0000…) намеренно остаётся с <x>_id IS NULL.
+        # dim-FK колонки (guid→id): каждая ссылка на справочник, пришедшая из 1С,
+        # должна быть разрезолвлена post_load-ом в <x>_id (stub гарантирует id).
+        # Стандарт ссылок (2026-09-03): исходный guid лежит в raw_refs->>'<x>',
+        # отдельной uuid-колонки нет. Проверяем только СПРАВОЧНИКИ — пары, у
+        # которых существует public.dim_<x>; ссылка на регистр/документ
+        # (doc_sale_id, позже zakaz_id) stub'ом не закрывается, её NULL законен.
+        # Таблица без raw_refs (старый контур TEST) — прежнее правило по парам
+        # (<x>_uid uuid, <x>_id).
         for t in targets:
+            has_raw = _scalar(
+                f"SELECT COUNT(*) FROM information_schema.columns "
+                f"WHERE table_schema='public' AND table_name='{t.target_table}' "
+                f"AND column_name='raw_refs'"
+            )
+            if has_raw:
+                fk_cols = pg.get_records(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema='public' AND table_name=%s "
+                    "  AND column_name LIKE '%%\\_id' AND column_name NOT IN ('id','sales_id') "
+                    "  AND to_regclass('public.dim_' || left(column_name, -3)) IS NOT NULL",
+                    parameters=(t.target_table,),
+                )
+                for (fk_col,) in fk_cols:
+                    key = fk_col[:-3]
+                    n = _scalar(
+                        f"SELECT COUNT(*) FROM public.{t.target_table} "
+                        f"WHERE {fk_col} IS NULL AND raw_refs ? '{key}'"
+                    )
+                    if n > 0:
+                        errors.append(
+                            f"{t.target_table}.{fk_col} IS NULL = {n} "
+                            f"при raw_refs->>'{key}' (stub-резолв в post_load_sql не отработал?)"
+                        )
+                continue
             fk_pairs = pg.get_records(
                 "SELECT a.column_name, "
                 "       regexp_replace(a.column_name, '_uid$', '') || '_id' AS fk "
@@ -305,7 +391,8 @@ class ETLEngine:
                 " AND b.table_name  = a.table_name "
                 " AND b.column_name = regexp_replace(a.column_name, '_uid$', '') || '_id' "
                 "WHERE a.table_schema = 'public' "
-                "  AND a.table_name = %s AND a.data_type = 'uuid'",
+                "  AND a.table_name = %s AND a.data_type = 'uuid' "
+                "  AND to_regclass('public.dim_' || regexp_replace(a.column_name, '_uid$', '')) IS NOT NULL",
                 parameters=(t.target_table,),
             )
             for (guid_col, fk_col) in fk_pairs:
@@ -622,6 +709,7 @@ class ETLEngine:
         df = self.transform.transform_dataframe_by_config(
             df=df, binary_columns=binary_columns, column_transforms=column_transforms,
         )
+        df = _pack_raw_refs(df)   # raw_refs.<key> → JSONB raw_refs (стандарт ссылок)
 
         # Сохраняем recorder перед include_columns фильтрацией
         returned_recorders = set()
@@ -653,8 +741,8 @@ class ETLEngine:
             df["retail_updated_at"] = mapped
             if mapped.notna().any():
                 df["retail_snapshot_at"] = mapped.max()
-            # legacy
-            if target.target_role == "dimension":
+            # legacy updated_at — только если колонка есть в include_columns (старый контур)
+            if target.target_role == "dimension" and "updated_at" in (target.include_columns or []):
                 df["updated_at"] = mapped
 
         # 4c. updated_at для dim — берём из uid_to_updated_at по recorder каждой строки.
@@ -766,6 +854,7 @@ class ETLEngine:
             binary_columns=binary_columns,
             column_transforms=column_transforms,
         )
+        df = _pack_raw_refs(df)   # raw_refs.<key> → JSONB raw_refs (стандарт ссылок)
 
         # 4. Filter by include_columns (split)
         if target.include_columns:
@@ -801,8 +890,9 @@ class ETLEngine:
 
         if snapshot_ts is not None:
             df["retail_snapshot_at"] = snapshot_ts
-            if target.target_role == "dimension":
-                # legacy: оставляем запись в updated_at для существующих BI-запросов
+            # legacy updated_at — только если колонка есть в include_columns таргета
+            # (старый контур TEST). В чистой модели (PROD) её нет: дубль retail_snapshot_at.
+            if target.target_role == "dimension" and "updated_at" in (target.include_columns or []):
                 df["updated_at"] = snapshot_ts
             print(f"retail_snapshot_at={snapshot_ts} (всем строкам {target.target_table})")
 

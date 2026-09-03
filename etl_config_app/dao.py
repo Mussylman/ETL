@@ -783,7 +783,9 @@ def _collect_mappings_for_target(target: dict) -> List[dict]:
 
     def _is_keepable(cm: dict) -> bool:
         # Сразу отбрасываем неактивные и custom_python — иначе они «съедают» dedup-имя.
-        return cm.get("is_active", True) and cm.get("transform_type") != "custom_python"
+        # Мэппинги raw_refs.<key> — не колонки таблицы: движок пакует их в JSONB raw_refs.
+        return (cm.get("is_active", True) and cm.get("transform_type") != "custom_python"
+                and not str(cm.get("target_column", "")).startswith("raw_refs."))
 
     if include and register_id:
         # Implicit-include: upsert_keys ВСЕГДА должны быть в DDL,
@@ -1089,6 +1091,8 @@ def compute_sync_plan(target_id: int) -> dict:
         # обогащена именем из 1С. Источника в мэппингах нет и быть не может —
         # без этой защиты Sync предложил бы дропнуть колонку.
         "is_stub",
+        # исходные ссылки 1С одной JSONB-колонкой (стандарт ссылок): заполняет движок
+        "raw_refs",
     }
     if extras["fk"]:
         SYSTEM_COLS.add(extras["fk"]["column"])

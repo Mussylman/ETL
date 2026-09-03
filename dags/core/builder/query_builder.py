@@ -398,7 +398,8 @@ class QueryBuilder:
         select_parts: List[str] = []
 
         # Технические системные колонки никогда не выбираем из MSSQL
-        SYSTEM = {"id", "sales_id", "etl_loaded_at", "etl_hash", "updated_at"}
+        # raw_refs собирается движком из колонок raw_refs.<key> (стандарт ссылок)
+        SYSTEM = {"id", "sales_id", "etl_loaded_at", "etl_hash", "updated_at", "raw_refs"}
 
         for target_col in include:
             if target_col in SYSTEM:
