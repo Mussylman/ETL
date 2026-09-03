@@ -29,12 +29,22 @@
     --dim       какие справочники (по умолчанию все с pipeline_type='reference_dim')
     --mode      initial     — первичная: поля из 1С + ОДНА max retail-дата всем строкам
                 reload      — ресинк полей из 1С; retail_updated_at НЕ трогает (безопасный дефолт)
-                incremental — только изменённые в retail, per-row метки
+                incremental — с retail-привязкой: изменённые в retail (per-row метки),
+                              затем stub-pass; без привязки (source-only): только
+                              stub-pass. Stub-pass дозаполняет строки is_stub=true из 1С
+                              по guid: метку не трогает, строк не создаёт
                 hierarchy   — догрузить недостающих предков по _ParentIDRRef
     --dry-run   ничего не писать: показать план, поля из конфига, что изменилось бы
     --batch     размер батча uid в IN-списке MSSQL и в execute_values (default 500)
     --set-mark  reload: всё-таки переставить метку всем строкам (с WARNING — см. _resolve_set_mark)
     --no-retail-mark  initial: не трогать retail_updated_at. Для reload устарел, игнорируется.
+
+Source-only справочник (без registers.retail_table / retail_uid_column):
+    initial/reload  — загрузка полей из 1С БЕЗ retail-метки: retail_mark даёт None,
+                      stamp_all не вызывается. Это штатный контракт, не ошибка.
+    incremental     — только stub-pass (retail-части нет, watermark не выдумывается).
+    Retail-часть (fetch_changed_guids, fetch_retail_marks, process_incremental)
+    по-прежнему требует привязку через строгий resolve_keys.
 
 Почему reload по умолчанию метку не трогает: stamp_all перетирает per-row метки
 инкремента одной MAX(updated_at) и сдвигает watermark вперёд. Объект, уже изменённый
@@ -166,6 +176,33 @@ def close_history(pg, run_id: Optional[int], status: str, rows_loaded: int = 0,
         print(f"    ⚠ не смог закрыть load_history: {str(e)[:120]}")
 
 
+def has_retail_binding(cfg: dict) -> bool:
+    """Есть ли у справочника retail-привязка (registers.retail_table + retail_uid_column).
+
+    Определяет ПОВЕДЕНИЕ инкремента, а не право на него: с привязкой —
+    retail-инкремент + stub-pass, без неё — только stub-pass (source-only DIM).
+    """
+    return bool(cfg.get("retail_table") and cfg.get("retail_uid_column"))
+
+
+def resolve_dwh_key(cfg: dict) -> str:
+    """
+    Ключ dim, по которому сопоставляем с 1С — из мэппинга, не литералом.
+
+    Выделен из resolve_keys: он нужен и там, где retail не при чём —
+    fetch_from_1c, apply_rows, stub-pass. Требовать для них retail_uid_column
+    означало бы, что справочник без retail-привязки не может даже дозаполнить
+    свои stub из 1С. Retail-часть по-прежнему ходит через строгий resolve_keys.
+    """
+    tgt_cols = [m["tgt"] for m in cfg["mappings"]]
+    dwh_key = next((c for c in tgt_cols if c in ("guid", "uid")), None)
+    if not dwh_key:
+        raise RuntimeError(
+            f"{cfg['code']}: в мэппинге нет колонки-ключа (guid/uid) — "
+            f"по чему сопоставлять строки с 1С? (проверьте column_mappings)")
+    return dwh_key
+
+
 def resolve_keys(cfg: dict) -> dict:
     """
     Ключи и watermark-колонка — ИЗ КОНФИГА, не литералами.
@@ -181,12 +218,7 @@ def resolve_keys(cfg: dict) -> dict:
                    ровно одна: retail_updated_at. Snapshot-колонки у них НЕТ,
                    и требовать её нельзя (это фактовая конструкция).
     """
-    tgt_cols = [m["tgt"] for m in cfg["mappings"]]
-    dwh_key = next((c for c in tgt_cols if c in ("guid", "uid")), None)
-    if not dwh_key:
-        raise RuntimeError(
-            f"{cfg['code']}: в column_mappings нет колонки-ключа (guid/uid) — "
-            f"по чему сопоставлять строки с retail и 1С?")
+    dwh_key = resolve_dwh_key(cfg)
     retail_key = cfg.get("retail_uid_column")
     if not retail_key:
         raise RuntimeError(
@@ -218,7 +250,7 @@ def fetch_from_1c(ms, cfg: dict, guids: List[str], batch: int) -> List[Tuple]:
     """
     from ..transform.binary import uuid_to_mssql_hex_1c
 
-    dwh_key = resolve_keys(cfg)["dwh_key"]
+    dwh_key = resolve_dwh_key(cfg)
     key_map = next((m for m in cfg["mappings"] if m["tgt"] == dwh_key), None)
     if not key_map:
         raise RuntimeError(
@@ -296,7 +328,7 @@ def apply_rows(pg, cfg: dict, rows: List[Tuple], mark, set_mark: bool,
         return 0
     from psycopg2.extras import execute_values
 
-    key = resolve_keys(cfg)["dwh_key"]
+    key = resolve_dwh_key(cfg)
     targets = [m["tgt"] for m in cfg["mappings"]]
     data_cols = [c for c in targets if c != key and c not in MANAGED_COLS]
     if not data_cols:
@@ -351,7 +383,7 @@ def stamp_all(pg, cfg: dict, mark, dry_run: bool) -> int:
     conn = pg.get_conn()
     try:
         with conn.cursor() as cur:
-            key = resolve_keys(cfg)["dwh_key"]
+            key = resolve_dwh_key(cfg)
             cur.execute(f'''
                 UPDATE {cfg["dim_schema"]}.{cfg["dim_table"]}
                 SET    {WATERMARK_COL} = %s
@@ -457,7 +489,7 @@ def apply_rows_per_row(pg, cfg: dict, rows: List[Tuple], marks: Dict[str, Any],
         return 0
     from psycopg2.extras import execute_values
 
-    key = resolve_keys(cfg)["dwh_key"]
+    key = resolve_dwh_key(cfg)
     targets = [m["tgt"] for m in cfg["mappings"]]
     data_cols = [c for c in targets if c != key and c not in MANAGED_COLS]
     guid_pos = targets.index(key)
@@ -497,6 +529,43 @@ def apply_rows_per_row(pg, cfg: dict, rows: List[Tuple], marks: Dict[str, Any],
         conn.close()
 
 
+def process_stub_pass(cfg: dict, pg, ms, batch: int, dry_run: bool) -> dict:
+    """
+    Дешёвый проход по stub-строкам этого справочника — после retail-инкремента.
+
+    Откуда stub: post_load фактов, встретив незнакомый guid, заводит строку
+    с id, но без полей — объект есть в 1С, а retail о нём ещё не сигналил
+    (или не сигналит вовсе). Раньше их закрывала отдельная таска load_dim_names
+    с зашитыми name/code. Теперь reference_dim обслуживает свои stub сам —
+    вызывающему DAG об этом знать не нужно.
+
+    Собран из того, что уже есть: fetch_from_1c берёт ВСЕ поля из мэппинга
+    (и роняет прогон на незнакомом transform_type), apply_rows с set_mark=False
+    пишет поля + is_stub=false и НЕ трогает retail_updated_at — значит watermark
+    инкремента этот проход не сдвигает. INSERT нет: только UPDATE по guid,
+    id остаётся прежним. Кого в 1С не нашлось — остаётся stub до следующего тика.
+
+    Цена: один SELECT по is_stub; если stub нет — в 1С не ходим.
+    """
+    dim = f'{cfg["dim_schema"]}.{cfg["dim_table"]}'
+    key = resolve_dwh_key(cfg)
+    guids = [r[0] for r in pg.get_records(
+        f'SELECT {key}::text FROM {dim} WHERE is_stub')]
+    before = len(guids)
+    if not guids:
+        return {"stub_before": 0, "stub_found": 0, "stub_filled": 0, "stub_after": 0}
+
+    rows = fetch_from_1c(ms, cfg, guids, batch)
+    filled = apply_rows(pg, cfg, rows, mark=None, set_mark=False,
+                        batch=batch, dry_run=dry_run)
+    after = before - filled if dry_run else pg.get_first(
+        f"SELECT count(*) FROM {dim} WHERE is_stub")[0]
+    print(f"    stub-pass: было {before} | найдено в 1С {len(rows)} | "
+          f"{'заполнилось бы' if dry_run else 'заполнено'} {filled} | осталось {after}")
+    return {"stub_before": before, "stub_found": len(rows),
+            "stub_filled": filled, "stub_after": after}
+
+
 def parent_col(cfg: dict) -> Optional[str]:
     """
     Колонка dim, хранящая ссылку на родителя, — по мэппингу, а не по имени.
@@ -523,7 +592,7 @@ def insert_rows(pg, cfg: dict, rows: List[Tuple], batch: int, dry_run: bool) -> 
     from psycopg2.extras import execute_values
 
     cols = [m["tgt"] for m in cfg["mappings"]]
-    key = resolve_keys(cfg)["dwh_key"]
+    key = resolve_dwh_key(cfg)
     types = _col_types(pg, cfg)
     placeholders = ", ".join(
         "%s::" + types[c] if c in types else "%s" for c in cols)
@@ -612,11 +681,17 @@ def process(dim_code: str, pg, rt, ms, mode: str, batch: int,
     if res is None:
         close_history(pg, run_id, "failed", error="нет конфига или мэппингов")
     else:
-        wm = res.get("watermark") or res.get("mark")
+        parts = [f"mode={mode}"]
+        if res.get("source_only"):
+            parts.append("source-only")          # watermark'а нет — и не выдумываем
+        else:
+            parts.append(f"watermark={res.get('watermark') or res.get('mark')}")
+            parts.append(f"changed={res.get('changed', res.get('found', 0))}")
+        if "stub_before" in res:
+            parts.append(f"stub={res['stub_before']}→{res['stub_after']}")
         close_history(pg, run_id, "success",
-                      rows_loaded=res.get("touched", 0),
-                      checkpoint=f"mode={mode}; watermark={wm}; "
-                                 f"changed={res.get('changed', res.get('found', 0))}")
+                      rows_loaded=res.get("touched", 0) + res.get("stub_filled", 0),
+                      checkpoint="; ".join(parts))
     return res
 
 
@@ -637,7 +712,15 @@ def _process_inner(dim_code: str, pg, rt, ms, mode: str, batch: int,
     print(f"    retail       : {cfg['retail_table'] or '— (не привязан, метки не будет)'}")
 
     if mode == "incremental":
-        return process_incremental(cfg, pg, rt, ms, batch, dry_run)
+        if has_retail_binding(cfg):
+            res = process_incremental(cfg, pg, rt, ms, batch, dry_run)
+        else:
+            # source-only DIM: retail о нём не сигналит, watermark'а нет и не
+            # будет — инкремент для него = дозаполнить stub из 1С, и только.
+            print("    инкремент    : source-only — retail-части нет, только stub-pass")
+            res = {"dim": cfg["code"], "touched": 0, "source_only": True}
+        res.update(process_stub_pass(cfg, pg, ms, batch, dry_run))
+        return res
     if mode == "hierarchy":
         return process_hierarchy(cfg, pg, ms, batch, dry_run)
 
@@ -770,9 +853,12 @@ def main() -> None:
     if results:
         # 'rows' есть только у initial/reload; инкремент отдаёт 'changed'/'in_dim'.
         # Считаем по 'touched' — он общий для всех режимов.
+        n_ret = sum(r.get("touched", 0) for r in results)
+        n_stub = sum(r.get("stub_filled", 0) for r in results)
         print(f"  ИТОГО {'обновилось бы' if args.dry_run else 'обновлено'} "
-              f"{sum(r.get('touched', 0) for r in results)} строк "
-              f"в {len([r for r in results if r.get('touched')])} справочниках")
+              f"{n_ret + n_stub} строк "
+              f"в {len([r for r in results if r.get('touched') or r.get('stub_filled')])} справочниках"
+              + (f"  (из них stub-pass: {n_stub})" if n_stub else ""))
     if failed:
         print(f"  С ОШИБКОЙ: {failed}")
         sys.exit(1)
