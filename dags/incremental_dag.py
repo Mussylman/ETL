@@ -1,31 +1,35 @@
 """
-incremental — единый инкремент для всех активных сущностей etl_meta.
+incremental / incremental_prod — единый инкремент всех активных сущностей etl_meta.
 
-Заменяет два тестовых DAG, доказавших, что оба механизма работают:
-  • sales_incremental_5min  → ETLEngine(mode="incremental")
-  • dim_incremental_15min   → load_dim_from_config.process(mode="incremental")
+Один файл, одна фабрика build_incremental_dag(), два контура:
+  • incremental       — TEST, etl_meta в postgre_test_base (10.10.1.142/test)
+  • incremental_prod  — PROD, etl_meta в etl_prod          (10.10.1.142/etl_prod)
+
+Каждый DAG читает ТОЛЬКО свой etl_meta и пишет только в свою витрину:
+config_conn_id — одновременно и конфиг, и целевая БД (dst) для runner'ов.
+Источники общие: MSSQL 1С (mssql_1c_conn) и retail (bd_retail).
 
 DAG намеренно тупой. Он знает ровно три вещи:
   1. какие регистры активны (etl_meta.registers.is_active);
   2. какой у каждого pipeline_type;
   3. какой существующий runner соответствует pipeline_type.
 
-Всё остальное — watermark, окна, ключи, метки, мэппинги, имена таблиц —
-живёт в runner'ах. Здесь этого нет и не должно появляться.
+Всё остальное — watermark, окна, ключи, метки, мэппинги, имена таблиц,
+raw_refs — живёт в runner'ах. Здесь этого нет и не должно появляться.
 
 Как решается, что сущность можно запускать в incremental: у каждого runner'а
 своё предусловие. reference_dim обслуживает любой активный справочник — с
 retail-привязкой это retail-инкремент + stub-pass, без неё только stub-pass;
 что именно — решает loader по конфигу, DAG не знает. accumrg_with_documents
 без retail-привязки падает внутри ETLEngine до первого запроса — для него
-таску не создаём и явно показываем пропуск. Нового metadata-флага не нужно.
+таску не создаём и явно показываем пропуск в unsupported_report.
 
 Сущности читаются из etl_meta при парсинге DAG. Если БД недоступна —
 DAG всё равно появляется в UI с одной таской, которая объясняет причину.
 Так парсер не роняет DAG молча и не скрывает проблему.
 
-Первая версия — тестовый контур (10.10.1.142/test). Создаётся PAUSED:
-пока старые DAG работают, параллельный запуск двоил бы загрузку.
+Новый DAG создаётся PAUSED: включение — осознанное действие после ручного
+контролируемого прогона.
 """
 
 from datetime import datetime, timedelta
@@ -34,13 +38,13 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 
 DAGS_PATH = "/home/dev/airflow/dags"
-CONFIG_CONN_ID = "postgre_test_base"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  Runners: pipeline_type → существующий механизм. Никакой реализации здесь.
+#  Все получают conn_id параметрами — контур задаёт фабрика, не runner.
 # ──────────────────────────────────────────────────────────────────────────────
-def _run_reference_dim(code: str):
+def _run_reference_dim(code: str, config_conn_id: str, retail_conn_id: str, mssql_conn_id: str):
     """Справочник → load_dim_from_config.process(mode='incremental')."""
     import sys
     if DAGS_PATH not in sys.path:
@@ -49,9 +53,9 @@ def _run_reference_dim(code: str):
     from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
     from core.tools.load_dim_from_config import process
 
-    pg = PostgresHook(postgres_conn_id=CONFIG_CONN_ID)
-    rt = PostgresHook(postgres_conn_id="bd_retail")
-    ms = MsSqlHook(mssql_conn_id="mssql_1c_conn")
+    pg = PostgresHook(postgres_conn_id=config_conn_id)
+    rt = PostgresHook(postgres_conn_id=retail_conn_id)
+    ms = MsSqlHook(mssql_conn_id=mssql_conn_id)
     res = process(code, pg, rt, ms, mode="incremental", batch=500, dry_run=False)
     if res is None:
         raise RuntimeError(f"{code}: runner вернул None — нет конфига или мэппингов")
@@ -59,14 +63,21 @@ def _run_reference_dim(code: str):
     return res
 
 
-def _run_accumrg_with_documents(code: str):
-    """Регистр накопления с документами → ETLEngine(mode='incremental')."""
+def _run_etl_engine(code: str, config_conn_id: str, retail_conn_id: str, mssql_conn_id: str):
+    """Регистры движка (accumrg_with_documents, document_with_vt) → ETLEngine(mode='incremental')."""
     import sys
     if DAGS_PATH not in sys.path:
         sys.path.insert(0, DAGS_PATH)
     from core.etl_engine import ETLEngine
 
-    res = ETLEngine(register_code=code, mode="incremental").run()
+    res = ETLEngine(
+        register_code=code,
+        mode="incremental",
+        config_conn_id=config_conn_id,
+        dst_conn_id=config_conn_id,      # витрина живёт рядом с etl_meta своего контура
+        src_conn_id=mssql_conn_id,
+        retail_conn_id=retail_conn_id,
+    ).run()
     print(f"{code} DONE: {res}")
     return res
 
@@ -77,15 +88,18 @@ def _run_accumrg_with_documents(code: str):
 #   accumrg_with_documents без retail-привязки не имеет watermark'а и падает
 #   внутри ETLEngine до первого запроса — таску для него не создаём.
 RUNNERS = {
-    "reference_dim":          {"run": _run_reference_dim,          "requires_retail": False},
-    "accumrg_with_documents": {"run": _run_accumrg_with_documents, "requires_retail": True},
+    "reference_dim":          {"run": _run_reference_dim, "requires_retail": False},
+    "accumrg_with_documents": {"run": _run_etl_engine,    "requires_retail": True},
+    # документ-шапка + UNION табличных частей (order): тот же ETLEngine, watermark/tail/missing-delete
+    # — существующий DataChecker по retail-привязке регистра. Никакой order-specific логики.
+    "document_with_vt":       {"run": _run_etl_engine,    "requires_retail": True},
 }
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Discovery: что запускать. Читается при парсинге DAG.
+#  Discovery: что запускать. Читается при парсинге DAG, из etl_meta контура.
 # ──────────────────────────────────────────────────────────────────────────────
-def _discover():
+def _discover(config_conn_id: str):
     """
     Возвращает (supported, unsupported, error).
 
@@ -95,7 +109,7 @@ def _discover():
     """
     try:
         from airflow.providers.postgres.hooks.postgres import PostgresHook
-        rows = PostgresHook(postgres_conn_id=CONFIG_CONN_ID).get_records(
+        rows = PostgresHook(postgres_conn_id=config_conn_id).get_records(
             "SELECT code, pipeline_type, "
             "       (retail_table IS NOT NULL AND retail_uid_column IS NOT NULL) "
             "FROM etl_meta.registers WHERE is_active "
@@ -128,41 +142,69 @@ def _report_unsupported(items, error):
         print(f"  {code:<22} pipeline_type={ptype!s:<26} {reason}")
 
 
-SUPPORTED, UNSUPPORTED, DISCOVERY_ERROR = _discover()
-
-
 # ──────────────────────────────────────────────────────────────────────────────
-#  DAG
+#  Фабрика: один контур = один DAG. Отличаются только conn_id и dag_id.
 # ──────────────────────────────────────────────────────────────────────────────
-with DAG(
-    dag_id="incremental",
-    description="Единый инкремент всех активных сущностей etl_meta: runner по pipeline_type",
-    start_date=datetime(2026, 9, 1),
-    schedule="*/5 * * * *",
-    catchup=False,
-    max_active_runs=1,
-    is_paused_upon_creation=True,
-    default_args={
-        "retries": 1,
-        "retry_delay": timedelta(minutes=2),
-        "execution_timeout": timedelta(minutes=10),
-        "depends_on_past": False,
-    },
-    tags=["incremental", "etl"],
-    doc_md=__doc__,
-) as dag:
-    for _code, _ptype in SUPPORTED:
-        PythonOperator(
-            task_id=f"{_ptype}__{_code}",
-            python_callable=RUNNERS[_ptype]["run"],
-            op_args=[_code],
-        )
+def build_incremental_dag(
+    dag_id: str,
+    config_conn_id: str,
+    *,
+    schedule: str = "*/5 * * * *",
+    retail_conn_id: str = "bd_retail",
+    mssql_conn_id: str = "mssql_1c_conn",
+    start_date: datetime = datetime(2026, 9, 1),
+    is_paused_upon_creation: bool = True,
+    tags=("incremental", "etl"),
+) -> DAG:
+    supported, unsupported, error = _discover(config_conn_id)
+    conn_kwargs = {
+        "config_conn_id": config_conn_id,
+        "retail_conn_id": retail_conn_id,
+        "mssql_conn_id":  mssql_conn_id,
+    }
 
-    if UNSUPPORTED or DISCOVERY_ERROR:
-        PythonOperator(
-            task_id="unsupported_report",
-            python_callable=_report_unsupported,
-            op_args=[UNSUPPORTED, DISCOVERY_ERROR],
-            retries=0,
-            execution_timeout=timedelta(minutes=1),
-        )
+    dag = DAG(
+        dag_id=dag_id,
+        description=(f"Единый инкремент всех активных сущностей etl_meta "
+                     f"[{config_conn_id}]: runner по pipeline_type"),
+        start_date=start_date,
+        schedule=schedule,
+        catchup=False,
+        max_active_runs=1,
+        is_paused_upon_creation=is_paused_upon_creation,
+        default_args={
+            "retries": 1,
+            "retry_delay": timedelta(minutes=2),
+            "execution_timeout": timedelta(minutes=10),
+            "depends_on_past": False,
+        },
+        tags=list(tags),
+        doc_md=f"**Контур:** `{config_conn_id}`\n\n" + (__doc__ or ""),
+    )
+    with dag:
+        for code, ptype in supported:
+            PythonOperator(
+                task_id=f"{ptype}__{code}",
+                python_callable=RUNNERS[ptype]["run"],
+                op_args=[code],
+                op_kwargs=conn_kwargs,
+            )
+
+        if unsupported or error:
+            PythonOperator(
+                task_id="unsupported_report",
+                python_callable=_report_unsupported,
+                op_args=[unsupported, error],
+                retries=0,
+                execution_timeout=timedelta(minutes=1),
+            )
+    return dag
+
+
+# TEST — как было: тот же dag_id, те же task_id, тот же conn. Состояние (unpaused) не меняется.
+incremental = build_incremental_dag("incremental", "postgre_test_base")
+
+# PROD — новый, создаётся paused. Включается вручную после контролируемого прогона.
+incremental_prod = build_incremental_dag(
+    "incremental_prod", "etl_prod", tags=("incremental", "etl", "prod"),
+)

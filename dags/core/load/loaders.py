@@ -19,8 +19,15 @@ class Loaders:
     def _normalize_datetimes(self, df: pd.DataFrame) -> pd.DataFrame:
         """Конвертирует datetime64 в python datetime."""
         df = df.copy()
-        for col in df.select_dtypes(include=["datetime64[ns]"]).columns:
-            df[col] = df[col].apply(lambda x: x.to_pydatetime() if pd.notnull(x) else None)
+        for col in df.columns:
+            if not pd.api.types.is_datetime64_any_dtype(df[col].dtype):
+                continue
+            # dtype=object обязателен: иначе pandas выведет datetime64 обратно и
+            # None снова станет NaT, который psycopg2 отдаёт как 'NaT'::timestamp.
+            df[col] = pd.Series(
+                [x.to_pydatetime() if pd.notna(x) else None for x in df[col]],
+                index=df.index, dtype=object,
+            )
         return df
 
     def _normalize_uuids(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -44,11 +51,63 @@ class Loaders:
                 df[col] = df[col].apply(lambda x: Json(x) if isinstance(x, (dict, list)) else None)
         return df
 
+    @staticmethod
+    def _is_null_scalar(v) -> bool:
+        """
+        Пустота pandas/numpy, которую PostgreSQL не должен увидеть как значение.
+        Строки, UUID, dict/Json, datetime и bytes здесь никогда не трогаем.
+        """
+        if v is None or v is pd.NaT:
+            return True
+        if isinstance(v, float):
+            return v != v or v in (float("inf"), float("-inf"))
+        from decimal import Decimal
+        if isinstance(v, Decimal):
+            return v.is_nan() or v.is_infinite()
+        # numpy-скаляры (np.float64 — подкласс float, но np.datetime64('NaT') — нет)
+        if hasattr(v, "dtype") and getattr(v, "shape", None) == ():
+            try:
+                return bool(pd.isna(v))
+            except Exception:  # noqa: BLE001
+                return False
+        return False
+
+    def _normalize_nulls(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        NaN / NaT / ±inf → None перед записью.
+
+        Мера, которой нет у части источников (COALESCE по VT даёт NULL), в pandas
+        становится float('nan'), а psycopg2 адаптирует его как 'NaN'::numeric —
+        для PostgreSQL это легальное значение numeric, INSERT проходит, а SUM()
+        по колонке возвращает NaN (аудит PROD sales_positions 2026-09-03:
+        408 497 строк с evrika_bonusy = 'NaN'). Единая точка нормализации для
+        всех режимов загрузки: nullable-значение в БД — только NULL.
+        Реальные 0 остаются 0, строки/UUID/JSON не меняются.
+        """
+        import numpy as np
+        df = df.copy()
+        for col in df.columns:
+            s = df[col]
+            if pd.api.types.is_float_dtype(s.dtype):
+                values = s.to_numpy(dtype=float, na_value=np.nan)
+                bad = ~np.isfinite(values)
+                if bad.any():
+                    df[col] = s.astype(object).where(~bad, None)
+            elif s.dtype == object:
+                # dtype=object явно — Series.map/apply включают вывод типа, и колонка
+                # из datetime/None снова стала бы datetime64 с NaT вместо None.
+                df[col] = pd.Series(
+                    [None if self._is_null_scalar(v) else v for v in s],
+                    index=s.index, dtype=object,
+                )
+        return df
+
     def _prepare_df(self, df: pd.DataFrame) -> pd.DataFrame:
         """Подготовка DataFrame для загрузки."""
         df = self._normalize_datetimes(df)
         df = self._normalize_uuids(df)
         df = self._normalize_json(df)
+        df = self._normalize_nulls(df)
         return df
 
     # ======================================================================

@@ -335,13 +335,29 @@ class ETLEngine:
         if fact:
             _check_not_null(fact.target_table, "recorder_type", fact.include_columns)
             _check_not_null(fact.target_table, "line_no", fact.include_columns)
-            # FK column ({dim_table}_id) — генерируется DDL, заполняется post_load_sql
+            # FK column на шапку — заполняется post_load_sql. Имя по конвенции
+            # {dim_table}_id (sales → sales_id); для таблиц во множественном числе
+            # допускаем единственное (orders → order_id). Берём первую существующую.
             if dim:
-                fk_col = f"{dim.target_table}_id"
+                candidates = [f"{dim.target_table}_id"]
+                if dim.target_table.endswith("s"):
+                    candidates.append(f"{dim.target_table[:-1]}_id")
+                fk_col = next(
+                    (c for c in candidates if _scalar(
+                        f"SELECT COUNT(*) FROM information_schema.columns "
+                        f"WHERE table_schema='public' AND table_name='{fact.target_table}' "
+                        f"AND column_name='{c}'")),
+                    None,
+                )
                 n = _scalar(
                     f"SELECT COUNT(*) FROM public.{fact.target_table} "
                     f"WHERE {fk_col} IS NULL"
-                )
+                ) if fk_col else 0
+                if fk_col is None:
+                    errors.append(
+                        f"{fact.target_table}: нет FK-колонки на {dim.target_table} "
+                        f"(ожидалась одна из {candidates})"
+                    )
                 if n > 0:
                     errors.append(
                         f"{fact.target_table}.{fk_col} IS NULL = {n} "
