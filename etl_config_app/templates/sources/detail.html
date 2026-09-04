@@ -85,7 +85,7 @@
                     <th>Целевая колонка</th>
                     <th>Тип</th>
                     <th>Преобразование</th>
-                    {% if source.source_type in ('standalone', 'header') and targets|length > 1 %}
+                    {% if targets|length > 1 %}
                     <th>Таблица</th>
                     {% endif %}
                     <th style="width:60px">Активно</th>
@@ -96,10 +96,10 @@
                 {% for m in mappings %}
                 <tr class="sd-row{% if not m.is_active %} is-inactive{% endif %}" data-mapping-id="{{ m.id }}">
                     <td class="sd-cell-onec">{{ m.onec_name or '—' }}</td>
-                    <td><code class="sd-mono">{{ m.source_column }}</code></td>
+                    <td><code class="sd-mono">{{ m.source_column }}</code>{% if m.is_expression %} <span class="sd-transform" title="SQL-выражение, не колонка MSSQL">expr</span>{% endif %}</td>
                     <td>
                         <span class="cb2-dbcol" title="Нажмите для переименования"
-                              onclick="startRename(this, '{{ m.target_column }}', {{ source.register_id }})">{{ m.target_column }}</span>
+                              onclick="startRename(this, '{{ m.target_column }}', {{ source.register_id }})">{{ m.target_column }}</span>{% if m.target_column.startswith('raw_refs.') %} <span class="sd-transform" title="ключ JSONB raw_refs — движок пакует в одну колонку">raw_refs</span>{% endif %}
                     </td>
                     <td class="sd-type">{{ m.target_type or '—' }}</td>
                     <td>
@@ -109,14 +109,17 @@
                             <span class="sd-mute">—</span>
                         {% endif %}
                     </td>
-                    {% if source.source_type in ('standalone', 'header') and targets|length > 1 %}
+                    {% if targets|length > 1 %}
                     <td>
+                        {# текущее назначение — по include_columns таргетов (источник истины для Sync и движка) #}
+                        {% set ns = namespace(ids=[]) %}
+                        {% for t in targets %}{% if m.target_column in (t.include_columns or []) %}{% set ns.ids = ns.ids + [t.id] %}{% endif %}{% endfor %}
                         <select class="src-target-select cb2-transform-select" data-col="{{ m.target_column }}" onchange="assignColTarget(this)">
-                            <option value="">не хранить</option>
+                            <option value="" {{ 'selected' if not ns.ids }}>не хранить</option>
                             {% for t in targets %}
-                            <option value="{{ t.id }}">{{ t.target_table }}</option>
+                            <option value="{{ t.id }}" {{ 'selected' if ns.ids|length == 1 and ns.ids[0] == t.id }}>{{ t.target_table }}</option>
                             {% endfor %}
-                            <option value="all">оба</option>
+                            <option value="all" {{ 'selected' if ns.ids|length > 1 }}>оба</option>
                         </select>
                     </td>
                     {% endif %}
@@ -376,7 +379,7 @@ function assignColTarget(selectEl) {
     .catch(err => alert('Ошибка: ' + err));
 }
 
-{% if source.source_type in ('standalone', 'header') and targets|length > 1 %}
+{% if targets|length > 1 %}
 (function() {
     fetch('/api/registers/{{ source.register_id }}/column-targets')
     .then(r => r.json())

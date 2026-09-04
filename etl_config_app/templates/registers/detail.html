@@ -157,6 +157,39 @@
             </div>
             {% endif %}
         {% endfor %}
+
+        {% if unions %}
+        {# UNION ALL — не скрытая механика: у document_with_vt позиции собираются из нескольких ТЧ #}
+        <div class="dt-src-group">
+            <div class="dt-src-group-head">
+                <span class="material-symbols-outlined dt-src-group-icon type-detail">call_merge</span>
+                <span class="dt-src-group-label">Объединения (UNION ALL)</span>
+                <span class="dt-src-group-count">{{ unions|length }}</span>
+            </div>
+            {% for u in unions %}
+            <div class="dt-union-card" style="border:1px solid var(--border,#e3e3e3);border-radius:10px;padding:12px 14px;margin:8px 0">
+                <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+                    <a href="/unions/{{ u.id }}"><code>{{ u.union_code }}</code></a>
+                    <span class="dt-src-card-cols">{{ u.members|length }} <span>членов</span></span>
+                    <span class="material-symbols-outlined" style="font-size:16px">arrow_forward</span>
+                    {% for ft in u.fed_targets %}<code>{{ ft }}</code>{% else %}<span class="sd-mute">таргет не привязан</span>{% endfor %}
+                </div>
+                <table class="sd-table" style="margin-top:8px">
+                    <thead><tr><th style="width:40px">#</th><th>Источник</th><th>Таблица MSSQL</th><th>where</th></tr></thead>
+                    <tbody>
+                    {% for m in u.members %}
+                    <tr><td>{{ m.priority }}</td><td>{{ m.source_code }}</td><td><code>{{ m.mssql_table }}</code></td><td>{{ m.where_clause or '—' }}</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+                <div style="margin-top:8px;line-height:1.9">
+                    <span class="sd-mute">output columns ({{ (u.output_columns or [])|length }}):</span>
+                    {% for c in u.output_columns or [] %}<code style="margin:0 2px">{{ c }}</code>{% endfor %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
         {% else %}
         <div class="rl-empty">
             <span class="material-symbols-outlined" style="font-size:48px;opacity:.4">database_off</span>
@@ -431,6 +464,11 @@
                             {% if t.upsert_keys %}<code>{{ t.upsert_keys | join(', ') }}</code>{% else %}—{% endif %}
                         </span>
                         <span class="dt-target-mode">{{ t.load_mode }}</span>
+                        {% if t.source_code %}<span title="прямой источник">⇐ <code>{{ t.source_code }}</code></span>{% endif %}
+                        {% if t.union_code %}<span title="union">⇐ ⊕ <code>{{ t.union_code }}</code></span>{% endif %}
+                        {% if t.parent_target_table %}<span title="parent target (FK)">↑ <code>{{ t.parent_target_table }}</code></span>{% endif %}
+                        <span title="include_columns">{{ t.include_count }} col</span>
+                        <span title="post_load_sql">{{ 'post_load ✓' if t.has_post_load else 'post_load —' }}</span>
                     </div>
                 </div>
             </div>
@@ -929,7 +967,8 @@ function cbBuildColData() {
     const computedCols = [];
     cbSources.forEach(src => {
         (src.mappings || []).forEach(m => {
-            if (m.is_expression) return;
+            // expression-мэппинги (vt_kind = 'product', recorder_type = 271) — полноправные
+            // колонки таргета; показываем их read-only, а не скрываем.
             if (m.transform_type === 'custom_python') {
                 if (!computedCols.find(c => c.target_column === m.target_column)) {
                     m._source_id = src.id;
@@ -944,9 +983,12 @@ function cbBuildColData() {
                     transform: m.transform_type,
                     onec_name: null,
                     sources: [],
-                    source_types: new Set()
+                    source_types: new Set(),
+                    expression: null,
+                    is_raw_ref: String(m.target_column).startsWith('raw_refs.')
                 };
             }
+            if (m.is_expression && !colMap[m.target_column].expression) colMap[m.target_column].expression = m.source_column;
             if (m.onec_name && !colMap[m.target_column].onec_name) colMap[m.target_column].onec_name = m.onec_name;
             colMap[m.target_column].sources.push({ source_id: src.id });
             colMap[m.target_column].source_types.add(src.source_type);
@@ -1048,6 +1090,7 @@ function cbRenderKanbanBoard(colMap, computedCols) {
     function isLocked(col, info, isComputed) {
         const entry = cbColumnMap[col] || {};
         if (isComputed) return false;
+        if (info.expression) return true;   // SQL-выражение: только чтение, правится в мэппинге
         if (!entry.auto) return false;
         const types = Array.from(info.source_types || []);
         if (types.length === 1 && (types[0] === 'header' || types[0] === 'detail')) return true;
@@ -1118,6 +1161,8 @@ function cbRenderKanbanBoard(colMap, computedCols) {
             if (types.has('detail')) html += '<span class="kbn-badge detail">VT</span>';
             if (types.has('standalone')) html += '<span class="kbn-badge accum">accum</span>';
             if (types.has('computed')) html += '<span class="kbn-badge computed">ƒ custom</span>';
+            if (card.info.expression) html += '<span class="kbn-badge computed" title="SQL-выражение (read-only)">= ' + String(card.info.expression).replace(/</g,'&lt;').slice(0, 40) + '</span>';
+            if (card.info.is_raw_ref) html += '<span class="kbn-badge transform" title="ключ JSONB raw_refs, не физическая колонка">raw_refs</span>';
             if (card.info.transform && !card.isComputed) html += '<span class="kbn-badge transform">' + card.info.transform + '</span>';
             html += '</div>';
         }

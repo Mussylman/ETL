@@ -668,43 +668,56 @@ def create_target(data: dict) -> int:
 
 
 def update_target(target_id: int, data: dict):
-    uk = data.get("upsert_keys", [])
-    if isinstance(uk, str):
-        uk = [k.strip() for k in uk.split(",") if k.strip()]
-
-    # Check if table name or schema changed — sync real DB table
-    old = get_target(target_id)
-    if old:
-        old_schema = old.get("target_schema", "public")
-        old_table = old.get("target_table")
-        new_schema = data.get("target_schema", "public")
-        new_table = data["target_table"]
-        _sync_real_table(old_schema, old_table, new_schema, new_table)
-
-    ic = data.get("include_columns") or None
-    if isinstance(ic, str):
-        ic = [c.strip() for c in ic.split(",") if c.strip()]
-
-    sql = f"""
-        UPDATE {SCHEMA}.register_targets SET
-            target_schema=%s, target_table=%s,
-            union_id=%s, source_id=%s,
-            load_mode=%s, upsert_keys=%s,
-            pre_load_sql=%s, post_load_sql=%s,
-            include_columns=%s, priority=%s, target_role=%s
-        WHERE id=%s
     """
-    execute(sql, [
-        data.get("target_schema", "public"), data["target_table"],
-        data.get("union_id") or None, data.get("source_id") or None,
-        data.get("load_mode", "upsert"), uk,
-        data.get("pre_load_sql") or None,
-        data.get("post_load_sql") or None,
-        ic,
-        data.get("priority", 0),
-        data.get("target_role") or None,
-        target_id,
-    ])
+    PATCH-семантика: меняются ТОЛЬКО ключи, присутствующие в data.
+
+    Раньше UPDATE перезаписывал все поля таргета значениями из формы, а формы
+    targets/form.html не содержит include_columns / target_role / post_load_sql /
+    priority / parent_target_id — одно нажатие Save обнуляло их (аудит 2026-09-04:
+    для PROD-регистров это уничтожило бы post_load-резолвы *_id и роли dim/fact).
+    Поля, которых нет в data, не трогаем.
+    """
+    old = get_target(target_id)
+    if not old:
+        return
+
+    # Переименование/перенос физической таблицы — только если имя реально прислали
+    if "target_table" in data:
+        old_schema = old.get("target_schema") or "public"
+        new_schema = data.get("target_schema", old_schema) or "public"
+        _sync_real_table(old_schema, old.get("target_table"), new_schema, data["target_table"])
+
+    def _list(v):
+        if isinstance(v, str):
+            return [c.strip() for c in v.split(",") if c.strip()]
+        return list(v) if v else []
+
+    sets, params = [], []
+    simple = {
+        "target_schema": lambda v: v or "public",
+        "target_table":  lambda v: v,
+        "union_id":      lambda v: v or None,
+        "source_id":     lambda v: v or None,
+        "load_mode":     lambda v: v or "upsert",
+        "pre_load_sql":  lambda v: v or None,
+        "post_load_sql": lambda v: v or None,
+        "priority":      lambda v: v if v is not None else 0,
+        "target_role":   lambda v: v or None,
+        "parent_target_id": lambda v: v or None,
+        "is_active":     lambda v: bool(v),
+    }
+    for key, norm in simple.items():
+        if key in data:
+            sets.append(f"{key}=%s"); params.append(norm(data[key]))
+    if "upsert_keys" in data:
+        sets.append("upsert_keys=%s"); params.append(_list(data["upsert_keys"]))
+    if "include_columns" in data:
+        ic = _list(data["include_columns"])
+        sets.append("include_columns=%s"); params.append(ic or None)
+    if not sets:
+        return
+    params.append(target_id)
+    execute(f"UPDATE {SCHEMA}.register_targets SET {', '.join(sets)} WHERE id=%s", params)
 
 
 def _sync_real_table(old_schema, old_table, new_schema, new_table):
@@ -800,17 +813,68 @@ def _collect_mappings_for_target(target: dict) -> List[dict]:
                     mappings.append(cm)
                     seen.add(tc)
     elif union_id:
+        # Как и QueryBuilder._build_union_member_query: член union — это detail
+        # JOIN его parent (header), колонки родителя доступны каждому члену
+        # (recorder, recorder_type у document_with_vt живут в шапке). Без parent
+        # Sync терял бы их и предлагал DROP на заполненной таблице.
         for m in list_members_for_union(union_id):
-            for cm in list_mappings_for_source(m["source_id"]):
-                if not _is_keepable(cm):
-                    continue
-                if cm["target_column"] not in seen:
-                    mappings.append(cm)
-                    seen.add(cm["target_column"])
+            member_src = get_source(m["source_id"])
+            chain = [m["source_id"]]
+            if member_src and member_src.get("parent_source_id"):
+                chain.append(member_src["parent_source_id"])
+            for sid in chain:
+                for cm in list_mappings_for_source(sid):
+                    if not _is_keepable(cm):
+                        continue
+                    if cm["target_column"] not in seen:
+                        mappings.append(cm)
+                        seen.add(cm["target_column"])
     elif source_id:
         mappings = [m for m in list_mappings_for_source(source_id) if _is_keepable(m)]
 
     return mappings
+
+
+def _target_uses_raw_refs(target: dict) -> bool:
+    """
+    Нужна ли таргету колонка raw_refs JSONB (стандарт ссылок): либо 'raw_refs'
+    явно в include_columns, либо у источников таргета есть мэппинги raw_refs.<key>.
+    """
+    include = target.get("include_columns") or []
+    if "raw_refs" in include or any(str(c).startswith("raw_refs.") for c in include):
+        return True
+    register_id = target.get("register_id")
+    if not register_id:
+        return False
+    for src in list_sources_for_register(register_id):
+        for cm in list_mappings_for_source(src["id"]):
+            if cm.get("is_active", True) and str(cm.get("target_column", "")).startswith("raw_refs."):
+                return True
+    return False
+
+
+def _fk_candidates(dim_table: str) -> List[str]:
+    """
+    Имена FK-колонки fact → dim, в порядке предпочтения. То же правило, что в
+    ETLEngine._validate_full_period_load (dags/core/etl_engine.py): {dim}_id,
+    затем без «s» для таблиц во множественном числе (sales → sales_id,
+    orders → order_id). Никаких таблиц-исключений.
+    """
+    cands = [f"{dim_table}_id"]
+    if dim_table.endswith("s") and len(dim_table) > 1:
+        cands.append(f"{dim_table[:-1]}_id")
+    return cands
+
+
+def _resolve_fk_column(fact_schema: str, fact_table: str, dim_table: str) -> str:
+    """Первая из кандидатных FK-колонок, которая уже есть в fact-таблице; иначе первая по правилу."""
+    cands = _fk_candidates(dim_table)
+    if _table_exists(fact_schema, fact_table):
+        existing = _existing_columns(fact_schema, fact_table)
+        for c in cands:
+            if c in existing:
+                return c
+    return cands[0]
 
 
 def _table_row_count(schema: str, table: str) -> int:
@@ -907,17 +971,23 @@ def _target_ddl_extras(target: dict, mappings: List[dict]) -> dict:
       • fk            : у fact — колонка {dim_table}_id → dim(id)
     """
     _reg = query_one(
-        f"SELECT pipeline_type FROM {SCHEMA}.registers WHERE id = %s",
+        f"SELECT pipeline_type, retail_table FROM {SCHEMA}.registers WHERE id = %s",
         [target.get("register_id")],
     ) if target.get("register_id") else None
     is_reference_dim = bool(_reg and _reg.get("pipeline_type") == "reference_dim")
     extras = {
         "pk_natural": any(m["target_column"] == "id" for m in mappings),
         "unique_keys": None,
-        "add_updated_at": (
-            target.get("target_role") == "dimension" and not is_reference_dim
-        ),
+        # legacy updated_at больше НЕ добавляем никому: в чистой fact-модели свежесть
+        # строки — etl_updated_at / retail_snapshot_at / retail_updated_at (см.
+        # system_cols ниже). Уже существующая updated_at остаётся под защитой
+        # SYSTEM_COLS в compute_sync_plan — старый контур TEST не ломаем.
+        "add_updated_at": False,
         "fk": None,
+        "is_reference_dim": is_reference_dim,
+        # Контрактные системные колонки новой модели: движок пишет их всегда
+        # (etl_engine._process_target*), raw_refs пакуется из мэппингов raw_refs.<key>.
+        "system_cols": _contract_system_columns(target, is_reference_dim, bool(_reg and _reg.get("retail_table"))),
     }
 
     upsert_keys = list(target.get("upsert_keys") or [])
@@ -925,16 +995,52 @@ def _target_ddl_extras(target: dict, mappings: List[dict]) -> dict:
         extras["unique_keys"] = upsert_keys
 
     if target.get("target_role") == "fact":
-        dim = _find_dim_sibling(target)
+        # Родитель — parent_target_id, если задан; иначе dimension-sibling регистра
+        dim = None
+        if target.get("parent_target_id"):
+            dim = get_target(target["parent_target_id"])
+        if dim is None:
+            dim = _find_dim_sibling(target)
         if dim and dim["id"] != target["id"]:
             pk = _dim_pk_info(dim)
             extras["fk"] = {
-                "column": f'{dim["target_table"]}_id',
+                "column": _resolve_fk_column(
+                    target.get("target_schema") or "public", target["target_table"], dim["target_table"]
+                ),
+                "candidates": _fk_candidates(dim["target_table"]),
                 "pg_type": pk["pg_type"],
                 "ref_schema": dim.get("target_schema", "public"),
                 "ref_table": dim["target_table"],
             }
     return extras
+
+
+def _contract_system_columns(target: dict, is_reference_dim: bool, has_retail: bool) -> List[tuple]:
+    """
+    Системные колонки, которые движок заполняет сам и которые обязаны быть в DDL.
+    Возвращает [(column, ddl_type_with_default, reason)].
+
+    Регистры/факты (accumrg_with_documents, document_with_vt, …):
+      etl_loaded_at, etl_updated_at, retail_snapshot_at, retail_updated_at, raw_refs JSONB
+      (последняя — только если таргет пользуется стандартом ссылок raw_refs.*).
+    Справочники (reference_dim): etl_loaded_at, etl_updated_at, is_stub;
+      retail_updated_at — только у справочников с retail-привязкой.
+    """
+    if is_reference_dim:
+        # Контракт dim-слоя (load_dim_from_config + 007_dim_layer): etl_updated_at, is_stub,
+        # retail_updated_at у retail-привязанных. etl_loaded_at DIM-загрузчик не пишет.
+        cols = [("etl_updated_at", "TIMESTAMP", "dim-слой: момент последнего изменения строки загрузчиком"),
+                ("is_stub", "BOOLEAN DEFAULT FALSE", "dim-слой: строка создана stub-резолвом, имя ещё не приехало")]
+        if has_retail:
+            cols.append(("retail_updated_at", "TIMESTAMP", "retail-метка справочника (watermark инкремента)"))
+        return cols
+    cols = [("etl_loaded_at", "TIMESTAMP DEFAULT NOW()", "ETL audit: момент первой загрузки строки"),
+            ("etl_updated_at", "TIMESTAMP", "ETL audit: момент последнего изменения строки движком")]
+    cols.append(("retail_snapshot_at", "TIMESTAMP", "retail-снимок full_period (fallback watermark)"))
+    cols.append(("retail_updated_at", "TIMESTAMP", "per-row retail-метка инкремента (watermark)"))
+    if _target_uses_raw_refs(target):
+        cols.append(("raw_refs", "JSONB", "стандарт ссылок: исходные GUID 1С одной JSONB-колонкой"))
+    return cols
 
 
 # Какие переходы типов считаются безопасным расширением (без потери данных)
@@ -1049,14 +1155,14 @@ def compute_sync_plan(target_id: int) -> dict:
             cols.append(f'    "{m["target_column"]}" {pg_type}{pk} {nullable} {default}'.rstrip())
         if extras["fk"]:
             fk = extras["fk"]
-            cols.append(
-                f'    "{fk["column"]}" {fk["pg_type"]} NULL '
-                f'REFERENCES "{fk["ref_schema"]}"."{fk["ref_table"]}" ("id")'
-            )
-        if extras["add_updated_at"]:
-            cols.append('    "updated_at" TIMESTAMP NULL')
-        cols.append('    "etl_loaded_at" TIMESTAMP DEFAULT NOW()')
-        cols.append('    "etl_hash" TEXT')
+            # Без REFERENCES: стандарт витрины — nullable BIGINT-ссылка, резолв в post_load;
+            # физических FK нет ни у sales_id, ни у doc_sale_id, ни у dim-FK.
+            cols.append(f'    "{fk["column"]}" {fk["pg_type"]} NULL')
+        # Контрактные системные колонки (raw_refs, audit) — вместо legacy updated_at/etl_hash
+        mapped_names = {m["target_column"] for m in mappings}
+        for col_name, col_type, _reason in extras["system_cols"]:
+            if col_name not in mapped_names:
+                cols.append(f'    "{col_name}" {col_type}')
         if extras["unique_keys"]:
             uk = ", ".join(f'"{k}"' for k in extras["unique_keys"])
             cols.append(f"    UNIQUE ({uk})")
@@ -1095,7 +1201,8 @@ def compute_sync_plan(target_id: int) -> dict:
         "raw_refs",
     }
     if extras["fk"]:
-        SYSTEM_COLS.add(extras["fk"]["column"])
+        SYSTEM_COLS.update(extras["fk"].get("candidates") or [extras["fk"]["column"]])
+    SYSTEM_COLS.update(c for c, _t, _r in extras["system_cols"])
 
     # 1. Найти лишние колонки → DROP
     for col_name in existing_cols:
@@ -1165,20 +1272,23 @@ def compute_sync_plan(target_id: int) -> dict:
             "reason": "" if is_empty else f"narrowing type {current_type} → {pg_type} on {rows} rows",
         })
 
-    # 4. Контрактные колонки (этап 0.2): updated_at у dim, FK-колонка у fact —
-    #    добавляются NULLABLE, всегда safe.
+    # 4. Контрактные колонки: FK-колонка у fact (если ни один кандидат имени не
+    #    существует) и системные колонки новой модели — добавляются NULLABLE, safe.
+    #    legacy updated_at не добавляется (add_updated_at=False), существующая — под защитой.
     contract_cols = []
-    if extras["add_updated_at"] and "updated_at" not in existing_cols:
-        contract_cols.append(("updated_at", "TIMESTAMP", "dimension требует updated_at (watermark)"))
-    if extras["fk"] and extras["fk"]["column"] not in existing_cols:
+    if extras["fk"]:
         fk = extras["fk"]
-        contract_cols.append((fk["column"], fk["pg_type"],
-                              f'FK-колонка fact → {fk["ref_schema"]}.{fk["ref_table"]}'))
+        if not any(c in existing_cols for c in (fk.get("candidates") or [fk["column"]])):
+            contract_cols.append((fk["column"], f'{fk["pg_type"]} NULL',
+                                  f'FK-колонка fact → {fk["ref_schema"]}.{fk["ref_table"]}'))
+    for col_name, col_type, reason in extras["system_cols"]:
+        if col_name not in existing_cols and col_name not in expected_cols:
+            contract_cols.append((col_name, col_type, reason))
     for col_name, pg_type, reason in contract_cols:
         plan["actions"].append({
             "kind": "add_column",
             "col": col_name,
-            "ddl": f'ALTER TABLE "{schema}"."{table}" ADD COLUMN "{col_name}" {pg_type} NULL',
+            "ddl": f'ALTER TABLE "{schema}"."{table}" ADD COLUMN "{col_name}" {pg_type}',
             "destructive": False,
             "reason": reason,
         })

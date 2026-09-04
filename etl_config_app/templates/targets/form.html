@@ -75,6 +75,21 @@
                     <textarea id="pre_load_sql" name="pre_load_sql" rows="4"
                               placeholder="DuckDB SQL applied before loading. Use __df__ as table name.">{{ target.pre_load_sql if target else '' }}</textarea>
                 </div>
+                {% if target %}
+                <div class="form-group full-width">
+                    <label>Служебные поля таргета (только чтение)</label>
+                    <div class="help">
+                        role: <b>{{ target.target_role or '—' }}</b> · priority: {{ target.priority }} ·
+                        parent_target_id: {{ target.parent_target_id or '—' }} ·
+                        include_columns: {{ (target.include_columns or [])|length }} ·
+                        post_load_sql: {{ (target.post_load_sql or '')|length }} симв.
+                    </div>
+                    {% if target.include_columns %}
+                    <div class="help" style="line-height:1.9">{% for c in target.include_columns %}<code style="margin:0 2px">{{ c }}</code>{% endfor %}</div>
+                    {% endif %}
+                    <div class="help">Save меняет только поля формы выше (PATCH); роли, include_columns и post_load правятся через Column Builder и миграции.</div>
+                </div>
+                {% endif %}
             </div>
 
             <div class="d-flex gap-2" style="margin-top:20px">

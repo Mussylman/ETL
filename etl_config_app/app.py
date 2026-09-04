@@ -184,6 +184,16 @@ async def register_detail(request: Request, reg_id: int):
     targets = dao.list_targets_for_register(reg_id)
     history = dao.list_load_history(reg_id)
     parent_reg = dao.get_register(reg.get("parent_id")) if reg.get("parent_id") else None
+    # Union — не скрытая механика: показываем членов, output_columns и таргет, который
+    # им питается (document_with_vt: _VT4708 + _VT4746 → order_positions_u → order_positions).
+    for u in unions:
+        u["members"] = dao.list_members_for_union(u["id"])
+        u["fed_targets"] = [t["target_table"] for t in targets if t.get("union_id") == u["id"]]
+    target_names = {t["id"]: t["target_table"] for t in targets}
+    for t in targets:
+        t["parent_target_table"] = target_names.get(t.get("parent_target_id"))
+        t["has_post_load"] = bool(t.get("post_load_sql"))
+        t["include_count"] = len(t.get("include_columns") or [])
     return _tpl("registers/detail.html", request,
                 register=reg, sources=sources, unions=unions,
                 targets=targets, history=history, parent_register=parent_reg)
@@ -1129,19 +1139,20 @@ def _sync_union_and_target(reg_id: int):
     sources = dao.list_sources_for_register(reg_id)
     targets = dao.list_targets_for_register(reg_id)
 
-    # Collect all unique target_columns
-    all_target_cols = set()
-    for s in sources:
-        for m in dao.list_mappings_for_source(s["id"]):
-            all_target_cols.add(m["target_column"])
-
-    # Update union output_columns
+    # Update union output_columns — ТОЛЬКО колонками его членов (и не теряя уже заданные).
+    # Раньше сюда сливались колонки ВСЕХ источников регистра: у document_with_vt
+    # в output_columns позиций попадали бы поля шапки (summa_documenta, raw_refs.kontragent).
     unions = dao.list_unions_for_register(reg_id)
     for u in unions:
+        out_cols = set(u.get("output_columns") or [])
+        for mem in dao.list_members_for_union(u["id"]):
+            for m in dao.list_mappings_for_source(mem["source_id"]):
+                if m.get("is_active", True) and m.get("transform_type") != "custom_python":
+                    out_cols.add(m["target_column"])
         dao.update_union(u["id"], {
             "union_code": u["union_code"],
             "description": u.get("description"),
-            "output_columns": sorted(all_target_cols),
+            "output_columns": sorted(out_cols),
         })
 
     # Auto-fill include_columns by source_type → target_role
@@ -1715,6 +1726,11 @@ async def api_column_targets(reg_id: int):
     # Build column map
     col_map = {}
 
+    # Источник истины о принадлежности колонки таргету — include_columns
+    # (по ним работают Sync и движок). Эвристика header→dim / detail→fact —
+    # только fallback для регистров, где include_columns ещё не заполнены.
+    has_include = any(t.get("include_columns") for t in targets)
+
     # 1. Auto-assign by source_type
     for src in sources:
         mappings = dao.list_mappings_for_source(src["id"])
@@ -1722,6 +1738,13 @@ async def api_column_targets(reg_id: int):
             col = m["target_column"]
             if m.get("transform_type") == "custom_python":
                 continue  # computed → manual below
+
+            if has_include:
+                assigned = [t["id"] for t in targets if col in (t.get("include_columns") or [])]
+                if assigned:
+                    col_map[col] = {"targets": assigned, "auto": False,
+                                    "expression": m["source_column"] if m.get("is_expression") else None}
+                    continue
 
             if src["source_type"] == "header" and dim_target:
                 col_map[col] = {"targets": [dim_target["id"]], "auto": True}
