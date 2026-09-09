@@ -572,7 +572,16 @@ async def union_update(
 async def union_delete(union_id: int):
     union = dao.get_union(union_id)
     reg_id = union["register_id"] if union else None
-    dao.delete_union(union_id)
+    try:
+        dao.delete_union(union_id)
+    except ValueError as e:
+        # union питает таргет — не удаляем ничего, объясняем и возвращаем на страницу union
+        back = f"/unions/{union_id}"
+        return HTMLResponse(
+            f"<div style='font-family:sans-serif;padding:24px'><h3>Union не удалён</h3>"
+            f"<p>{e}</p><p><a href='{back}'>← назад к union</a></p></div>",
+            status_code=409,
+        )
     return RedirectResponse(f"/registers/{reg_id}" if reg_id else "/registers", status_code=303)
 
 
@@ -1290,30 +1299,66 @@ async def api_add_target_column(request: Request, reg_id: int):
             })
             created.append({"mapping_id": mid, "source_id": sm["source_id"]})
 
-        # Update union output_columns
-        unions = dao.list_unions_for_register(reg_id)
-        if unions:
-            u = dao.get_union(unions[0]["id"])
-            if u:
-                oc = u.get("output_columns") or []
-                if target_column not in oc:
-                    oc.append(target_column)
-                    dao.update_union(unions[0]["id"], {
-                        "union_code": u["union_code"],
-                        "description": u.get("description"),
-                        "output_columns": oc,
-                    })
+        # Куда идёт новая колонка — только в свои таргеты (раньше колонка добавлялась
+        # во ВСЕ таргеты регистра и в output_columns первого попавшегося union).
+        source_ids = [sm["source_id"] for sm in source_mappings if sm.get("source_column", "").strip()]
+        target_ids = _targets_for_new_column(reg_id, target_column, source_ids, body.get("target_ids"))
 
-        # Sync target table — also ensure column exists even if source isn't a union member
-        targets = dao.list_targets_for_register(reg_id)
-        for t in targets:
-            dao.sync_target_table(t["id"])
-            # Ensure column exists (sync only checks union members, not VT sources)
-            dao.ensure_target_column(t["id"], target_column, target_type)
+        # output_columns — только у union'ов, членами которых являются источники колонки
+        for u in dao.list_unions_for_register(reg_id):
+            member_ids = {m["source_id"] for m in dao.list_members_for_union(u["id"])}
+            if not member_ids & set(source_ids):
+                continue
+            full = dao.get_union(u["id"]) or u
+            oc = list(full.get("output_columns") or [])
+            if target_column not in oc:
+                oc.append(target_column)
+                dao.update_union(u["id"], {
+                    "union_code": full["union_code"],
+                    "description": full.get("description"),
+                    "output_columns": oc,
+                })
 
-        return JSONResponse({"ok": True, "created": created})
+        for tid in target_ids:
+            dao.add_include_column(tid, target_column)   # idempotent; NULL include = «все колонки источника»
+            dao.sync_target_table(tid)
+            dao.ensure_target_column(tid, target_column, target_type)
+
+        return JSONResponse({
+            "ok": True, "created": created, "target_ids": target_ids,
+            **({} if target_ids else {"note": "колонка не назначена ни одному таргету — таблицы не изменены"}),
+        })
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+def _targets_for_new_column(reg_id: int, target_column: str, source_ids: list, explicit_ids=None) -> list:
+    """
+    Таргеты, которым принадлежит новая колонка, в порядке приоритета:
+      1. явный список target_ids из запроса;
+      2. таргеты, у которых колонка уже есть в include_columns;
+      3. по типу источников мэппингов: header → dimension, detail → fact
+         (standalone/computed — назначаются вручную, таблицы не трогаем).
+    Никогда не «все таргеты регистра».
+    """
+    targets = dao.list_targets_for_register(reg_id)
+    ids = {t["id"] for t in targets}
+    if explicit_ids:
+        return [int(i) for i in explicit_ids if int(i) in ids]
+    by_include = [t["id"] for t in targets if target_column in (t.get("include_columns") or [])]
+    if by_include:
+        return by_include
+    kinds = set()
+    for sid in source_ids:
+        src = dao.get_source(sid)
+        if src:
+            kinds.add(src.get("source_type"))
+    out = []
+    if "header" in kinds:
+        out += [t["id"] for t in targets if t.get("target_role") == "dimension"]
+    if "detail" in kinds:
+        out += [t["id"] for t in targets if t.get("target_role") == "fact"]
+    return sorted(set(out))
 
 
 @app.delete("/api/registers/{reg_id}/target-column/{col_name}")

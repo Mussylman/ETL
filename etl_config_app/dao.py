@@ -556,8 +556,23 @@ def update_union(union_id: int, data: dict):
 
 
 def delete_union(union_id: int):
+    """
+    Удаляет union и его членов. Таргеты, которые им питаются, НЕ удаляются:
+    раньше здесь стоял каскадный DELETE register_targets WHERE union_id — удаление
+    union молча уносило таргет (у document_with_vt это order_positions вместе с
+    post_load_sql и include_columns). Теперь такой union удалить нельзя, пока
+    таргет не перепривязан или не удалён явно.
+    """
+    fed = query(
+        f"SELECT id, target_schema, target_table FROM {SCHEMA}.register_targets WHERE union_id=%s",
+        [union_id],
+    )
+    if fed:
+        names = ", ".join(f'{t["target_schema"]}.{t["target_table"]} (target {t["id"]})' for t in fed)
+        raise ValueError(
+            f"union {union_id} питает таргет(ы): {names}. Сначала перепривяжите или удалите таргет явно."
+        )
     execute(f"DELETE FROM {SCHEMA}.source_union_members WHERE union_id=%s", [union_id])
-    execute(f"DELETE FROM {SCHEMA}.register_targets WHERE union_id=%s", [union_id])
     execute(f"DELETE FROM {SCHEMA}.source_unions WHERE id=%s", [union_id])
 
 
