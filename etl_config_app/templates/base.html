@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}ETL Config{% endblock %}</title>
     <link href="{{ url_for('static', path='css/style.css') }}" rel="stylesheet">
+    <style>
+        .env-badge{display:inline-block;margin-top:6px;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;letter-spacing:.04em}
+        .env-badge.test{background:#e8f1ff;color:#1d4ed8;border:1px solid #bfdbfe}
+        .env-badge.prod{background:#dc2626;color:#fff;border:1px solid #b91c1c}
+        .topbar-env{margin:0 12px 0 auto}
+        [data-theme="dark"] .env-badge.test{background:#1e3a8a;color:#dbeafe;border-color:#1e40af}
+    </style>
     <script>
         // Apply theme before paint — избегаем мигания
         (function() {
@@ -21,6 +28,7 @@
             <div>
                 <h1>DataPipe</h1>
                 <small>Конфигуратор ETL</small>
+                <div class="env-badge {{ 'prod' if IS_PROD else 'test' }}" title="База etl_meta/витрины: {{ DB_NAME }}">{{ ENV_LABEL }}</div>
             </div>
         </div>
         <nav class="sidebar-nav">
@@ -42,6 +50,7 @@
                 <li><a href="/registers">Главная</a></li>
                 {% block breadcrumb %}{% endblock %}
             </ul>
+            <span class="env-badge topbar-env {{ 'prod' if IS_PROD else 'test' }}" title="База: {{ DB_NAME }}{% if IS_PROD %} · destructive DDL через UI {{ 'разрешён' if ALLOW_DESTRUCTIVE else 'запрещён' }}{% endif %}">{{ ENV_LABEL }}</span>
             <button class="theme-toggle" type="button" onclick="toggleTheme()" title="Переключить тему">
                 <span class="material-symbols-outlined theme-icon-light">light_mode</span>
                 <span class="material-symbols-outlined theme-icon-dark">dark_mode</span>

@@ -77,14 +77,21 @@ def main():
     check("dim: PK(id)", any(c["type"] == "p" and c["cols"] == {"id"} for c in dim_cons))
     check("dim: id BIGSERIAL", dim_cols.get("id", {}).get("data_type") == "bigint")
     check("dim: UNIQUE(recorder)", any(c["type"] == "u" and c["cols"] == {"recorder"} for c in dim_cons))
-    check("dim: updated_at есть", "updated_at" in dim_cols)
+    # clean fact model (2026-09): legacy updated_at не создаётся, свежесть — audit-колонки
+    check("dim: без legacy updated_at", "updated_at" not in dim_cols)
+    for col in ("etl_loaded_at", "etl_updated_at", "retail_snapshot_at", "retail_updated_at"):
+        check(f"dim: audit-колонка {col}", col in dim_cols)
 
     # 3. Инварианты fact
     check("fact: PK(id)", any(c["type"] == "p" and c["cols"] == {"id"} for c in fact_cons))
     check("fact: UNIQUE(recorder, line_no)",
           any(c["type"] == "u" and c["cols"] == {"recorder", "line_no"} for c in fact_cons))
     check(f"fact: FK-колонка {DIM}_id", f"{DIM}_id" in fact_cols)
-    check("fact: FK-констрейнт на dim", any(c["type"] == "f" for c in fact_cons))
+    # стандарт витрины: FK-колонка BIGINT без физического REFERENCES (nullable-ссылка, резолв в post_load)
+    check("fact: FK-колонка без физического констрейнта", not any(c["type"] == "f" for c in fact_cons))
+    check(f"fact: FK-колонка {DIM}_id BIGINT", fact_cols.get(f"{DIM}_id", {}).get("data_type") == "bigint")
+    for col in ("etl_loaded_at", "etl_updated_at", "retail_snapshot_at", "retail_updated_at"):
+        check(f"fact: audit-колонка {col}", col in fact_cols)
     check("fact: без updated_at (role=fact)", "updated_at" not in fact_cols)
 
     # 4. Идемпотентность: повторный план — без действий

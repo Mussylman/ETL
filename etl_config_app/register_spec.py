@@ -17,7 +17,13 @@ from pydantic import BaseModel, Field, field_validator
 
 # Колонки, которые существуют в целевой таблице помимо маппингов
 # (создаются Sync'ом / движком, см. dao.compute_sync_plan и ETLEngine).
-SYSTEM_COLUMNS = {"id", "etl_loaded_at", "etl_hash", "updated_at"}
+# Системные колонки, которых нет в мэппингах, но которые пишет движок/loader/dim-слой.
+# Должен совпадать с SYSTEM_COLS в dao.compute_sync_plan (clean fact model, 2026-09).
+SYSTEM_COLUMNS = {
+    "id", "etl_loaded_at", "etl_hash", "updated_at",
+    "etl_updated_at", "retail_snapshot_at", "retail_updated_at",
+    "raw_refs", "is_stub", "sales_id",
+}
 
 VALID_JOIN_TYPES = {"INNER", "LEFT", "RIGHT"}
 VALID_SOURCE_TYPES = {"header", "detail", "standalone"}

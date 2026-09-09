@@ -3,19 +3,32 @@ Data Access Layer for etl_meta schema — standalone (no Airflow dependency).
 """
 
 import json
+import os
 import re
 import psycopg2
 import psycopg2.extras
 from typing import List, Optional, Dict
 
 
+# Подключение к etl_meta/витрине задаётся окружением. Один код — два экземпляра:
+#   TEST UI :5555 → dbname test      (значения по умолчанию, поведение как раньше)
+#   PROD UI :5556 → ETL_CONFIG_DB_NAME=etl_prod
+# Переключателя TEST/PROD внутри интерфейса нет намеренно.
 DB_CONFIG = {
-    "host": "10.10.1.142",
-    "port": 5432,
-    "dbname": "test",
-    "user": "airflow_admin",
-    "password": "1234Aa",
+    "host": os.getenv("ETL_CONFIG_DB_HOST", "10.10.1.142"),
+    "port": int(os.getenv("ETL_CONFIG_DB_PORT", "5432")),
+    "dbname": os.getenv("ETL_CONFIG_DB_NAME", "test"),
+    "user": os.getenv("ETL_CONFIG_DB_USER", "airflow_admin"),
+    "password": os.getenv("ETL_CONFIG_DB_PASSWORD", "1234Aa"),
 }
+IS_PROD = DB_CONFIG["dbname"] == "etl_prod" or os.getenv("ETL_CONFIG_ENV", "").lower() == "prod"
+ENV_LABEL = os.getenv("ETL_CONFIG_ENV_LABEL") or (
+    f"PROD / {DB_CONFIG['dbname']}" if IS_PROD else f"TEST / {DB_CONFIG['dbname']}"
+)
+# Destructive DDL (DROP COLUMN / сужение типа / recreate таблицы) через UI выполняется
+# только при явном ETL_CONFIG_ALLOW_DESTRUCTIVE=1. По умолчанию — и в PROD, и в TEST —
+# такие действия остаются в плане с requires_confirm, но не применяются: их место в миграции.
+ALLOW_DESTRUCTIVE = os.getenv("ETL_CONFIG_ALLOW_DESTRUCTIVE", "0") == "1"
 
 RETAIL_DB_CONFIG = {
     "host": "10.10.1.142",
@@ -141,7 +154,25 @@ def update_register(register_id: int, data: dict):
     ])
 
 
+def _targets_with_data(targets: List[dict]) -> List[str]:
+    """Таргеты, чьи физические таблицы существуют и непустые — их метаданные через UI не удаляем."""
+    out = []
+    for t in targets:
+        schema = t.get("target_schema") or "public"
+        if _table_exists(schema, t["target_table"]) and _table_row_count(schema, t["target_table"]) > 0:
+            out.append(f'{schema}.{t["target_table"]}')
+    return out
+
+
 def delete_register(register_id: int):
+    # Регистр с загруженными таблицами — рабочая витрина: движок читает её конфиг каждый тик.
+    # Каскадное удаление метаданных из UI запрещено; сначала явно удалить таргеты (или миграцией).
+    busy = _targets_with_data(list_targets_for_register(register_id))
+    if busy:
+        raise ValueError(
+            f"регистр {register_id} питает таблицы с данными: {', '.join(busy)}. "
+            f"Удаление конфига рабочей витрины через UI запрещено — только миграцией."
+        )
     # Cascade delete all related data
     execute(f"DELETE FROM {SCHEMA}.load_history WHERE register_id=%s", [register_id])
     execute(f"DELETE FROM {SCHEMA}.register_targets WHERE register_id=%s", [register_id])
@@ -385,6 +416,23 @@ def update_source(source_id: int, data: dict):
 
 
 def delete_source(source_id: int):
+    """
+    Источник, который питает таргет (source_id), входит в union или является родителем
+    других источников, удалить нельзя: раньше каскад молча удалял таргет (у document_with_vt —
+    orders вместе с post_load_sql) и ломал JOIN'ы детей. Сначала перепривязать/удалить явно.
+    """
+    fed = query(f"SELECT target_schema, target_table FROM {SCHEMA}.register_targets WHERE source_id=%s", [source_id])
+    members = query(f"SELECT u.union_code FROM {SCHEMA}.source_union_members m JOIN {SCHEMA}.source_unions u ON u.id=m.union_id WHERE m.source_id=%s", [source_id])
+    children = query(f"SELECT source_code FROM {SCHEMA}.register_sources WHERE parent_source_id=%s", [source_id])
+    problems = []
+    if fed:
+        problems.append("питает таргет(ы): " + ", ".join(f'{t["target_schema"]}.{t["target_table"]}' for t in fed))
+    if members:
+        problems.append("входит в union: " + ", ".join(m["union_code"] for m in members))
+    if children:
+        problems.append("родитель для: " + ", ".join(c["source_code"] for c in children))
+    if problems:
+        raise ValueError(f"источник {source_id} нельзя удалить — " + "; ".join(problems) + ". Сначала перепривяжите или удалите зависимости явно.")
     # Clear parent references pointing to this source
     execute(
         f"UPDATE {SCHEMA}.register_sources SET parent_source_id=NULL WHERE parent_source_id=%s",
@@ -696,10 +744,17 @@ def update_target(target_id: int, data: dict):
     if not old:
         return
 
-    # Переименование/перенос физической таблицы — только если имя реально прислали
+    # Переименование/перенос физической таблицы — только если имя реально прислали.
+    # Таблицу с данными через UI не переименовываем: на неё смотрят BI, post_load и DAG.
     if "target_table" in data:
         old_schema = old.get("target_schema") or "public"
         new_schema = data.get("target_schema", old_schema) or "public"
+        if (old_schema, old.get("target_table")) != (new_schema, data["target_table"]):
+            if _table_exists(old_schema, old.get("target_table")) and _table_row_count(old_schema, old.get("target_table")) > 0:
+                raise ValueError(
+                    f'таблица {old_schema}.{old.get("target_table")} содержит данные — '
+                    f"переименование через UI запрещено, только миграцией."
+                )
         _sync_real_table(old_schema, old.get("target_table"), new_schema, data["target_table"])
 
     def _list(v):

@@ -110,6 +110,11 @@ BASE = Path(__file__).parent
 
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
+# Метка окружения во всех шаблонах: «TEST / test» или «PROD / etl_prod» (см. dao.DB_CONFIG)
+templates.env.globals.update(
+    ENV_LABEL=dao.ENV_LABEL, IS_PROD=dao.IS_PROD, ALLOW_DESTRUCTIVE=dao.ALLOW_DESTRUCTIVE,
+    DB_NAME=dao.DB_CONFIG["dbname"],
+)
 
 
 # ────────────────────────────────────────────
@@ -231,9 +236,21 @@ async def register_update(
     return RedirectResponse(f"/registers/{reg_id}", status_code=303)
 
 
+def _refused(title: str, err: Exception, back: str):
+    """Отказ защитной проверки: ничего не изменено, объясняем и даём ссылку назад."""
+    return HTMLResponse(
+        f"<div style='font-family:sans-serif;padding:24px'><h3>{title}</h3>"
+        f"<p>{err}</p><p><a href='{back}'>← назад</a></p></div>",
+        status_code=409,
+    )
+
+
 @app.post("/registers/{reg_id}/delete")
 async def register_delete(reg_id: int):
-    dao.delete_register(reg_id)
+    try:
+        dao.delete_register(reg_id)
+    except ValueError as e:
+        return _refused("Регистр не удалён", e, f"/registers/{reg_id}")
     return RedirectResponse("/registers", status_code=303)
 
 
@@ -344,7 +361,10 @@ async def source_update(
 async def source_delete(src_id: int):
     source = dao.get_source(src_id)
     reg_id = source["register_id"] if source else None
-    dao.delete_source(src_id)
+    try:
+        dao.delete_source(src_id)
+    except ValueError as e:
+        return _refused("Источник не удалён", e, f"/sources/{src_id}")
     return RedirectResponse(f"/registers/{reg_id}" if reg_id else "/registers", status_code=303)
 
 
@@ -699,13 +719,16 @@ async def target_update(
     pre_load_sql: str = Form(""),
 ):
     target = dao.get_target(tgt_id)
-    dao.update_target(tgt_id, {
-        "target_schema": target_schema, "target_table": target_table,
-        "load_mode": load_mode, "upsert_keys": upsert_keys,
-        "source_id": int(source_id) if source_id else None,
-        "union_id": int(union_id) if union_id else None,
-        "pre_load_sql": pre_load_sql or None,
-    })
+    try:
+        dao.update_target(tgt_id, {
+            "target_schema": target_schema, "target_table": target_table,
+            "load_mode": load_mode, "upsert_keys": upsert_keys,
+            "source_id": int(source_id) if source_id else None,
+            "union_id": int(union_id) if union_id else None,
+            "pre_load_sql": pre_load_sql or None,
+        })
+    except ValueError as e:
+        return _refused("Таргет не сохранён", e, f"/targets/{tgt_id}/edit")
     dao.sync_target_table(tgt_id)
     return RedirectResponse(f"/registers/{target['register_id']}", status_code=303)
 
@@ -741,16 +764,25 @@ async def api_sync_register(reg_id: int, confirm: bool = False):
             return JSONResponse({"ok": True, "plans": [], "message": "no targets"})
 
         plans = [dao.compute_sync_plan(t["id"]) for t in targets]
-        # Если хотя бы один план требует confirm — собираем общий план для UI
-        needs_confirm = any(
-            (p.get("destructive_count") or 0) > 0 and not confirm
-            for p in plans
-        )
+        has_destructive = any((p.get("destructive_count") or 0) > 0 for p in plans)
 
-        if needs_confirm:
+        # Destructive DDL (DROP/сужение типа/recreate) через UI — только при
+        # ETL_CONFIG_ALLOW_DESTRUCTIVE=1. Иначе план показываем, но не применяем.
+        if has_destructive and confirm and not dao.ALLOW_DESTRUCTIVE:
+            return JSONResponse({
+                "ok": False,
+                "refused": True,
+                "plans": plans,
+                "message": f"Destructive DDL в окружении «{dao.ENV_LABEL}» через UI запрещён — "
+                           f"выполняйте миграцией. Safe-действия не применены, чтобы план остался целостным.",
+            }, status_code=403)
+
+        # Если хотя бы один план требует confirm — собираем общий план для UI
+        if has_destructive and not confirm:
             return JSONResponse({
                 "ok": False,
                 "requires_confirm": True,
+                "destructive_allowed": dao.ALLOW_DESTRUCTIVE,
                 "plans": plans,
             })
 
@@ -768,6 +800,26 @@ async def api_sync_register(reg_id: int, confirm: bool = False):
         })
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+@app.get("/api/registers/{reg_id}/sync-plan")
+async def api_sync_plan(reg_id: int):
+    """READ-ONLY: план Sync по всем таргетам регистра без применения (dry-run)."""
+    try:
+        targets = dao.list_targets_for_register(reg_id)
+        plans = [dao.compute_sync_plan(t["id"]) for t in targets]
+        return JSONResponse({
+            "ok": True, "env": dao.ENV_LABEL, "destructive_allowed": dao.ALLOW_DESTRUCTIVE,
+            "plans": plans,
+            "summary": [
+                {"target": p.get("full_table_name"), "exists": p.get("exists"), "rows": p.get("rows_in_table"),
+                 "actions": len(p.get("actions") or []), "destructive": p.get("destructive_count", 0),
+                 "error": p.get("error")}
+                for p in plans
+            ],
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.post("/api/registers/{reg_id}/discover-recorder-types")
 async def api_discover_recorder_types(reg_id: int):
     """
@@ -1374,19 +1426,16 @@ async def api_delete_target_column(reg_id: int, col_name: str):
                     dao.delete_mapping(m["id"])
                     deleted += 1
 
-        # Remove from union output_columns
-        unions = dao.list_unions_for_register(reg_id)
-        if unions:
-            u = dao.get_union(unions[0]["id"])
-            if u:
-                oc = u.get("output_columns") or []
-                if col_name in oc:
-                    oc.remove(col_name)
-                    dao.update_union(unions[0]["id"], {
-                        "union_code": u["union_code"],
-                        "description": u.get("description"),
-                        "output_columns": oc,
-                    })
+        # Remove from output_columns of every union that has it
+        for u0 in dao.list_unions_for_register(reg_id):
+            u = dao.get_union(u0["id"])
+            oc = (u or {}).get("output_columns") or []
+            if u and col_name in oc:
+                dao.update_union(u["id"], {
+                    "union_code": u["union_code"],
+                    "description": u.get("description"),
+                    "output_columns": [c for c in oc if c != col_name],
+                })
 
         return JSONResponse({"ok": True, "deleted": deleted})
     except Exception as e:
@@ -1405,6 +1454,16 @@ async def api_rename_column(request: Request, reg_id: int):
         if old_name == new_name:
             return JSONResponse({"ok": True, "renamed": 0})
 
+        # Технический хребет и системные колонки не переименовываются никогда
+        # (upsert, добор хвоста, missing-delete, post_load, BI смотрят на эти имена).
+        protected = {"id", "recorder", "recorder_type", "line_no", "vt_kind", "period", "raw_refs"}
+        if old_name in protected or old_name.endswith("_id") or old_name.startswith("raw_refs."):
+            return JSONResponse({"error": f"колонка «{old_name}» — техническая/системная, переименование запрещено"}, status_code=409)
+        # Таблица с данными: физический RENAME COLUMN ломает BI и post_load — только миграцией
+        busy = dao._targets_with_data(dao.list_targets_for_register(reg_id))
+        if busy:
+            return JSONResponse({"error": f"таблицы с данными ({', '.join(busy)}): переименование колонок через UI запрещено, только миграцией"}, status_code=409)
+
         # Rename in all mappings
         sources = dao.list_sources_for_register(reg_id)
         renamed = 0
@@ -1422,19 +1481,16 @@ async def api_rename_column(request: Request, reg_id: int):
                     })
                     renamed += 1
 
-        # Rename in union output_columns
-        unions = dao.list_unions_for_register(reg_id)
-        if unions:
-            u = dao.get_union(unions[0]["id"])
-            if u:
-                oc = u.get("output_columns") or []
-                if old_name in oc:
-                    oc = [new_name if c == old_name else c for c in oc]
-                    dao.update_union(unions[0]["id"], {
-                        "union_code": u["union_code"],
-                        "description": u.get("description"),
-                        "output_columns": oc,
-                    })
+        # Rename in output_columns of EVERY union that has the column
+        for u0 in dao.list_unions_for_register(reg_id):
+            u = dao.get_union(u0["id"])
+            oc = (u or {}).get("output_columns") or []
+            if u and old_name in oc:
+                dao.update_union(u["id"], {
+                    "union_code": u["union_code"],
+                    "description": u.get("description"),
+                    "output_columns": [new_name if c == old_name else c for c in oc],
+                })
 
         # Rename actual column in target table
         targets = dao.list_targets_for_register(reg_id)
