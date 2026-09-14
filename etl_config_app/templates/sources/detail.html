@@ -222,7 +222,10 @@ function loadFields() {
             // Реквизит из конфигурации 1С, которому не нашлось колонки в этой
             // базе. Раньше имя достраивалось как '_' + field_name_sql — оно
             // выглядело правдоподобно (_Fld25945), но SELECT по нему падал.
-            const noColumn = !f.mssql_column;
+            // status: confirmed (API+MSSQL), physical_only (только MSSQL — можно маппить),
+            // api_only (только meta API NikitaBase — колонки в UPP_JAN нет, маппить нельзя)
+            const status = f.status || (f.mssql_column ? 'confirmed' : 'api_only');
+            const noColumn = status === 'api_only' || !f.mssql_column;
             const col = f.mssql_column || ('_' + f.field_name_sql);
             const isMapped = mapped.has(col.toLowerCase());
             const targetType = f.target_type || 'text';
@@ -236,16 +239,18 @@ function loadFields() {
                     + ' data-transform="' + transform + '"'
                     + ' data-onec-name="' + (f.field_name || '') + '"'
                     + '>') + '</td>'
-                + '<td class="sd-cell-onec">' + (f.field_name || '—') + '</td>'
+                + '<td class="sd-cell-onec">' + (f.field_name || (status === 'physical_only' ? '<span class="sd-mute" title="meta API не знает эту колонку — новый реквизит с другой нумерацией">— (нет имени в API)</span>' : '—')) + '</td>'
                 + '<td>' + (noColumn
-                    ? '<span class="sd-mute" title="Реквизит есть в конфигурации 1С, но колонки в этой базе нет">нет в базе</span>'
+                    ? '<span class="sd-mute" title="Реквизит есть в meta API (NikitaBase), но колонки в UPP_JAN нет">нет в базе</span>'
                     : '<code class="sd-mono">' + col + '</code>') + '</td>'
                 + '<td class="sd-type">' + (f.mssql_type || '—') + (f.mssql_length ? '(' + f.mssql_length + ')' : '') + '</td>'
                 + '<td class="sd-type">' + targetType + '</td>'
                 + '<td>' + (transform ? '<span class="sd-transform">' + transform + '</span>' : '<span class="sd-mute">—</span>') + '</td>'
                 + '<td>' + (isMapped
                     ? '<span class="sd-mapped-badge"><span class="material-symbols-outlined">check_circle</span>замаплено</span>'
-                    : (noColumn ? '<span class="sd-mute">недоступно</span>' : '')) + '</td>'
+                    : (status === 'api_only' ? '<span class="sd-mute" title="только meta API — маппить нельзя">⚠ только API</span>'
+                       : status === 'physical_only' ? '<span class="sd-transform" title="есть в MSSQL, имени 1С нет">● только MSSQL</span>'
+                       : '<span class="sd-transform" title="подтверждено в MSSQL">MSSQL ✓</span>')) + '</td>'
                 + '</tr>';
         });
         html += '</tbody></table></div>';

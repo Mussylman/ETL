@@ -87,6 +87,16 @@
                     <small class="wz2-hint">Связь между витринами (напр. <code>sales</code> → <code>sales_positions</code>). Ключи соединения подбираются автоматически.</small>
                 </div>
                 <div class="dt-form-group">
+                    <label for="pipeline_type">Тип пайплайна</label>
+                    <select id="pipeline_type" name="pipeline_type">
+                        <option value="" {{ 'selected' if register and not register.pipeline_type }}>— legacy (source/union без runner'а инкремента) —</option>
+                        <option value="accumrg_with_documents" {{ 'selected' if register and register.pipeline_type == 'accumrg_with_documents' }}>accumrg_with_documents — регистр накопления + документы</option>
+                        <option value="document_with_vt" {{ 'selected' if register and register.pipeline_type == 'document_with_vt' }}>document_with_vt — документ-шапка + табличные части (UNION)</option>
+                        <option value="reference_dim" {{ 'selected' if register and register.pipeline_type == 'reference_dim' }}>reference_dim — справочник</option>
+                    </select>
+                    <small class="wz2-hint">По нему DAG <code>incremental</code> выбирает runner. Для новой витрины «документ → шапка + ТЧ» — <code>document_with_vt</code>.</small>
+                </div>
+                <div class="dt-form-group">
                     <label for="default_mode">Режим по умолчанию</label>
                     <select id="default_mode" name="default_mode">
                         <option value="incremental" {{ 'selected' if register and register.default_mode == 'incremental' }}>incremental — инкрементально</option>

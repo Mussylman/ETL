@@ -70,27 +70,63 @@
                     <div class="help">Or choose a union of multiple sources</div>
                 </div>
 
+                <div class="form-group">
+                    <label for="target_role">Роль</label>
+                    <select id="target_role" name="target_role">
+                        <option value="" {{ 'selected' if not target or not target.target_role }}>— не задана —</option>
+                        <option value="dimension" {{ 'selected' if target and target.target_role == 'dimension' }}>dimension — шапка (1 строка на документ)</option>
+                        <option value="fact" {{ 'selected' if target and target.target_role == 'fact' }}>fact — позиции (строки ТЧ)</option>
+                    </select>
+                    <div class="help">Роль определяет FK positions → header и дедуп по upsert_keys у шапки.</div>
+                </div>
+                <div class="form-group">
+                    <label for="parent_target_id">Родительский таргет (для positions)</label>
+                    <select id="parent_target_id" name="parent_target_id">
+                        <option value="">— нет —</option>
+                        {% for pt in parent_targets %}
+                        <option value="{{ pt.id }}" {{ 'selected' if target and target.parent_target_id == pt.id }}>{{ pt.target_table }} ({{ pt.target_role or '—' }})</option>
+                        {% endfor %}
+                    </select>
+                    <div class="help">FK-колонка именуется по правилу движка: <code>{parent}_id</code>, для множественного числа — без «s» (orders → order_id).</div>
+                </div>
+                <div class="form-group">
+                    <label for="priority">Приоритет</label>
+                    <input type="number" id="priority" name="priority" value="{{ target.priority if target else 0 }}">
+                    <div class="help">Порядок загрузки: шапка (0) раньше позиций (1) — post_load позиций ищет id шапки.</div>
+                </div>
+                <div class="form-group full-width">
+                    <label for="include_columns">Колонки таргета (include_columns)</label>
+                    <textarea id="include_columns" name="include_columns" rows="3"
+                              placeholder="recorder, recorder_type, line_no, vt_kind, summa, raw_refs.nomenklatura, raw_refs">{{ target.include_columns | join(', ') if target and target.include_columns else '' }}</textarea>
+                    <div class="help">Через запятую. Ссылки — только как <code>raw_refs.&lt;key&gt;</code> (одна JSONB-колонка <code>raw_refs</code>), физических GUID нет. Пусто = «все колонки источника» (legacy-режим).</div>
+                </div>
                 <div class="form-group full-width">
                     <label for="pre_load_sql">Pre-load SQL</label>
-                    <textarea id="pre_load_sql" name="pre_load_sql" rows="4"
+                    <textarea id="pre_load_sql" name="pre_load_sql" rows="3"
                               placeholder="DuckDB SQL applied before loading. Use __df__ as table name.">{{ target.pre_load_sql if target else '' }}</textarea>
                 </div>
-                {% if target %}
                 <div class="form-group full-width">
-                    <label>Служебные поля таргета (только чтение)</label>
-                    <div class="help">
-                        role: <b>{{ target.target_role or '—' }}</b> · priority: {{ target.priority }} ·
-                        parent_target_id: {{ target.parent_target_id or '—' }} ·
-                        include_columns: {{ (target.include_columns or [])|length }} ·
-                        post_load_sql: {{ (target.post_load_sql or '')|length }} симв.
+                    <label for="post_load_sql">Post-load SQL (резолв ссылок после каждой загрузки)</label>
+                    {% if target %}
+                    <div class="help" style="margin-bottom:6px">
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="genPostLoad({{ target.id }})">Сгенерировать шаблон из metadata</button>
+                        <span id="gen_note" class="sd-mute"> — подставит в поле stub-резолв raw_refs.&lt;key&gt; → dim → *_id, FK на шапку и late-resolve. Текущий текст не сохраняется, пока не нажат Save.</span>
                     </div>
-                    {% if target.include_columns %}
-                    <div class="help" style="line-height:1.9">{% for c in target.include_columns %}<code style="margin:0 2px">{{ c }}</code>{% endfor %}</div>
                     {% endif %}
-                    <div class="help">Save меняет только поля формы выше (PATCH); роли, include_columns и post_load правятся через Column Builder и миграции.</div>
+                    <textarea id="post_load_sql" name="post_load_sql" rows="10" style="font-family:monospace;font-size:12px">{{ target.post_load_sql if target and target.post_load_sql else '' }}</textarea>
                 </div>
-                {% endif %}
             </div>
+            <script>
+            function genPostLoad(tid) {
+                fetch('/api/targets/' + tid + '/post-load-template').then(r => r.json()).then(d => {
+                    if (d.error) { alert('Ошибка: ' + d.error); return; }
+                    const ta = document.getElementById('post_load_sql');
+                    if (ta.value.trim() && !confirm('Поле уже заполнено. Заменить содержимое сгенерированным шаблоном?')) return;
+                    ta.value = d.sql;
+                    document.getElementById('gen_note').textContent = ' — сгенерировано: ' + (d.summary || '') + '. Проверьте и нажмите Save.';
+                });
+            }
+            </script>
 
             <div class="d-flex gap-2" style="margin-top:20px">
                 <button type="submit" class="btn btn-primary">{{ 'Save Changes' if target else 'Create Target' }}</button>

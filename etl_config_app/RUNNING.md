@@ -40,3 +40,8 @@ curl -s http://localhost:5556/api/registers/77/sync-plan | python3 -m json.tool 
 - Destructive DDL применяется только при `ETL_CONFIG_ALLOW_DESTRUCTIVE=1`; иначе план показывается, но не исполняется.
 - FK fact→dim именуется по правилу движка (`{dim}_id`, затем без «s»), физического FK нет; CREATE добавляет
   контрактные system-колонки (audit + `raw_refs`).
+
+## Wizard: новая витрина «документ → шапка + ТЧ» целиком через UI
+См. `docs/knowledge/patterns/Витрина документа собирается через UI….md`. Ключевые точки: `pipeline_type` и retail-привязка
+в форме регистра; `period_column` авто (`_Date_Time` у `_DocumentN`); таргет с role/parent/include/post_load;
+`GET /api/targets/{id}/post-load-template` — шаблон резолва ссылок; `GET /api/sources/{id}/fields` — статусы полей по UPP_JAN.

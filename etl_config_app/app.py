@@ -154,6 +154,7 @@ async def register_create(
     retail_table: str = Form(""),
     retail_uid_column: str = Form(""),
     parent_id: str = Form(""),
+    pipeline_type: str = Form(""),
 ):
     dao.create_register({
         "code": code, "name": name, "description": description,
@@ -161,6 +162,7 @@ async def register_create(
         "retail_table": retail_table or None,
         "retail_uid_column": retail_uid_column or None,
         "parent_id": int(parent_id) if parent_id else None,
+        "pipeline_type": pipeline_type or None,
     })
     return RedirectResponse("/registers", status_code=303)
 
@@ -221,17 +223,16 @@ async def register_update(
     retail_table: str = Form(""),
     retail_uid_column: str = Form(""),
     parent_id: str = Form(""),
+    pipeline_type: str = Form(""),
 ):
-    # Preserve existing join keys (set automatically by Discover)
-    existing = dao.get_register(reg_id)
+    # PATCH: join-ключи (ставит Discover) и recorder_type_map не присылаются формой — не трогаем
     dao.update_register(reg_id, {
         "code": code, "name": name, "description": description,
         "default_mode": default_mode,
         "retail_table": retail_table or None,
         "retail_uid_column": retail_uid_column or None,
         "parent_id": int(parent_id) if parent_id else None,
-        "parent_join_key": existing.get("parent_join_key") if existing else None,
-        "child_join_key": existing.get("child_join_key") if existing else None,
+        "pipeline_type": pipeline_type or None,
     })
     return RedirectResponse(f"/registers/{reg_id}", status_code=303)
 
@@ -262,6 +263,15 @@ async def register_toggle(reg_id: int):
     return RedirectResponse(f"/registers/{reg_id}", status_code=303)
 
 
+def _period_column_from_form(value):
+    """Селект формы: '__auto__' → None (дефолт по типу таблицы в dao), '__none__' → '' (без фильтра)."""
+    if value is None or value == "__auto__":
+        return None
+    if value == "__none__":
+        return ""
+    return value
+
+
 # ────────────────────────────────────────────
 #  PAGES: Sources
 # ────────────────────────────────────────────
@@ -287,8 +297,9 @@ async def source_create(
     join_key_parent: str = Form(""),
     where_clause: str = Form(""),
     priority: int = Form(0),
+    period_column: str = Form("__auto__"),
 ):
-    sid = dao.create_source({
+    payload = {
         "register_id": reg_id, "source_code": source_code,
         "source_type": source_type, "mssql_schema": mssql_schema,
         "mssql_table": mssql_table, "onec_name": onec_name or None,
@@ -298,7 +309,11 @@ async def source_create(
         "join_key_parent": join_key_parent or None,
         "where_clause": where_clause or None,
         "priority": priority,
-    })
+    }
+    pc = _period_column_from_form(period_column)
+    if pc is not None:
+        payload["period_column"] = pc      # иначе dao.create_source подставит дефолт по типу таблицы
+    sid = dao.create_source(payload)
     # Auto-create mappings for system fields from 1C
     if onec_name:
         fields = onec_client.get_structure([onec_name])
@@ -341,9 +356,10 @@ async def source_update(
     join_key_parent: str = Form(""),
     where_clause: str = Form(""),
     priority: int = Form(0),
+    period_column: str = Form("__auto__"),
 ):
     source = dao.get_source(src_id)
-    dao.update_source(src_id, {
+    payload = {
         "source_code": source_code, "source_type": source_type,
         "mssql_schema": mssql_schema, "mssql_table": mssql_table,
         "onec_name": onec_name or None,
@@ -353,7 +369,13 @@ async def source_update(
         "join_key_parent": join_key_parent or None,
         "where_clause": where_clause or None,
         "priority": priority,
-    })
+    }
+    pc = _period_column_from_form(period_column)
+    if pc is not None:
+        payload["period_column"] = pc
+    elif source and source.get("period_column") is None:
+        payload["period_column"] = dao.default_period_column(source_type, mssql_table)
+    dao.update_source(src_id, payload)
     return RedirectResponse(f"/sources/{src_id}", status_code=303)
 
 
@@ -389,9 +411,20 @@ async def mapping_create(
     default_value: str = Form(""),
     is_nullable: bool = Form(True),
 ):
+    source = dao.get_source(src_id)
+    # Физическая истина — MSSQL: мэппинг в несуществующую колонку падает на первом SELECT.
+    if source and not is_expression:
+        try:
+            col_types = mssql_client.get_column_types(source.get("mssql_table", ""))
+        except Exception:
+            col_types = None
+        if col_types is not None and source_column not in col_types:
+            return _refused("Мэппинг не создан",
+                            ValueError(f"колонки «{source_column}» нет в {source.get('mssql_table')} (UPP_JAN). "
+                                       f"Имя из meta API — только подсказка; выберите поле со статусом «MSSQL ✓»."),
+                            f"/sources/{src_id}/mappings/new")
     # Resolve 1C Russian name for this column
     onec_name = None
-    source = dao.get_source(src_id)
     if source and source.get("onec_name"):
         try:
             onec_name = _resolve_onec_field_name(source["onec_name"], source_column)
@@ -671,7 +704,31 @@ async def target_new(request: Request, reg_id: int):
     sources = dao.list_sources_for_register(reg_id)
     unions = dao.list_unions_for_register(reg_id)
     return _tpl("targets/form.html", request,
-                register=reg, target=None, sources=sources, unions=unions)
+                register=reg, target=None, sources=sources, unions=unions,
+                parent_targets=dao.list_targets_for_register(reg_id))
+
+
+def _target_form_payload(target_schema, target_table, load_mode, upsert_keys, source_id, union_id,
+                         pre_load_sql, target_role, parent_target_id, priority, include_columns, post_load_sql):
+    """Общая сборка payload формы таргета + инвариант: ровно один из source_id / union_id."""
+    sid = int(source_id) if source_id else None
+    uid = int(union_id) if union_id else None
+    if bool(sid) == bool(uid):
+        raise ValueError(
+            "у таргета должен быть ровно один источник данных: либо Source (direct), либо Union. "
+            + ("Оба пусты — связь с union/источником была бы потеряна." if not sid else "Заданы оба.")
+        )
+    return {
+        "target_schema": target_schema, "target_table": target_table,
+        "load_mode": load_mode, "upsert_keys": upsert_keys,
+        "source_id": sid, "union_id": uid,
+        "pre_load_sql": pre_load_sql or None,
+        "target_role": target_role or None,
+        "parent_target_id": int(parent_target_id) if parent_target_id else None,
+        "priority": priority,
+        "include_columns": include_columns,
+        "post_load_sql": post_load_sql or None,
+    }
 
 
 @app.post("/registers/{reg_id}/targets/new")
@@ -684,15 +741,19 @@ async def target_create(
     source_id: str = Form(""),
     union_id: str = Form(""),
     pre_load_sql: str = Form(""),
+    target_role: str = Form(""),
+    parent_target_id: str = Form(""),
+    priority: int = Form(0),
+    include_columns: str = Form(""),
+    post_load_sql: str = Form(""),
 ):
-    tid = dao.create_target({
-        "register_id": reg_id,
-        "target_schema": target_schema, "target_table": target_table,
-        "load_mode": load_mode, "upsert_keys": upsert_keys,
-        "source_id": int(source_id) if source_id else None,
-        "union_id": int(union_id) if union_id else None,
-        "pre_load_sql": pre_load_sql or None,
-    })
+    try:
+        payload = _target_form_payload(target_schema, target_table, load_mode, upsert_keys, source_id, union_id,
+                                       pre_load_sql, target_role, parent_target_id, priority, include_columns, post_load_sql)
+    except ValueError as e:
+        return _refused("Таргет не создан", e, f"/registers/{reg_id}/targets/new")
+    payload["register_id"] = reg_id
+    tid = dao.create_target(payload)
     dao.sync_target_table(tid)
     return RedirectResponse(f"/registers/{reg_id}", status_code=303)
 
@@ -703,8 +764,10 @@ async def target_edit(request: Request, tgt_id: int):
     reg = dao.get_register(target["register_id"])
     sources = dao.list_sources_for_register(target["register_id"])
     unions = dao.list_unions_for_register(target["register_id"])
+    parent_targets = [t for t in dao.list_targets_for_register(target["register_id"]) if t["id"] != tgt_id]
     return _tpl("targets/form.html", request,
-                register=reg, target=target, sources=sources, unions=unions)
+                register=reg, target=target, sources=sources, unions=unions,
+                parent_targets=parent_targets)
 
 
 @app.post("/targets/{tgt_id}/edit")
@@ -717,16 +780,17 @@ async def target_update(
     source_id: str = Form(""),
     union_id: str = Form(""),
     pre_load_sql: str = Form(""),
+    target_role: str = Form(""),
+    parent_target_id: str = Form(""),
+    priority: int = Form(0),
+    include_columns: str = Form(""),
+    post_load_sql: str = Form(""),
 ):
     target = dao.get_target(tgt_id)
     try:
-        dao.update_target(tgt_id, {
-            "target_schema": target_schema, "target_table": target_table,
-            "load_mode": load_mode, "upsert_keys": upsert_keys,
-            "source_id": int(source_id) if source_id else None,
-            "union_id": int(union_id) if union_id else None,
-            "pre_load_sql": pre_load_sql or None,
-        })
+        payload = _target_form_payload(target_schema, target_table, load_mode, upsert_keys, source_id, union_id,
+                                       pre_load_sql, target_role, parent_target_id, priority, include_columns, post_load_sql)
+        dao.update_target(tgt_id, payload)
     except ValueError as e:
         return _refused("Таргет не сохранён", e, f"/targets/{tgt_id}/edit")
     dao.sync_target_table(tgt_id)
@@ -800,6 +864,15 @@ async def api_sync_register(reg_id: int, confirm: bool = False):
         })
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+@app.get("/api/targets/{tgt_id}/post-load-template")
+async def api_post_load_template(tgt_id: int):
+    """READ-ONLY: шаблон post_load_sql из metadata (ничего не сохраняет — вставляется в форму таргета)."""
+    try:
+        return JSONResponse(dao.generate_post_load_sql(tgt_id))
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/registers/{reg_id}/sync-plan")
 async def api_sync_plan(reg_id: int):
     """READ-ONLY: план Sync по всем таргетам регистра без применения (dry-run)."""
@@ -1253,8 +1326,14 @@ def _sync_union_and_target(reg_id: int):
 
 
 @app.get("/api/sources/{source_id}/fields")
-async def api_source_fields(source_id: int):
-    """Return fields for a source — from cache or 1C API."""
+async def api_source_fields(source_id: int, refresh: bool = False):
+    """
+    Поля источника со статусом относительно РЕАЛЬНОЙ базы MSSQL (UPP_JAN):
+      confirmed     — есть в meta API 1С и физически есть в таблице;
+      api_only      — только подсказка meta API (NikitaBase), колонки в этой базе НЕТ — мэппинг запрещён;
+      physical_only — колонка есть в MSSQL, но meta API её не знает (новые реквизиты с другой нумерацией).
+    Имена/номера из meta API — подсказка, физическая схема — истина (ловушка Fld24506 vs _Fld24518RRef).
+    """
     src = dao.get_source(source_id)
     if not src:
         return JSONResponse({"error": "Source not found"}, status_code=404)
@@ -1262,29 +1341,52 @@ async def api_source_fields(source_id: int):
     fields = src.get("fields_cache") or []
     if isinstance(fields, str):
         fields = json.loads(fields)
+    fields = [f for f in fields if f.get("status") != "physical_only"]  # пересобираем из MSSQL ниже
 
-    # If cache empty, try fetching from 1C + MSSQL types
-    if not fields:
-        # Convert MSSQL name to 1C API name: _Document476_VT13626 → Document476.VT13626
-        api_name = (src.get("mssql_table") or "").lstrip("_")
-        api_name = api_name.replace("_VT", ".VT")  # VT separator is dot in 1C API
+    if not fields or refresh:
+        api_name = (src.get("mssql_table") or "").lstrip("_").replace("_VT", ".VT")
         if api_name:
             structs = onec_client.get_structure([api_name])
             if structs and structs[0].get("fields"):
                 fields = structs[0]["fields"]
 
-    # Enrich with MSSQL types if not already present
-    has_types = fields and any(f.get("mssql_type") for f in fields)
-    if fields and not has_types:
-        try:
-            col_types = mssql_client.get_column_types(src.get("mssql_table", ""))
-            _enrich_fields_with_mssql_types(fields, col_types)
-        except Exception:
-            pass
-        # Save enriched cache
-        dao.update_source_fields_cache(source_id, fields)
+    col_types = {}
+    mssql_error = None
+    try:
+        col_types = mssql_client.get_column_types(src.get("mssql_table", ""))
+    except Exception as e:  # noqa: BLE001
+        mssql_error = str(e)[:200]
 
-    return JSONResponse({"source_id": source_id, "fields": fields})
+    if col_types:
+        for f in fields:
+            f.pop("mssql_column", None)
+        _enrich_fields_with_mssql_types(fields, col_types)
+        seen = set()
+        for f in fields:
+            mc = f.get("mssql_column")
+            if mc and mc in col_types:
+                f["status"] = "confirmed"; seen.add(mc)
+            else:
+                f["status"] = "api_only"; f["mssql_column"] = None  # имя не достраиваем — SELECT по нему падал
+        for col, info in col_types.items():
+            if col in seen:
+                continue
+            tt, tr = _resolve_mssql_type(info["data_type"], info.get("max_length"))
+            fields.append({"field_name": None, "field_name_sql": col.lstrip("_"), "mssql_column": col,
+                           "mssql_type": info["data_type"], "mssql_length": info.get("max_length"),
+                           "target_type": tt, "transform_type": tr, "status": "physical_only"})
+        order = {"confirmed": 0, "physical_only": 1, "api_only": 2}
+        fields.sort(key=lambda f: order.get(f.get("status"), 3))
+        dao.update_source_fields_cache(source_id, fields)
+    else:
+        for f in fields:
+            f.setdefault("status", "confirmed" if f.get("mssql_column") else "unverified")
+
+    counts = {}
+    for f in fields:
+        counts[f.get("status", "unverified")] = counts.get(f.get("status", "unverified"), 0) + 1
+    return JSONResponse({"source_id": source_id, "fields": fields, "counts": counts,
+                         "mssql_verified": bool(col_types), "mssql_error": mssql_error})
 
 
 @app.post("/api/registers/{reg_id}/add-target-column")
@@ -1324,6 +1426,15 @@ async def api_add_target_column(request: Request, reg_id: int):
                         source_col_types[sid] = {}
                 else:
                     source_col_types[sid] = {}
+
+        # Физическая проверка: колонка должна быть в MSSQL (типы уже получены выше); force=true — осознанный обход
+        if not body.get("force"):
+            unknown = [f'{sm["source_id"]}:{sm.get("source_column")}' for sm in source_mappings
+                       if sm.get("source_column", "").strip() and source_col_types.get(sm["source_id"])
+                       and sm["source_column"].strip() not in source_col_types[sm["source_id"]]]
+            if unknown:
+                return JSONResponse({"error": "нет таких колонок в MSSQL (UPP_JAN): " + ", ".join(unknown)
+                                     + ". Имя из meta API — подсказка, не истина."}, status_code=400)
 
         created = []
         for sm in source_mappings:

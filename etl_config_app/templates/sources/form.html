@@ -107,6 +107,16 @@
                     </select>
                 </div>
                 <div class="dt-form-group">
+                    <label for="period_column">Колонка периода (фильтр full_period / окно)</label>
+                    <select id="period_column" name="period_column">
+                        <option value="__auto__" {{ 'selected' if not source }}>авто: _Date_Time для _DocumentN, _Period для регистров, пусто для ТЧ</option>
+                        <option value="_Date_Time" {{ 'selected' if source and source.period_column == '_Date_Time' }}>_Date_Time — дата документа</option>
+                        <option value="_Period" {{ 'selected' if source and (source.period_column == '_Period' or source.period_column is none) }}>_Period — период регистра</option>
+                        <option value="__none__" {{ 'selected' if source and source.period_column == '' }}>нет — фильтр ставится на родителя (ТЧ)</option>
+                    </select>
+                    <small class="wz2-hint">У документов нет <code>_Period</code>: для шапки нужен <code>_Date_Time</code>, иначе SELECT к 1С упадёт.</small>
+                </div>
+                <div class="dt-form-group">
                     <label for="priority">Приоритет</label>
                     <input type="number" id="priority" name="priority"
                            value="{{ source.priority if source else 0 }}"

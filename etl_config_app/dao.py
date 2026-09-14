@@ -136,22 +136,27 @@ def create_register(data: dict) -> int:
 
 
 def update_register(register_id: int, data: dict):
-    sql = f"""
-        UPDATE {SCHEMA}.registers SET
-            code=%s, name=%s, description=%s, default_mode=%s,
-            retail_table=%s, retail_uid_column=%s,
-            parent_id=%s, parent_join_key=%s, child_join_key=%s,
-            updated_at=NOW()
-        WHERE id=%s
     """
-    execute(sql, [
-        data["code"], data["name"], data.get("description"),
-        data.get("default_mode", "incremental"),
-        data.get("retail_table"), data.get("retail_uid_column"),
-        data.get("parent_id"),
-        data.get("parent_join_key"), data.get("child_join_key"),
-        register_id,
-    ])
+    PATCH-семантика: обновляются только ключи, присутствующие в data.
+    pipeline_type / retail_table / retail_uid_column / default_mode и т.д. не затираются,
+    если форма их не прислала. updated_at обновляется всегда.
+    """
+    cols = ("code", "name", "description", "default_mode", "retail_table", "retail_uid_column",
+            "parent_id", "parent_join_key", "child_join_key", "pipeline_type", "recorder_type_map")
+    sets, params = [], []
+    for c in cols:
+        if c in data:
+            v = data[c]
+            if c in ("description", "retail_table", "retail_uid_column", "parent_id",
+                     "parent_join_key", "child_join_key", "pipeline_type"):
+                v = v or None
+            if c == "recorder_type_map" and v is not None and not isinstance(v, str):
+                v = json.dumps(v, ensure_ascii=False)
+            sets.append(f"{c}=%s"); params.append(v)
+    if not sets:
+        return
+    params.append(register_id)
+    execute(f"UPDATE {SCHEMA}.registers SET {', '.join(sets)}, updated_at=NOW() WHERE id=%s", params)
 
 
 def _targets_with_data(targets: List[dict]) -> List[str]:
@@ -259,6 +264,22 @@ def _normalize_source_type(source_type: str, mssql_table: str) -> str:
     return source_type
 
 
+def default_period_column(source_type: str, mssql_table: str) -> Optional[str]:
+    """
+    Колонка периода для фильтра QueryBuilder, если пользователь не задал явно:
+      _Document{N}  (шапка документа)   → _Date_Time   (не _Period! у документов её нет)
+      detail / _VT                      → ''  (пусто: фильтр ставится на родителя)
+      регистры _AccumRg/_InfoRg/_AccRg  → _Period
+    ConfigLoader: NULL → '_Period' (legacy), '' → без фильтра — поэтому для ТЧ пишем ''.
+    """
+    t = (mssql_table or "").lstrip("_").lower()
+    if source_type == "detail" or "_vt" in t:
+        return ""
+    if re.match(r"^document\d+$", t):
+        return "_Date_Time"
+    return "_Period"
+
+
 def create_source(data: dict) -> int:
     fc = data.get("fields_cache")
     if fc and not isinstance(fc, str):
@@ -268,12 +289,15 @@ def create_source(data: dict) -> int:
         data.get("source_type", "standalone"),
         data.get("mssql_table", ""),
     )
+    period_column = data.get("period_column")
+    if period_column is None:
+        period_column = default_period_column(source_type, data.get("mssql_table", ""))
     sql = f"""
         INSERT INTO {SCHEMA}.register_sources
             (register_id, source_code, source_type, mssql_schema, mssql_table,
              onec_name, parent_source_id, join_type, join_key_source, join_key_parent,
-             where_clause, priority, fields_cache)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+             where_clause, priority, fields_cache, period_column)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         RETURNING id
     """
     return insert_returning(sql, [
@@ -287,6 +311,7 @@ def create_source(data: dict) -> int:
         data.get("where_clause") or None,
         data.get("priority", 0),
         fc,
+        period_column,
     ])
 
 
@@ -393,15 +418,17 @@ def update_source(source_id: int, data: dict):
         data.get("source_type", "standalone"),
         data.get("mssql_table", ""),
     )
+    # period_column меняем только если прислали (PATCH для этого поля; '' = без фильтра)
+    pc_set = ", period_column=%s" if "period_column" in data else ""
     sql = f"""
         UPDATE {SCHEMA}.register_sources SET
             source_code=%s, source_type=%s, mssql_schema=%s, mssql_table=%s,
             onec_name=%s, parent_source_id=%s, join_type=%s,
             join_key_source=%s, join_key_parent=%s,
-            where_clause=%s, priority=%s
+            where_clause=%s, priority=%s{pc_set}
         WHERE id=%s
     """
-    execute(sql, [
+    params = [
         data["source_code"], source_type,
         data.get("mssql_schema", "dbo"), data["mssql_table"],
         data.get("onec_name") or None,
@@ -411,8 +438,11 @@ def update_source(source_id: int, data: dict):
         data.get("join_key_parent") or None,
         data.get("where_clause") or None,
         data.get("priority", 0),
-        source_id,
-    ])
+    ]
+    if "period_column" in data:
+        params.append(data["period_column"] if data["period_column"] is not None else "")
+    params.append(source_id)
+    execute(sql, params)
 
 
 def delete_source(source_id: int):
@@ -923,6 +953,181 @@ def _target_uses_raw_refs(target: dict) -> bool:
     return False
 
 
+def _target_source_ids(target: dict) -> List[int]:
+    """Источники, из которых таргет реально берёт колонки: source_id (+parent) или члены union (+parents)."""
+    ids: List[int] = []
+    def _add(sid):
+        if sid and sid not in ids:
+            ids.append(sid)
+            src = get_source(sid)
+            if src and src.get("parent_source_id"):
+                _add(src["parent_source_id"])
+    if target.get("source_id"):
+        _add(target["source_id"])
+    elif target.get("union_id"):
+        for m in list_members_for_union(target["union_id"]):
+            _add(m["source_id"])
+    return ids
+
+
+def _parse_params(tp):
+    if isinstance(tp, str):
+        try:
+            return json.loads(tp)
+        except Exception:
+            return {}
+    return tp if isinstance(tp, dict) else {}
+
+
+def raw_ref_dim_links(target: dict) -> List[dict]:
+    """
+    Ссылки таргета на справочники по стандарту raw_refs: для каждого мэппинга
+    raw_refs.<key> (не полиморфного .uid/.type) — dim-таблица и FK-колонка <key>_id.
+    Таблица справочника: transform_params.dim у мэппинга (явно, напр. {"dim": "dim_kontragent"}
+    для gruzopoluchatel) либо public.dim_<key>, если существует. Нерезолвимые ключи
+    (vid_operatsii, tip_cen …) остаются только в raw_refs — фейковых *_id не бывает.
+    """
+    include = set(target.get("include_columns") or [])
+    keys: Dict[str, Optional[str]] = {}
+    for sid in _target_source_ids(target):
+        for cm in list_mappings_for_source(sid):
+            if not cm.get("is_active", True):
+                continue
+            tc = str(cm.get("target_column") or "")
+            if not tc.startswith("raw_refs.") or (include and tc not in include):
+                continue
+            parts = tc.split(".")
+            if len(parts) != 2:
+                continue  # raw_refs.<key>.uid/.type — ссылка на документ/регистр
+            key = parts[1]
+            dim = _parse_params(cm.get("transform_params")).get("dim")
+            if key not in keys or dim:
+                keys[key] = dim
+    out = []
+    for key, dim in keys.items():
+        dim_table = dim or f"dim_{key}"
+        if _table_exists("public", dim_table):
+            out.append({"key": key, "dim_table": dim_table, "fk_col": f"{key}_id"})
+    return out
+
+
+def raw_ref_register_links(target: dict) -> List[dict]:
+    """
+    Полиморфные ссылки raw_refs.<key>.uid + .type на ДРУГОЙ регистр витрины, объявленные
+    в мэппинге .uid через transform_params {"ref_target": "orders"}. Даёт <key>_id BIGINT → ref.id.
+    Без декларации ссылка живёт только в raw_refs (как zakaz до появления orders).
+    """
+    include = set(target.get("include_columns") or [])
+    out = {}
+    for sid in _target_source_ids(target):
+        for cm in list_mappings_for_source(sid):
+            tc = str(cm.get("target_column") or "")
+            if not cm.get("is_active", True) or not tc.startswith("raw_refs.") or not tc.endswith(".uid"):
+                continue
+            if include and tc not in include:
+                continue
+            ref = _parse_params(cm.get("transform_params")).get("ref_target")
+            key = tc.split(".")[1]
+            if ref and key not in out:
+                out[key] = {"key": key, "ref_table": ref, "fk_col": f"{key}_id"}
+    return list(out.values())
+
+
+def generate_post_load_sql(target_id: int) -> dict:
+    """
+    Шаблон post_load_sql из metadata и настроек таргета (ничего не сохраняет):
+      1. positions → header: <fk> = header.id по natural key (recorder, recorder_type)
+      2. raw_refs.<key> → dim.guid → <key>_id (stub ON CONFLICT + UPDATE)
+      3. raw_refs.<key>.{type,uid} → другой регистр (ref_target) → <key>_id
+      4. fact: удаление строк, исчезнувших из документа при перепроведении (окно 60/30 мин)
+      5. dimension: late-resolve — таргеты, объявившие ref_target на ЭТУ таблицу, дозаполняют <key>_id
+    Имена таблиц/колонок не хардкодятся — берутся из etl_meta и физической схемы.
+    """
+    target = get_target(target_id)
+    if not target:
+        return {"error": f"target {target_id} not found"}
+    schema = target.get("target_schema") or "public"
+    table = target["target_table"]
+    full = f'{schema}.{table}'
+    role = (target.get("target_role") or "").lower()
+    uk = list(target.get("upsert_keys") or [])
+    nk = [k for k in ("recorder", "recorder_type") if k in uk] or ["recorder"]
+    parts = [f"-- post_load {full}: сгенерировано конфигуратором из metadata (стандарт ссылок raw_refs → *_id BIGINT)."]
+    summary = []
+
+    parent = None
+    if role == "fact":
+        parent = get_target(target["parent_target_id"]) if target.get("parent_target_id") else _find_dim_sibling(target)
+        if parent and parent["id"] != target["id"]:
+            pschema = parent.get("target_schema") or "public"
+            fk = _resolve_fk_column(schema, table, parent["target_table"])
+            cond = " AND ".join(f"p.{k} = h.{k}" for k in nk)
+            parts.append(f"""-- FK на шапку по natural key ({', '.join(nk)})
+UPDATE {full} p SET {fk} = h.id FROM {pschema}.{parent['target_table']} h
+WHERE {cond} AND p.{fk} IS NULL;""")
+            summary.append(f"{fk} → {parent['target_table']}.id")
+
+    for l in raw_ref_dim_links(target):
+        k, dim, fk = l["key"], l["dim_table"], l["fk_col"]
+        parts.append(f"""-- {k}: stub в {dim} по незнакомому guid (id постоянный) + резолв {fk}
+INSERT INTO public.{dim} (guid) SELECT DISTINCT (raw_refs->>'{k}')::uuid FROM {full} WHERE {fk} IS NULL AND raw_refs ? '{k}' ON CONFLICT (guid) DO NOTHING;
+UPDATE {full} x SET {fk} = d.id FROM public.{dim} d WHERE x.{fk} IS NULL AND d.guid = (x.raw_refs->>'{k}')::uuid;""")
+        summary.append(f"{fk} → {dim}")
+
+    for l in raw_ref_register_links(target):
+        k, ref, fk = l["key"], l["ref_table"], l["fk_col"]
+        parts.append(f"""-- {k}: ссылка на регистр {ref} по natural key (type, uid); вне истории {ref} → NULL, {{type,uid}} остаются в raw_refs
+UPDATE {full} s SET {fk} = h.id FROM public.{ref} h
+WHERE s.{fk} IS NULL AND s.raw_refs ? '{k}'
+  AND h.recorder_type = (s.raw_refs->'{k}'->>'type')::int AND h.recorder = (s.raw_refs->'{k}'->>'uid')::uuid;""")
+        summary.append(f"{fk} → {ref}.id")
+
+    if role == "fact":
+        parent_fk = None
+        if parent and parent["id"] != target["id"]:
+            parent_fk = (f'{parent.get("target_schema") or "public"}.{parent["target_table"]}',
+                         _resolve_fk_column(schema, table, parent["target_table"]))
+        if parent_fk:
+            # ориентир — шапка: она перезаписывается при каждой загрузке документа, поэтому видит и заказы,
+            # у которых удалили ВСЕ строки (правило по строкам документа их пропускало — аудит 2026-09-14)
+            parts.append(f"""-- строки, исчезнувшие из документа при перепроведении: строка старше своей шапки на 30+ минут
+DELETE FROM {full} p
+USING {parent_fk[0]} o
+WHERE o.id = p.{parent_fk[1]}
+  AND o.etl_updated_at >= timezone('Asia/Almaty', now()) - interval '60 minutes'
+  AND p.etl_updated_at < o.etl_updated_at - interval '30 minutes';""")
+        else:
+            grp = ", ".join(nk)
+            cond = " AND ".join(f"p.{k} = m.{k}" for k in nk)
+            parts.append(f"""-- строки, исчезнувшие из документа при перепроведении (по строкам того же документа)
+DELETE FROM {full} p
+USING (SELECT {grp}, MAX(etl_updated_at) AS last_ts FROM {full}
+       WHERE etl_updated_at >= timezone('Asia/Almaty', now()) - interval '60 minutes' GROUP BY {grp}) m
+WHERE {cond} AND p.etl_updated_at < m.last_ts - interval '30 minutes';""")
+        summary.append("удаление исчезнувших строк")
+
+    if role == "dimension":
+        # late-resolve: кто объявил ссылку на ЭТУ таблицу
+        rows = query(f"SELECT DISTINCT t.id FROM {SCHEMA}.register_targets t WHERE t.id <> %s", [target_id])
+        for r in rows:
+            other = get_target(r["id"])
+            if not other:
+                continue
+            for l in raw_ref_register_links(other):
+                if l["ref_table"] != table:
+                    continue
+                oschema = other.get("target_schema") or "public"
+                k, fk = l["key"], l["fk_col"]
+                parts.append(f"""-- late-resolve {oschema}.{other['target_table']}.{fk}: документ пришёл позже ссылающейся строки
+UPDATE {oschema}.{other['target_table']} s SET {fk} = h.id FROM {full} h
+WHERE s.{fk} IS NULL AND s.raw_refs ? '{k}'
+  AND h.recorder_type = (s.raw_refs->'{k}'->>'type')::int AND h.recorder = (s.raw_refs->'{k}'->>'uid')::uuid;""")
+                summary.append(f"late-resolve {other['target_table']}.{fk}")
+
+    return {"sql": "\n\n".join(parts) + "\n", "summary": "; ".join(summary) or "ссылок для резолва не найдено",
+            "dim_links": raw_ref_dim_links(target), "register_links": raw_ref_register_links(target)}
+
+
 def _fk_candidates(dim_table: str) -> List[str]:
     """
     Имена FK-колонки fact → dim, в порядке предпочтения. То же правило, что в
@@ -1110,6 +1315,11 @@ def _contract_system_columns(target: dict, is_reference_dim: bool, has_retail: b
     cols.append(("retail_updated_at", "TIMESTAMP", "per-row retail-метка инкремента (watermark)"))
     if _target_uses_raw_refs(target):
         cols.append(("raw_refs", "JSONB", "стандарт ссылок: исходные GUID 1С одной JSONB-колонкой"))
+        # BIGINT-ссылки на справочники/регистры, которые post_load резолвит из raw_refs
+        for l in raw_ref_dim_links(target):
+            cols.append((l["fk_col"], "BIGINT", f"FK на {l['dim_table']} (raw_refs.{l['key']})"))
+        for l in raw_ref_register_links(target):
+            cols.append((l["fk_col"], "BIGINT", f"FK на регистр {l['ref_table']} (raw_refs.{l['key']}.uid/type)"))
     return cols
 
 
