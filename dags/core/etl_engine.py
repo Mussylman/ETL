@@ -515,6 +515,8 @@ class ETLEngine:
 
         # 1. Открыть load_history
         run_id = self._open_history_run(pg_meta, run_mode="incremental")
+        run_started_at = _now_local()   # для очистки неполных шапок на пути ошибки
+        changed_uids: List[str] = []
 
         try:
             with self._advisory_lock(pg_meta, self.config.id):
@@ -600,7 +602,54 @@ class ETLEngine:
                 status="failed",
                 error=_format_error(e),
             )
+            # Частичный коммит: dim-target уже записан (и с ним retail_updated_at →
+            # watermark уехал), а fact упал. Без очистки эти документы теряются
+            # навсегда: retry берёт окно после их сигналов, а добор хвоста ищет только
+            # uid, которых нет в dim. См. docs/knowledge/debugging (deadlock 2026-09).
+            try:
+                self._cleanup_incomplete_headers(changed_uids, run_started_at)
+            except Exception as ce:  # noqa: BLE001 — очистка не должна маскировать исходную ошибку
+                print(f"cleanup incomplete headers failed: {_format_error(ce, 300)}")
             raise
+
+    def _cleanup_incomplete_headers(self, changed_uids: List[str], run_started_at, dry_run: bool = False) -> int:
+        """
+        Удаляет шапки (dim-target), записанные ЭТИМ прогоном и оставшиеся без позиций
+        в fact-target, — только среди changed_uids прогона. Удалённая шапка становится
+        «отсутствующей в DWH», и добор хвоста перечитает документ целиком следующим тиком.
+        Только путь ошибки: легитимно пустые документы успешных прогонов не трогаем.
+        Возвращает число удалённых (или найденных при dry_run) шапок.
+        """
+        targets = self._get_active_targets()
+        dim = next((t for t in targets if t.target_role == "dimension"), None)
+        fact = next((t for t in targets if t.target_role == "fact"), None)
+        if not (dim and fact and changed_uids):
+            return 0
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+        pg = PostgresHook(postgres_conn_id=self.dst_conn_id)
+        # FK positions → header: {dim}_id, для множественного числа — без «s» (orders → order_id)
+        candidates = [f"{dim.target_table}_id"]
+        if dim.target_table.endswith("s"):
+            candidates.append(f"{dim.target_table[:-1]}_id")
+        fk = next((c for c in candidates if pg.get_first(
+            "SELECT 1 FROM information_schema.columns WHERE table_schema=%s AND table_name=%s AND column_name=%s",
+            parameters=(fact.target_schema, fact.target_table, c))), None)
+        if not fk:
+            print(f"cleanup incomplete headers: FK {candidates} не найдена в {fact.full_table_name} — пропуск")
+            return 0
+        uids = [str(self._normalize_uid(u)) for u in changed_uids if self._normalize_uid(u)]
+        where = (f"WHERE d.recorder = ANY(%s::uuid[]) AND d.etl_updated_at >= %s "
+                 f"AND NOT EXISTS (SELECT 1 FROM {fact.full_table_name} p WHERE p.{fk} = d.id)")
+        if dry_run:
+            n = pg.get_first(f"SELECT count(*) FROM {dim.full_table_name} d {where}", parameters=(uids, run_started_at))[0]
+        else:
+            with pg.get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(f"DELETE FROM {dim.full_table_name} d {where}", (uids, run_started_at))
+                    n = cur.rowcount
+                conn.commit()
+        print(f"cleanup incomplete headers [{dim.target_table}]: {'найдено' if dry_run else 'удалено'} {n} шапок без позиций, записанных прогоном с {run_started_at}")
+        return int(n or 0)
 
     # ------------------------------------------------------------------
     # incremental helpers

@@ -87,12 +87,17 @@ def _run_etl_engine(code: str, config_conn_id: str, retail_conn_id: str, mssql_c
 #   или он source-only (тогда только stub-pass) — DAG'у это безразлично;
 #   accumrg_with_documents без retail-привязки не имеет watermark'а и падает
 #   внутри ETLEngine до первого запроса — таску для него не создаём.
+# serialize — таски этого runner'а в одном DagRun идут по очереди, а не параллельно:
+#   post_load регистров пишут в одни объекты (stub-INSERT в общие dim_*, late-resolve
+#   sales.zakaz_id из post_load orders против UPDATE sales собственным post_load) —
+#   параллельный запуск давал DeadlockDetected (~3 раза в сутки, закрывались retry).
+#   Порядок — порядок discovery (pipeline_type, code): sales раньше order.
 RUNNERS = {
-    "reference_dim":          {"run": _run_reference_dim, "requires_retail": False},
-    "accumrg_with_documents": {"run": _run_etl_engine,    "requires_retail": True},
+    "reference_dim":          {"run": _run_reference_dim, "requires_retail": False, "serialize": False},
+    "accumrg_with_documents": {"run": _run_etl_engine,    "requires_retail": True,  "serialize": True},
     # документ-шапка + UNION табличных частей (order): тот же ETLEngine, watermark/tail/missing-delete
     # — существующий DataChecker по retail-привязке регистра. Никакой order-specific логики.
-    "document_with_vt":       {"run": _run_etl_engine,    "requires_retail": True},
+    "document_with_vt":       {"run": _run_etl_engine,    "requires_retail": True,  "serialize": True},
 }
 
 
@@ -182,13 +187,21 @@ def build_incremental_dag(
         doc_md=f"**Контур:** `{config_conn_id}`\n\n" + (__doc__ or ""),
     )
     with dag:
+        chain = []   # ETLEngine-таски — цепочкой; справочники — параллельно
         for code, ptype in supported:
-            PythonOperator(
+            task = PythonOperator(
                 task_id=f"{ptype}__{code}",
                 python_callable=RUNNERS[ptype]["run"],
                 op_args=[code],
                 op_kwargs=conn_kwargs,
+                # all_done: падение предыдущего регистра не блокирует следующий —
+                # цепочка только убирает параллельность, регистры независимы
+                trigger_rule="all_done" if (RUNNERS[ptype].get("serialize") and chain) else "all_success",
             )
+            if RUNNERS[ptype].get("serialize"):
+                if chain:
+                    chain[-1] >> task
+                chain.append(task)
 
         if unsupported or error:
             PythonOperator(
