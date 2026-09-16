@@ -33,10 +33,13 @@
                 incremental — с retail-привязкой: изменённые в retail (per-row метки),
                               затем stub-pass; без привязки (source-only): только
                               stub-pass. Stub-pass дозаполняет строки is_stub=true из 1С
-                              по guid: метку не трогает, строк не создаёт
+                              по guid: метку не трогает, строк не создаёт, за проход
+                              берёт не больше --stub-batch строк по циклической очереди id
+                              и снимает is_stub только при непустом name/code
                 hierarchy   — догрузить недостающих предков по _ParentIDRRef
     --dry-run   ничего не писать: показать план, поля из конфига, что изменилось бы
     --batch     размер батча uid в IN-списке MSSQL и в execute_values (default 500)
+    --stub-batch  сколько stub-строк за проход (default 500); курсор очереди — в checkpoint
     --set-mark  reload: всё-таки переставить метку всем строкам (с WARNING — см. _resolve_set_mark)
     --no-retail-mark  initial: не трогать retail_updated_at. Для reload устарел, игнорируется.
 
@@ -93,6 +96,20 @@ EMPTY_REF = "00000000-0000-0000-0000-000000000000"
 
 # Колонки dim, которыми управляет не мэппинг, а сам механизм.
 MANAGED_COLS = {"id", "is_stub", "etl_updated_at", "retail_updated_at"}
+
+# Сколько stub-строк берём за один проход. Очередь циклическая: дошли до конца —
+# следующий проход начинается с нуля. Без лимита один тик мог утащить в 1С все
+# накопленные stub разом (после массовой перезаливки это сотни round-trip к боевой базе).
+STUB_BATCH_DEFAULT = 500
+
+# Курсор очереди stub. Живёт в checkpoint_value последнего прогона регистра —
+# отдельного хранилища и новых колонок в dim сознательно не заводим.
+CURSOR_KEY = "last_stub_id"
+
+# Поля, по которым судим о полноте строки справочника. Временный generic-критерий:
+# «непусто хотя бы одно из mapped name/code». Индивидуальных правил по справочникам
+# и признака is_required в column_mappings здесь намеренно нет.
+DISPLAY_COLS = ("name", "code")
 
 # Watermark-колонка СПРАВОЧНИКОВ. Одна. У фактов их три с fallback-цепочкой
 # (retail_updated_at → retail_snapshot_at → updated_at, см. data_checker),
@@ -189,6 +206,47 @@ def has_retail_binding(cfg: dict) -> bool:
     retail-инкремент + stub-pass, без неё — только stub-pass (source-only DIM).
     """
     return bool(cfg.get("retail_table") and cfg.get("retail_uid_column"))
+
+
+def display_columns(cfg: dict) -> List[str]:
+    """Какие из DISPLAY_COLS реально замаплены у этого справочника."""
+    tgts = [m["tgt"] for m in cfg["mappings"]]
+    return [c for c in DISPLAY_COLS if c in tgts]
+
+
+def is_complete(row: Tuple, positions: List[int]) -> bool:
+    """
+    Полна ли строка, приехавшая из 1С: непусто хотя бы одно display-поле.
+
+    Справочник, у которого не замаплено ни name, ни code (positions пуст), судить
+    не по чему — считаем полным, иначе его stub не закрылись бы никогда.
+    """
+    if not positions:
+        return True
+    return any(str(row[p]).strip() for p in positions if row[p] is not None)
+
+
+def read_stub_cursor(pg, register_id: int) -> int:
+    """
+    Курсор очереди stub — из checkpoint_value последнего прогона этого регистра.
+
+    Читается терпимо: нет ключа, старый формат checkpoint, пусто, не парсится —
+    всё это 0, то есть «начать с начала очереди». Таска не должна падать из-за
+    курсора: он ускоряет обход, но не является данными.
+    """
+    try:
+        row = pg.get_first(
+            "SELECT checkpoint_value FROM etl_meta.load_history "
+            "WHERE register_id = %s AND checkpoint_value LIKE %s "
+            "ORDER BY id DESC LIMIT 1",
+            parameters=(register_id, f"%{CURSOR_KEY}=%"))
+        if not row or not row[0]:
+            return 0
+        m = re.search(CURSOR_KEY + r"=(\d+)", row[0])
+        return int(m.group(1)) if m else 0
+    except Exception as e:
+        print(f"    ⚠ курсор stub не прочитан ({str(e)[:80]}) — иду с начала очереди")
+        return 0
 
 
 def resolve_dwh_key(cfg: dict) -> str:
@@ -386,10 +444,13 @@ def _col_types(pg, cfg: dict) -> Dict[str, str]:
 
 
 def apply_rows(pg, cfg: dict, rows: List[Tuple], mark, set_mark: bool,
-               batch: int, dry_run: bool) -> int:
+               batch: int, dry_run: bool, clear_stub: bool = True) -> int:
     """
     UPDATE dim: все поля из мэппинга + is_stub=false + одна метка всем.
     Ключ — guid. Строки не создаются (их заводят факты).
+
+    clear_stub=False — записать поля, но оставить строку stub. Нужно stub-pass'у
+    для incomplete: объект в 1С есть, но name и code пусты, закрывать его рано.
     """
     if not rows:
         return 0
@@ -412,13 +473,15 @@ def apply_rows(pg, cfg: dict, rows: List[Tuple], mark, set_mark: bool,
         return f'v."{c}"::{t}' if t else f'v."{c}"'
 
     set_parts = [f'"{c}" = {_v(c)}' for c in data_cols]
-    set_parts.append("is_stub = false")
+    if clear_stub:
+        set_parts.append("is_stub = false")
     set_parts.append("etl_updated_at = timezone('Asia/Almaty', now())")
     if set_mark and mark is not None:
         set_parts.append(f"{WATERMARK_COL} = %(mark)s")
 
     # обновляем только если что-то реально меняется — идемпотентность
-    diff = " OR ".join([f'd."{c}" IS DISTINCT FROM {_v(c)}' for c in data_cols] + ["d.is_stub"])
+    diff = " OR ".join([f'd."{c}" IS DISTINCT FROM {_v(c)}' for c in data_cols]
+                       + (["d.is_stub"] if clear_stub else []))
     vcols = ", ".join(f'"{c}"' for c in ordered)
 
     sql = f'''
@@ -598,43 +661,95 @@ def apply_rows_per_row(pg, cfg: dict, rows: List[Tuple], marks: Dict[str, Any],
         conn.close()
 
 
-def process_stub_pass(cfg: dict, pg, ms, batch: int, dry_run: bool) -> dict:
+def process_stub_pass(cfg: dict, pg, ms, batch: int, dry_run: bool,
+                      stub_batch: int = STUB_BATCH_DEFAULT,
+                      cursor: Optional[int] = None) -> dict:
     """
     Дешёвый проход по stub-строкам этого справочника — после retail-инкремента.
 
     Откуда stub: post_load фактов, встретив незнакомый guid, заводит строку
-    с id, но без полей — объект есть в 1С, а retail о нём ещё не сигналил
-    (или не сигналит вовсе). Раньше их закрывала отдельная таска load_dim_names
-    с зашитыми name/code. Теперь reference_dim обслуживает свои stub сам —
-    вызывающему DAG об этом знать не нужно.
+    с id, но без полей (is_stub=true приходит из DEFAULT колонки) — объект есть
+    в 1С, а retail о нём ещё не сигналил (или не сигналит вовсе). Раньше их
+    закрывала отдельная таска load_dim_names с зашитыми name/code. Теперь
+    reference_dim обслуживает свои stub сам — вызывающему DAG об этом знать не нужно.
 
-    Собран из того, что уже есть: fetch_from_1c берёт ВСЕ поля из мэппинга
-    (и роняет прогон на незнакомом transform_type), apply_rows с set_mark=False
-    пишет поля + is_stub=false и НЕ трогает retail_updated_at — значит watermark
-    инкремента этот проход не сдвигает. INSERT нет: только UPDATE по guid,
-    id остаётся прежним. Кого в 1С не нашлось — остаётся stub до следующего тика.
+    Порция и очередь. За проход берём не больше stub_batch строк, отсортированных
+    по id, начиная за курсором. Курсор — id последней взятой строки, он лежит
+    в checkpoint_value прошлого прогона. Если хвост короче порции (или пуст) —
+    очередь пройдена до конца, курсор сбрасывается в 0. Поэтому guid, которых
+    в 1С нет никогда, не занимают начало очереди навсегда: они уезжают в конец
+    круга, а новые stub с большими id гарантированно доходят до обработки.
 
-    Цена: один SELECT по is_stub; если stub нет — в 1С не ходим.
+    Критерий закрытия stub — не «guid нашёлся», а «приехало непустое name или code»
+    (is_complete). Объект, который в 1С есть, но пуст, остаётся stub и попадает
+    в метрику incomplete: поля ему записываем, флаг не снимаем.
+
+    Чего проход не делает: не читает и не двигает retail watermark, не трогает
+    retail_updated_at (apply_rows с set_mark=False), не создаёт строк, не меняет id.
+    Цена холостого хода: один COUNT по is_stub; если stub нет — в 1С не идём.
     """
     dim = f'{cfg["dim_schema"]}.{cfg["dim_table"]}'
     key = resolve_dwh_key(cfg)
-    guids = [r[0] for r in pg.get_records(
-        f'SELECT {key}::text FROM {dim} WHERE is_stub')]
-    before = len(guids)
-    if not guids:
-        return {"stub_before": 0, "stub_found": 0, "stub_filled": 0, "stub_after": 0}
+    before = pg.get_first(f"SELECT count(*) FROM {dim} WHERE is_stub")[0]
+    start = read_stub_cursor(pg, cfg["register_id"]) if cursor is None else cursor
+
+    def _empty(last_id: int) -> dict:
+        return {"stub_before": before, "stub_requested": 0, "stub_found": 0,
+                "stub_filled": 0, "stub_not_found": 0, "stub_incomplete": 0,
+                "stub_after": before, CURSOR_KEY: last_id, "stub_guids": []}
+
+    if not before:
+        return _empty(0)
+
+    def _take(after_id: int):
+        return pg.get_records(
+            f"SELECT id, {key}::text FROM {dim} "
+            f"WHERE is_stub AND id > %s ORDER BY id LIMIT %s",
+            parameters=(after_id, stub_batch))
+
+    picked = _take(start)
+    if not picked and start:
+        # хвост очереди пуст — сразу заходим с начала круга, не теряя тик
+        start, picked = 0, _take(0)
+    if not picked:
+        return _empty(0)
+
+    ids = [r[0] for r in picked]
+    guids = [r[1] for r in picked]
+    # порция короче лимита — дальше по id ничего нет, следующий проход с начала
+    next_cursor = 0 if len(picked) < stub_batch else ids[-1]
 
     rows = fetch_from_1c(ms, cfg, guids, batch)
-    filled = apply_rows(pg, cfg, rows, mark=None, set_mark=False,
-                        batch=batch, dry_run=dry_run)
+    tgts = [m["tgt"] for m in cfg["mappings"]]
+    disp = display_columns(cfg)
+    disp_pos = [tgts.index(c) for c in disp]
+    if not disp:
+        _warn(f"{cfg['code']}: не замаплено ни одно из полей {DISPLAY_COLS} — "
+              f"полноту строки проверять не по чему, stub снимается по факту наличия в 1С")
+
+    complete = [r for r in rows if is_complete(r, disp_pos)]
+    incomplete = [r for r in rows if not is_complete(r, disp_pos)]
+
+    filled = apply_rows(pg, cfg, complete, mark=None, set_mark=False,
+                        batch=batch, dry_run=dry_run, clear_stub=True)
+    if incomplete:
+        # данные пишем, флаг не снимаем — объект в 1С есть, но показать нечего
+        apply_rows(pg, cfg, incomplete, mark=None, set_mark=False,
+                   batch=batch, dry_run=dry_run, clear_stub=False)
+
     after = before - filled if dry_run else pg.get_first(
         f"SELECT count(*) FROM {dim} WHERE is_stub")[0]
-    print(f"    stub-pass: было {before} | найдено в 1С {len(rows)} | "
-          f"{'заполнилось бы' if dry_run else 'заполнено'} {filled} | осталось {after}")
-    key_pos = [m["tgt"] for m in cfg["mappings"]].index(key)
-    return {"stub_before": before, "stub_found": len(rows),
-            "stub_filled": filled, "stub_after": after,
-            "stub_guids": [str(r[key_pos]) for r in rows]}
+    key_pos = tgts.index(key)
+    print(f"    stub-pass: было {before} | взято {len(picked)} (id > {start}, лимит {stub_batch}) | "
+          f"найдено в 1С {len(rows)} | нет в 1С {len(picked) - len(rows)} | "
+          f"неполных {len(incomplete)} | {'заполнилось бы' if dry_run else 'заполнено'} {filled} | "
+          f"осталось {after} | {CURSOR_KEY}={next_cursor}")
+    return {"stub_before": before, "stub_requested": len(picked),
+            "stub_found": len(rows), "stub_filled": filled,
+            "stub_not_found": len(picked) - len(rows),
+            "stub_incomplete": len(incomplete), "stub_after": after,
+            CURSOR_KEY: next_cursor,
+            "stub_guids": [str(r[key_pos]) for r in complete]}
 
 
 def parent_col(cfg: dict) -> Optional[str]:
@@ -846,14 +961,16 @@ def process_hierarchy(cfg: dict, pg, ms, batch: int, dry_run: bool) -> dict:
 
 
 def process(dim_code: str, pg, rt, ms, mode: str, batch: int,
-            dry_run: bool, set_mark: bool = False) -> Optional[dict]:
+            dry_run: bool, set_mark: bool = False,
+            stub_batch: int = STUB_BATCH_DEFAULT) -> Optional[dict]:
     """Обёртка с журналированием в load_history — для видимости в UI-портале."""
     cfg_probe = read_config(pg, dim_code)
     run_id = None
     if cfg_probe and not dry_run:
         run_id = open_history(pg, cfg_probe["register_id"], mode)
     try:
-        res = _process_inner(dim_code, pg, rt, ms, mode, batch, dry_run, set_mark)
+        res = _process_inner(dim_code, pg, rt, ms, mode, batch, dry_run, set_mark,
+                             stub_batch=stub_batch)
     except Exception as e:
         close_history(pg, run_id, "failed", error=str(e)[:2000])
         raise
@@ -867,7 +984,14 @@ def process(dim_code: str, pg, rt, ms, mode: str, batch: int,
             parts.append(f"watermark={res.get('watermark') or res.get('mark')}")
             parts.append(f"changed={res.get('changed', res.get('found', 0))}")
         if "stub_before" in res:
-            parts.append(f"stub={res['stub_before']}→{res['stub_after']}")
+            # компактные метрики stub-pass в существующий checkpoint: их читает
+            # UI-портал, и отсюда же следующий прогон берёт курсор очереди
+            parts.append(
+                f"stub={res['stub_before']}→{res['stub_after']}; "
+                f"requested={res.get('stub_requested', 0)}; found={res.get('stub_found', 0)}; "
+                f"filled={res.get('stub_filled', 0)}; not_found={res.get('stub_not_found', 0)}; "
+                f"incomplete={res.get('stub_incomplete', 0)}; "
+                f"{CURSOR_KEY}={res.get(CURSOR_KEY, 0)}")
         close_history(pg, run_id, "success",
                       rows_loaded=res.get("touched", 0) + res.get("stub_filled", 0),
                       checkpoint="; ".join(parts))
@@ -875,7 +999,8 @@ def process(dim_code: str, pg, rt, ms, mode: str, batch: int,
 
 
 def _process_inner(dim_code: str, pg, rt, ms, mode: str, batch: int,
-                   dry_run: bool, set_mark: bool = False) -> Optional[dict]:
+                   dry_run: bool, set_mark: bool = False,
+                   stub_batch: int = STUB_BATCH_DEFAULT) -> Optional[dict]:
     cfg = read_config(pg, dim_code)
     if not cfg:
         print(f"  ✗ {dim_code}: нет конфига (registers / register_sources) — заведите привязку")
@@ -898,7 +1023,7 @@ def _process_inner(dim_code: str, pg, rt, ms, mode: str, batch: int,
             # будет — инкремент для него = дозаполнить stub из 1С, и только.
             print("    инкремент    : source-only — retail-части нет, только stub-pass")
             res = {"dim": cfg["code"], "touched": 0, "source_only": True}
-        res.update(process_stub_pass(cfg, pg, ms, batch, dry_run))
+        res.update(process_stub_pass(cfg, pg, ms, batch, dry_run, stub_batch=stub_batch))
         # Плоская иерархия и lookups — только для затронутых строк. Если среди
         # них есть ГРУППА со сменившимся parent, путь её потомков устареет до
         # следующего reload — см. предупреждение ниже; массовый пересчёт
@@ -1014,6 +1139,9 @@ def main() -> None:
                     help="hierarchy — догрузить недостающих предков по _ParentIDRRef")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--batch", type=int, default=500)
+    ap.add_argument("--stub-batch", type=int, default=STUB_BATCH_DEFAULT,
+                    help=f"сколько stub-строк обрабатывать за проход (default {STUB_BATCH_DEFAULT}); "
+                         f"очередь по id циклическая, курсор — в checkpoint прошлого прогона")
     ap.add_argument("--set-mark", action="store_true",
                     help="reload: поставить ОДНУ max retail-дату всем строкам dim. "
                          "По умолчанию reload метку НЕ трогает — иначе per-row метки "
@@ -1054,7 +1182,7 @@ def main() -> None:
     for code in targets:
         try:
             r = process(code, pg, rt, ms, args.mode, args.batch,
-                        args.dry_run, set_mark)
+                        args.dry_run, set_mark, stub_batch=args.stub_batch)
             (results if r else failed).append(r or code)
         except Exception as e:
             print(f"    ✗ ОШИБКА: {str(e)[:200]}")

@@ -1311,7 +1311,12 @@ def _contract_system_columns(target: dict, is_reference_dim: bool, has_retail: b
         # Контракт dim-слоя (load_dim_from_config + 007_dim_layer): etl_updated_at, is_stub,
         # retail_updated_at у retail-привязанных. etl_loaded_at DIM-загрузчик не пишет.
         cols = [("etl_updated_at", "TIMESTAMP", "dim-слой: момент последнего изменения строки загрузчиком"),
-                ("is_stub", "BOOLEAN DEFAULT FALSE", "dim-слой: строка создана stub-резолвом, имя ещё не приехало")]
+                # DEFAULT TRUE — не косметика: post_load факта заводит строку одним
+                # INSERT ... (guid), флаг берётся из DEFAULT колонки. С DEFAULT FALSE
+                # новый справочник молча не дал бы ни одного stub, и stub-pass
+                # reference_dim никогда бы его не дозаполнил (миграция 007 — TRUE).
+                ("is_stub", "BOOLEAN NOT NULL DEFAULT TRUE",
+                 "dim-слой: строка создана stub-резолвом, имя ещё не приехало")]
         if has_retail:
             cols.append(("retail_updated_at", "TIMESTAMP", "retail-метка справочника (watermark инкремента)"))
         return cols
