@@ -1062,9 +1062,15 @@ def generate_post_load_sql(target_id: int) -> dict:
             pschema = parent.get("target_schema") or "public"
             fk = _resolve_fk_column(schema, table, parent["target_table"])
             cond = " AND ".join(f"p.{k} = h.{k}" for k in nk)
-            parts.append(f"""-- FK на шапку по natural key ({', '.join(nk)})
+            parts.append(f"""-- FK на шапку по natural key ({', '.join(nk)}).
+-- 1) не привязанные строки — где угодно
 UPDATE {full} p SET {fk} = h.id FROM {pschema}.{parent['target_table']} h
-WHERE {cond} AND p.{fk} IS NULL;""")
+WHERE p.{fk} IS NULL AND {cond};
+-- 2) «висячие» ссылки: шапку пересоздали с новым id после отката упавшего прогона
+--    (аудит 2026-09-15). Скоуп — документы последних загрузок, не вся таблица.
+UPDATE {full} p SET {fk} = h.id FROM {pschema}.{parent['target_table']} h
+WHERE h.etl_updated_at >= timezone('Asia/Almaty', now()) - interval '60 minutes'
+  AND {cond} AND p.{fk} IS NOT NULL AND p.{fk} <> h.id;""")
             summary.append(f"{fk} → {parent['target_table']}.id")
 
     for l in raw_ref_dim_links(target):

@@ -614,11 +614,18 @@ class ETLEngine:
 
     def _cleanup_incomplete_headers(self, changed_uids: List[str], run_started_at, dry_run: bool = False) -> int:
         """
-        Удаляет шапки (dim-target), записанные ЭТИМ прогоном и оставшиеся без позиций
-        в fact-target, — только среди changed_uids прогона. Удалённая шапка становится
-        «отсутствующей в DWH», и добор хвоста перечитает документ целиком следующим тиком.
-        Только путь ошибки: легитимно пустые документы успешных прогонов не трогаем.
-        Возвращает число удалённых (или найденных при dry_run) шапок.
+        Откат неполного документа на пути ошибки: удаляет ШАПКУ и ЕЁ ПОЗИЦИИ одной транзакцией.
+
+        Почему обе таблицы. Таргеты грузятся по очереди и каждый в своей транзакции:
+        шапки → post_load(шапок) → позиции → post_load(позиций, он и ставит <fk>).
+        Если падает последний шаг (deadlock 14.09 19:20), позиции уже вставлены, но
+        <fk> у них NULL. Прошлая версия удаляла только шапку — позиции оставались
+        сиротами, а retry вставлял шапку заново с НОВЫМ id, и <fk> старых позиций
+        указывал на удалённый id (33 dangling-строки, аудит 2026-09-15).
+
+        Scope строго по прогону: recorder ∈ changed_uids И etl_updated_at ≥ старт прогона.
+        Никаких DELETE по периоду. Документ становится «отсутствующим в DWH» целиком,
+        и добор хвоста перечитает его следующим тиком.
         """
         targets = self._get_active_targets()
         dim = next((t for t in targets if t.target_role == "dimension"), None)
@@ -638,18 +645,40 @@ class ETLEngine:
             print(f"cleanup incomplete headers: FK {candidates} не найдена в {fact.full_table_name} — пропуск")
             return 0
         uids = [str(self._normalize_uid(u)) for u in changed_uids if self._normalize_uid(u)]
-        where = (f"WHERE d.recorder = ANY(%s::uuid[]) AND d.etl_updated_at >= %s "
-                 f"AND NOT EXISTS (SELECT 1 FROM {fact.full_table_name} p WHERE p.{fk} = d.id)")
+        if not uids:
+            return 0
+        # Кандидаты: шапки этого прогона, у которых нет ни одной позиции с корректным <fk>.
+        # (позиции, вставленные упавшим прогоном, имеют <fk> IS NULL — поэтому шапка сюда попадает)
+        pick = (f"SELECT d.id, d.recorder, d.recorder_type FROM {dim.full_table_name} d "
+                f"WHERE d.recorder = ANY(%s::uuid[]) AND d.etl_updated_at >= %s "
+                f"AND NOT EXISTS (SELECT 1 FROM {fact.full_table_name} p WHERE p.{fk} = d.id)")
         if dry_run:
-            n = pg.get_first(f"SELECT count(*) FROM {dim.full_table_name} d {where}", parameters=(uids, run_started_at))[0]
-        else:
-            with pg.get_conn() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(f"DELETE FROM {dim.full_table_name} d {where}", (uids, run_started_at))
-                    n = cur.rowcount
-                conn.commit()
-        print(f"cleanup incomplete headers [{dim.target_table}]: {'найдено' if dry_run else 'удалено'} {n} шапок без позиций, записанных прогоном с {run_started_at}")
-        return int(n or 0)
+            rows = pg.get_records(pick, parameters=(uids, run_started_at))
+            print(f"cleanup incomplete document [{dim.target_table}]: найдено {len(rows)} шапок без позиций "
+                  f"(прогон с {run_started_at}) — dry-run, ничего не удалено")
+            return len(rows)
+        deleted_h = deleted_p = 0
+        with pg.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(pick, (uids, run_started_at))
+                rows = cur.fetchall()
+                if rows:
+                    recs = [r[0] for r in rows]          # id шапок
+                    nks = [(str(r[1]), r[2]) for r in rows]  # (recorder, recorder_type)
+                    # 1) позиции этих документов, тронутые ЭТИМ прогоном (в т.ч. с <fk> IS NULL)
+                    cur.execute(
+                        f"DELETE FROM {fact.full_table_name} p "
+                        f"WHERE (p.recorder, p.recorder_type) IN %s AND p.etl_updated_at >= %s",
+                        (tuple(nks), run_started_at),
+                    )
+                    deleted_p = cur.rowcount
+                    # 2) сами шапки
+                    cur.execute(f"DELETE FROM {dim.full_table_name} d WHERE d.id = ANY(%s)", (recs,))
+                    deleted_h = cur.rowcount
+            conn.commit()
+        print(f"cleanup incomplete document [{dim.target_table}]: удалено {deleted_h} шапок и "
+              f"{deleted_p} позиций прогона с {run_started_at} (документы перечитает добор хвоста)")
+        return deleted_h
 
     # ------------------------------------------------------------------
     # incremental helpers
