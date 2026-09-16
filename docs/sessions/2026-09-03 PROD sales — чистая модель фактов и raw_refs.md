@@ -94,3 +94,12 @@ date: 2026-09-03
 - Индексы (`migrations/prod/024`, применено CONCURRENTLY): `sales_positions(sales_id)` 181 МБ, `sales(etl_updated_at)` 40 МБ — оба шага post_load перешли с Seq Scan на Index Scan.
 - Проверка на реальном reload 14–15.09: специально испорчены 4 позиции (2 → NULL, 2 → dangling) — post_load починил все 4, привязав к тем же исходным id шапок.
 - Итог: NULL 0, dangling 0, дублей 0, шапок без позиций 0. Сентябрь сходится с 1С в ноль (25 012 док / 33 860 строк), полная история 175/175 месяцев Δ=0. Инкремент возвращён, тики success.
+
+## 2026-09-16: превентивный hardening orders → order_positions
+- Commit sales-фикса: `ae9d7ea`.
+- Flow orders проверен фактически: таргеты `orders` (dimension, priority 0) и `order_positions` (fact, parent 102, priority 1) — структура идентична sales; общий `_cleanup_incomplete_headers` корректно выбирает FK `order_id` (кандидаты `orders_id` → нет, `order_id` → есть), dry-run на PROD ничего не удалил.
+- PROD read-only: `order_id IS NULL` 0, dangling 0, дублей 0 — данные не трогали. 699 «шапок без позиций» разобраны: 545 исторических + 153 старых, из 35 проверенных в 1С строк нет ни у одной (легитимно пустые заказы); свежие документы без позиций догружаются следующим тиком.
+- Миграция 025 (применена): резолв FK двумя точечными UPDATE — `order_id IS NULL` где угодно и dangling `order_id <> o.id` в окне 60 минут.
+- Миграция 026 (применена CONCURRENTLY): `idx_orders_etl_updated_at` (3 МБ) — его требуют и удаление исчезнувших строк (022), и новый резолв. `idx_order_positions_order_id` уже был, дубль не создавали.
+- TEST fault simulation на изолированных probe-таблицах: боевой SQL из PROD metadata исправил 2 строки NULL и 2 dangling, контрольный документ не тронут; семантика отката удалила аварийный документ целиком (шапка + позиции), корректный не задет; probe удалены.
+- После изменений: TEST и PROD тики success, PROD integrity orders 0/0/0/0, sales 0/0/0/0.
