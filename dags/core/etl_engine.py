@@ -870,6 +870,54 @@ class ETLEngine:
 
         return {"loaded": loaded, "extracted": extracted, "recorders": returned_recorders}
 
+    def reload_documents(self, uids: List[str], uid_to_updated_at: Optional[Dict[str, "datetime"]] = None) -> Dict[str, int]:
+        """
+        Точечно перечитать конкретные документы по recorder — без окна и без retail.
+
+        Зачем отдельная точка входа. Инкремент узнаёт «что изменилось» от retail, а retail
+        сигналит не обо всём: возвраты без чека в нём отсутствуют, правки B2B-реализаций
+        невидимы (см. CLAUDE.md). Страховочная сверка (tools/sales_reconcile) сравнивает
+        свежий хвост 1С с витриной, находит такие документы сама и просит движок перечитать
+        именно их. Логика загрузки при этом та же самая — _process_target_incremental:
+        те же мэппинги, тот же upsert, тот же post_load. Здесь отличается только источник
+        списка uid, никакой отдельной бизнес-логики sales тут нет.
+
+        Почему uid_to_updated_at по умолчанию None. Retail-метки у этих документов нет —
+        он про них и не знал. Выдумывать её нельзя: MAX(retail_updated_at) это watermark
+        инкремента, и любая фальшивая метка сдвинула бы его вперёд, потеряв реальные
+        сигналы в пропущенном интервале. Без карты колонка retail_updated_at в df не
+        попадает вовсе: upsert сохраняет её у существующих строк и оставляет NULL у новых,
+        а NULL в MAX не участвует — watermark не двигается ни вперёд, ни назад.
+
+        Исчезнувшие строки внутри перечитанного документа убирает штатный post_load
+        (DELETE по etl_updated_at в окне последних загрузок) — здесь ничего своего нет.
+        """
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+
+        uids = [u for u in (self._normalize_uid(x) for x in uids) if u]
+        if not uids:
+            print("reload_documents: пустой список uid — нечего перечитывать")
+            return {}
+
+        pg_meta = PostgresHook(postgres_conn_id=self.config_conn_id)
+        results: Dict[str, int] = {}
+        # тот же advisory_lock, что у инкремента: параллельный тик по этому регистру
+        # не должен идти одновременно со сверкой
+        with self._advisory_lock(pg_meta, self.config.id):
+            run_id = self._open_history_run(pg_meta, "reconcile")
+            try:
+                for target in self._get_active_targets():
+                    res = self._process_target_incremental(
+                        target=target, changed_uids=uids, uid_to_updated_at=uid_to_updated_at)
+                    results[target.target_table] = res["loaded"]
+                self._close_history_run(
+                    pg_meta, run_id, "success", rows_loaded=sum(results.values()),
+                    checkpoint=f"reconcile; documents={len(uids)}")
+            except Exception as e:
+                self._close_history_run(pg_meta, run_id, "failed", error=_format_error(e))
+                raise
+        return results
+
     def _delete_missing(self, targets: List["TargetConfig"], missing_uids: List[str]):
         """
         Удаление строк по recorder из target-ов для документов, которых нет в MSSQL

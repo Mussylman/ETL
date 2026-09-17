@@ -63,6 +63,46 @@ def _run_reference_dim(code: str, config_conn_id: str, retail_conn_id: str, mssq
     return res
 
 
+# Страховочная сверка хвоста: сколько документов чиним за один прогон. Предохранитель на
+# случай массового расхождения — остаток заберёт следующий час, а не один гигантский reload.
+RECONCILE_LIMIT = 500
+
+
+def _run_sales_reconcile(codes, config_conn_id: str, retail_conn_id: str, mssql_conn_id: str, **context):
+    """
+    Раз в час: сверить свежий хвост 1С с витриной и перечитать разошедшиеся документы.
+
+    Зачем в этом же DAG, а не отдельным: сверка — страховочная сетка над тем же регистром,
+    ей нужен тот же advisory_lock и тот же порядок после загрузки. Отдельный DAG дал бы
+    вторую точку правды о расписании и конкурировал бы за лок.
+
+    Почему guard по минуте, а не hourly-расписание: DAG тикает каждые 5 минут, и сверка
+    на каждом тике была бы лишней нагрузкой на боевую 1С. Таска создаётся всегда (её видно
+    в UI каждый тик), но работает только на тике начала часа. Ручной запуск можно заставить
+    отработать сразу: conf {"reconcile": true}.
+    """
+    import sys
+    if DAGS_PATH not in sys.path:
+        sys.path.insert(0, DAGS_PATH)
+    from core.tools.sales_reconcile import SalesReconciler
+
+    dag_run = context.get("dag_run")
+    forced = bool((getattr(dag_run, "conf", None) or {}).get("reconcile"))
+    logical = context.get("logical_date")
+    if not forced and logical is not None and logical.minute >= 5:
+        print(f"тик {logical}: сверка идёт раз в час — на этом тике пропускаю")
+        return {"skipped": True}
+
+    out = {}
+    for code in codes:
+        print(f"\n=== страховочная сверка: {code} ===")
+        out[code] = SalesReconciler(
+            conn_id=config_conn_id, register_code=code,
+            mssql_conn_id=mssql_conn_id, retail_conn_id=retail_conn_id,
+        ).run(apply=True, limit=RECONCILE_LIMIT)
+    return out
+
+
 def _run_etl_engine(code: str, config_conn_id: str, retail_conn_id: str, mssql_conn_id: str):
     """Регистры движка (accumrg_with_documents, document_with_vt) → ETLEngine(mode='incremental')."""
     import sys
@@ -202,6 +242,24 @@ def build_incremental_dag(
                 if chain:
                     chain[-1] >> task
                 chain.append(task)
+
+        # Страховочная сетка поверх retail-инкремента: retail сигналит не обо всём
+        # (возвраты без чека отсутствуют, правки B2B невидимы), плюс документам в 1С
+        # меняют дату. Сверка идёт последней в цепочке — чтобы не конкурировать
+        # за advisory_lock с только что отработавшим регистром.
+        reconcilable = [code for code, ptype in supported if ptype == "accumrg_with_documents"]
+        if reconcilable:
+            guard = PythonOperator(
+                task_id="reconcile__tail_guard",
+                python_callable=_run_sales_reconcile,
+                op_args=[reconcilable],
+                op_kwargs=conn_kwargs,
+                trigger_rule="all_done",
+                retries=0,
+                execution_timeout=timedelta(minutes=20),
+            )
+            if chain:
+                chain[-1] >> guard
 
         if unsupported or error:
             PythonOperator(
