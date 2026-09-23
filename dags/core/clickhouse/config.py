@@ -51,6 +51,7 @@ class SyncSpec:
 
     checksum_columns: List[str]
     measure_columns: List[str]
+    reconcile_metrics: dict
 
     columns: List[Column] = field(default_factory=list)
 
@@ -86,7 +87,7 @@ _SELECT = """
            s.partition_expr, s.order_by, s.load_mode, s.partition_column,
            s.partition_granularity, s.watermark_column, s.business_key, s.batch_size,
            s.empty_partition_policy, s.hot_window, s.sweep_interval_min,
-           s.checksum_columns, s.measure_columns
+           s.checksum_columns, s.measure_columns, s.reconcile_metrics
       FROM etl_meta.ch_sync s
 """
 
@@ -102,6 +103,7 @@ def _build(pg, row) -> SyncSpec:
         watermark_column=row[15], business_key=list(row[16] or []), batch_size=row[17],
         empty_partition_policy=row[18], hot_window=row[19], sweep_interval_min=row[20],
         checksum_columns=list(row[21] or []), measure_columns=list(row[22] or []),
+        reconcile_metrics=row[23] or {},
     )
     spec.columns = [
         Column(ordinal=c[0], source_expr=c[1], target_column=c[2], target_type=c[3], codec=c[4])

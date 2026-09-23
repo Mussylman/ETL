@@ -30,17 +30,34 @@ _MS_HASH = ("SUM(CONVERT(bigint, CONVERT(binary(4), "
 _CH_HASH = "sum(reinterpretAsUInt32(reverse(unhex(substring(lower(hex(MD5({canon}))), 1, 8)))))"
 
 
-def _canon_pg(cols: List[str]) -> str:
-    return "lower(concat_ws('|', " + ", ".join(cols) + "))"
+def _types(spec) -> Dict[str, str]:
+    return {c.target_column: c.target_type for c in spec.columns}
 
 
-def _canon_ms(cols: List[str]) -> str:
-    return "LOWER(CONCAT_WS('|', " + ", ".join(f"CAST({c} AS nvarchar(64))" for c in cols) + "))"
+# Нормализуется ТИП колонки, а не вся строка целиком. Сплошной lower() применять
+# нельзя: в ClickHouse он работает только по ASCII, а в PostgreSQL по Unicode —
+# на кириллических названиях справочников канонические строки расходятся, хотя
+# данные одинаковы. Регистр нужно править только у UUID: MSSQL отдаёт их
+# заглавными, PostgreSQL и ClickHouse — строчными.
+def _canon_pg(spec, cols: List[str]) -> str:
+    t = _types(spec)
+    parts = [f"lower({c}::text)" if t.get(c, "").startswith("UUID") else f"{c}::text"
+             for c in cols]
+    return "concat_ws('|', " + ", ".join(parts) + ")"
 
 
-def _canon_ch(cols: List[str]) -> str:
-    inner = ", '|', ".join(f"toString({c})" for c in cols)
-    return f"lower(concat({inner}))"
+def _canon_ms(spec, cols: List[str]) -> str:
+    t = _types(spec)
+    parts = [(f"LOWER(CONVERT(nvarchar(64), {c}))" if t.get(c, "").startswith("UUID")
+              else f"CONVERT(nvarchar(64), {c})") for c in cols]
+    return "CONCAT_WS('|', " + ", ".join(parts) + ")"
+
+
+def _canon_ch(spec, cols: List[str]) -> str:
+    t = _types(spec)
+    parts = [f"lower(toString({c}))" if t.get(c, "").startswith("UUID") else f"toString({c})"
+             for c in cols]
+    return "concat(" + ", '|', ".join(parts) + ")"
 
 
 def fingerprint_sql(spec, dialect: str, where: str = "") -> str:
@@ -53,11 +70,11 @@ def fingerprint_sql(spec, dialect: str, where: str = "") -> str:
 
     if spec.checksum_columns:
         if dialect == "postgres":
-            parts.append(_PG_HASH.format(canon=_canon_pg(spec.checksum_columns)))
+            parts.append(_PG_HASH.format(canon=_canon_pg(spec, spec.checksum_columns)))
         elif dialect == "mssql":
-            parts.append(_MS_HASH.format(canon=_canon_ms(spec.checksum_columns)))
+            parts.append(_MS_HASH.format(canon=_canon_ms(spec, spec.checksum_columns)))
         else:
-            parts.append(_CH_HASH.format(canon=_canon_ch(spec.checksum_columns)))
+            parts.append(_CH_HASH.format(canon=_canon_ch(spec, spec.checksum_columns)))
     else:
         parts.append("0")
 
@@ -123,3 +140,26 @@ def to_json(spec, src_row, dst_row, diff) -> Dict:
         "diff": [{"metric": n, "source": a, "target": b} for n, a, b in diff],
         "ok": not diff,
     }
+
+
+def extra_checks(spec, table: str) -> List[Tuple[str, str]]:
+    """
+    Проверки, которых не выражают отпечатки: уникальность и обязательные значения.
+    Задаются конфигом в reconcile_metrics, а не кодом:
+        {"unique": [["id"], ["guid"]], "not_empty": ["guid"]}
+    Каждый SQL обязан вернуть 0 — иначе партиция не публикуется.
+    """
+    m = spec.reconcile_metrics or {}
+    out: List[Tuple[str, str]] = []
+    for cols in m.get("unique", []):
+        keys = ", ".join(cols)
+        nums = ", ".join(str(i + 1) for i in range(len(cols)))
+        out.append((f"дубли {'+'.join(cols)}",
+                    f"SELECT count() FROM (SELECT {keys} FROM {table} "
+                    f"GROUP BY {nums} HAVING count() > 1)"))
+    for c in m.get("not_empty", []):
+        # пустой строкой считается и '', и нулевой uuid 1С — он семантически NULL
+        out.append((f"пустые {c}",
+                    f"SELECT countIf(toString({c}) IN ('', "
+                    f"'00000000-0000-0000-0000-000000000000')) FROM {table}"))
+    return out

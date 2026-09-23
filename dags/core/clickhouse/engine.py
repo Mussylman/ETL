@@ -212,14 +212,22 @@ def sync_partition(pg, ch: ClickHouse, spec, src, key: str, apply: bool) -> dict
     diff = rec.compare(spec, fp_src, fp_stage)
     dup_sql = rec.duplicates_sql(spec, spec.stage_fqn)
     dup = int(ch.scalar(dup_sql) or 0) if dup_sql else 0
+    # проверки из конфигурации: уникальность ключей, обязательные значения
+    extra = []
+    for label, sql in rec.extra_checks(spec, spec.stage_fqn):
+        n = int(ch.scalar(sql) or 0)
+        if n:
+            extra.append((label, n))
     res["t_verify"] = round(time.monotonic() - t1, 2)
     res["reconcile"] = rec.to_json(spec, fp_src, fp_stage, diff)
     res["reconcile"]["duplicates"] = dup
+    res["reconcile"]["checks"] = {l: n for l, n in extra}
 
-    if diff or dup:
+    if diff or dup or extra:
         res["status"] = "failed"
         res["note"] = "; ".join(f"{n}: источник {a} против staging {b}" for n, a, b in diff) \
-                      + (f"; дублей business key {dup}" if dup else "")
+                      + (f"; дублей business key {dup}" if dup else "") \
+                      + "".join(f"; {l}: {n}" for l, n in extra)
         _history(pg, spec, "apply", key, "failed", started, res["rows_source"],
                  int(fp_stage[0]), None, res["reconcile"], res["note"])
         _save_state(pg, spec, key, "failed", error=res["note"])
