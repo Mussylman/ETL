@@ -52,6 +52,7 @@ class SyncSpec:
     checksum_columns: List[str]
     measure_columns: List[str]
     reconcile_metrics: dict
+    lookup: dict
 
     columns: List[Column] = field(default_factory=list)
 
@@ -67,6 +68,25 @@ class SyncSpec:
     @property
     def target_columns(self) -> List[str]:
         return [c.target_column for c in self.columns]
+
+    # Колонки, приходящие из lookup, в источнике отсутствуют: их значение
+    # подставляется join'ом уже внутри ClickHouse, а не стримится.
+    LOOKUP_MARK = "@lookup"
+
+    @property
+    def stream_columns(self) -> List["Column"]:
+        return [c for c in self.columns if not c.source_expr.startswith(self.LOOKUP_MARK)]
+
+    @property
+    def raw_fqn(self) -> str:
+        return f"{self.target_database}.{self.target_table}_raw"
+
+    def ddl_raw(self) -> str:
+        """Сырой staging: ровно то, что приходит из источника, без обогащённых колонок."""
+        cols = ",\n".join(c.ddl() for c in self.stream_columns)
+        return (f"CREATE TABLE IF NOT EXISTS {self.raw_fqn}\n(\n{cols}\n)\n"
+                f"ENGINE = MergeTree\nPARTITION BY {self.partition_expr}\n"
+                f"ORDER BY ({', '.join(c.target_column for c in self.stream_columns[:1])})")
 
     @property
     def is_partitioned(self) -> bool:
@@ -87,7 +107,7 @@ _SELECT = """
            s.partition_expr, s.order_by, s.load_mode, s.partition_column,
            s.partition_granularity, s.watermark_column, s.business_key, s.batch_size,
            s.empty_partition_policy, s.hot_window, s.sweep_interval_min,
-           s.checksum_columns, s.measure_columns, s.reconcile_metrics
+           s.checksum_columns, s.measure_columns, s.reconcile_metrics, s.lookup
       FROM etl_meta.ch_sync s
 """
 
@@ -104,6 +124,7 @@ def _build(pg, row) -> SyncSpec:
         empty_partition_policy=row[18], hot_window=row[19], sweep_interval_min=row[20],
         checksum_columns=list(row[21] or []), measure_columns=list(row[22] or []),
         reconcile_metrics=row[23] or {},
+        lookup=row[24] or {},
     )
     spec.columns = [
         Column(ordinal=c[0], source_expr=c[1], target_column=c[2], target_type=c[3], codec=c[4])

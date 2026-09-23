@@ -157,6 +157,10 @@ def extra_checks(spec, table: str) -> List[Tuple[str, str]]:
         out.append((f"дубли {'+'.join(cols)}",
                     f"SELECT count() FROM (SELECT {keys} FROM {table} "
                     f"GROUP BY {nums} HAVING count() > 1)"))
+    for c in m.get("not_zero", []):
+        # обогащённая колонка без соответствия в справочнике получает 0 —
+        # это не «неизвестно», а несошедшийся lookup, и публиковать его нельзя
+        out.append((f"без соответствия {c}", f"SELECT countIf({c} = 0) FROM {table}"))
     for c in m.get("not_empty", []):
         # пустой строкой считается и '', и нулевой uuid 1С — он семантически NULL
         out.append((f"пустые {c}",

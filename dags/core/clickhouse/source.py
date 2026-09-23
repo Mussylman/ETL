@@ -36,9 +36,14 @@ class Source:
         return self.quote(spec.source_schema, spec.source_object)
 
     def select_sql(self, where: str = "") -> str:
-        """SELECT колонок в порядке ordinal. Выражения берутся из конфигурации."""
+        """
+        SELECT колонок в порядке ordinal. Выражения берутся из конфигурации.
+
+        Обогащаемые колонки сюда не попадают: в источнике их нет, их значение
+        подставляется соединением со справочником уже внутри ClickHouse.
+        """
         cols = ",\n       ".join(
-            f"{c.source_expr} AS {c.target_column}" for c in self.spec.columns)
+            f"{c.source_expr} AS {c.target_column}" for c in self.spec.stream_columns)
         return f"SELECT {cols}\n  FROM {self.base_query()}{where}"
 
     def partition_filter(self, key: str) -> str:

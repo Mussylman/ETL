@@ -33,8 +33,11 @@ def grants(spec) -> str:
       ALTER DELETE                    — на цели, этого требует REPLACE PARTITION
     CREATE/DROP TABLE не выдаются никогда.
     """
-    return (f"GRANT TRUNCATE, ALTER MOVE PARTITION ON {spec.stage_fqn} TO etl_writer;\n"
-            f"GRANT ALTER DELETE ON {spec.fqn} TO etl_writer;")
+    g = (f"GRANT TRUNCATE, ALTER MOVE PARTITION ON {spec.stage_fqn} TO etl_writer;\n"
+         f"GRANT ALTER DELETE ON {spec.fqn} TO etl_writer;")
+    if spec.lookup:
+        g += f"\nGRANT TRUNCATE ON {spec.raw_fqn} TO etl_writer;"
+    return g
 
 
 def main() -> int:
@@ -54,8 +57,10 @@ def main() -> int:
 
     for spec in specs:
         print(f"\n=== {spec.code} → {spec.fqn} ===")
-        for table in (spec.fqn, spec.stage_fqn):
-            ddl = spec.ddl(table)
+        tables = [(spec.fqn, spec.ddl(spec.fqn)), (spec.stage_fqn, spec.ddl(spec.stage_fqn))]
+        if spec.lookup:
+            tables.append((spec.raw_fqn, spec.ddl_raw()))
+        for table, ddl in tables:
             if args.apply:
                 run(args.ch_config, ddl)
                 print(f"   создана {table}")

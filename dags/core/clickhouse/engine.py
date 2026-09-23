@@ -133,9 +133,17 @@ def affected_partitions(pg, ch: ClickHouse, spec, src, force_sweep: bool = False
             if k not in keys:
                 keys.add(k); reason[k] = "расхождение отпечатка (sweep)"
 
-    # партиции, которых в источнике нет, а в ClickHouse есть — не удаляем молча
     ch_keys = {x.strip() for x in (ch.query(
         f"SELECT DISTINCT {spec.partition_expr} FROM {spec.fqn}") or "").split("\n") if x.strip()}
+
+    # Партиция есть в источнике и полностью отсутствует в цели — берём ВСЕГДА,
+    # не дожидаясь sweep. Иначе догрузка истории молча ограничивалась бы горячим
+    # окном, а пропуск выглядел бы как успешный прогон.
+    for k in sorted(set(src_keys) - ch_keys):
+        if k not in keys:
+            keys.add(k); reason[k] = "нет в цели"
+
+    # партиции, которых в источнике нет, а в ClickHouse есть — не удаляем молча
     orphan = sorted(ch_keys - set(src_keys))
 
     return {"keys": sorted(keys), "reason": reason, "orphan": orphan,
@@ -215,7 +223,30 @@ def sync_partition(pg, ch: ClickHouse, spec, src, key: str, apply: bool) -> dict
         for row in src.stream(sql, spec.batch_size):
             yield "\t".join(fmt_value(v) for v in row) + "\n"
 
-    ch.insert_tsv(spec.stage_fqn, spec.target_columns, lines())
+    if spec.lookup:
+        # Обогащение: часть колонок в источнике отсутствует и подставляется
+        # соединением уже внутри ClickHouse. Так внешний ключ аналитики берётся
+        # из НАШЕГО справочника, а чужой идентификатор источника в витрину
+        # не попадает. Соединять на источнике нельзя — справочник в другой БД.
+        ch.execute(f"TRUNCATE TABLE {spec.raw_fqn}")
+        ch.insert_tsv(spec.raw_fqn, [c.target_column for c in spec.stream_columns], lines())
+        lk = spec.lookup
+        cols, sel = [], []
+        for c in spec.columns:
+            cols.append(c.target_column)
+            if c.source_expr.startswith(spec.LOOKUP_MARK):
+                sel.append(f"l.{lk['return']}")
+            else:
+                sel.append(f"r.{c.target_column}")
+        # LEFT JOIN, а не INNER: строка без соответствия не должна молча исчезнуть.
+        # Она попадёт в staging с нулём и будет поймана проверкой not_zero и сверкой.
+        ch.execute(
+            f"INSERT INTO {spec.stage_fqn} ({', '.join(cols)}) SELECT {', '.join(sel)} "
+            f"FROM {spec.raw_fqn} r LEFT JOIN {lk['table']} l "
+            f"ON l.{lk['lookup_key']} = r.{lk['source_key']}")
+        ch.execute(f"TRUNCATE TABLE {spec.raw_fqn}")
+    else:
+        ch.insert_tsv(spec.stage_fqn, spec.target_columns, lines())
     res["t_stream"] = round(time.monotonic() - t0, 2)
 
     # --- сверка staging с источником ДО касания цели ---------------------
