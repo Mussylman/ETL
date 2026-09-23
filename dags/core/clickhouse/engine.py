@@ -195,6 +195,18 @@ def sync_partition(pg, ch: ClickHouse, spec, src, key: str, apply: bool) -> dict
             return res
         res["note"] = "в источнике 0 строк, партиция очищена (policy=clear)"
 
+    # Партиция уже совпадает с источником — стримить нечего. Сравниваем с ФАКТИЧЕСКОЙ
+    # целью, а не с сохранённым отпечатком: так проверяется реальное состояние, а не
+    # наше представление о нём. Без этого горячее окно переливалось бы каждый запуск.
+    w_dst = "" if key == ALL else f" WHERE {spec.partition_expr} = {int(key)}"
+    if ch.partition_rows(spec.fqn, spec.partition_expr, None if key == ALL else key):
+        fp_now = ch.row(rec.fingerprint_sql(spec, "clickhouse") + f" FROM {spec.fqn}{w_dst}")
+        if not rec.compare(spec, fp_src, fp_now):
+            res["status"] = "skip"
+            res["rows_target"] = int(fp_now[0])
+            _save_state(pg, spec, key, "ok", rows=res["rows_target"])
+            return res
+
     t0 = time.monotonic()
     ch.execute(f"TRUNCATE TABLE {spec.stage_fqn}")
     sql = src.select_sql(where)

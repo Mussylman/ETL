@@ -200,6 +200,7 @@ def build_incremental_dag(
     start_date: datetime = datetime(2026, 9, 1),
     is_paused_upon_creation: bool = True,
     tags=("incremental", "etl"),
+    trigger_dag_id: str = None,
 ) -> DAG:
     supported, unsupported, error = _discover(config_conn_id)
     conn_kwargs = {
@@ -261,6 +262,25 @@ def build_incremental_dag(
             if chain:
                 chain[-1] >> guard
 
+        # Второй hop: перенос витрины в ClickHouse. Запускается ТОЛЬКО после
+        # полностью успешного инкремента — all_success, а не all_done: грузить в
+        # аналитический слой заведомо неполный PostgreSQL незачем.
+        # Сам перенос живёт в clickhouse_sync_dag.py, здесь только связь.
+        if trigger_dag_id:
+            from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+            last = guard if reconcilable else (chain[-1] if chain else None)
+            trigger = TriggerDagRunOperator(
+                task_id="trigger__clickhouse_sync",
+                trigger_dag_id=trigger_dag_id,
+                wait_for_completion=False,
+                reset_dag_run=True,
+                trigger_rule="all_success",
+                retries=0,
+                execution_timeout=timedelta(minutes=2),
+            )
+            if last is not None:
+                last >> trigger
+
         if unsupported or error:
             PythonOperator(
                 task_id="unsupported_report",
@@ -278,4 +298,5 @@ incremental = build_incremental_dag("incremental", "postgre_test_base")
 # PROD — новый, создаётся paused. Включается вручную после контролируемого прогона.
 incremental_prod = build_incremental_dag(
     "incremental_prod", "etl_prod", tags=("incremental", "etl", "prod"),
+    trigger_dag_id="clickhouse_sync",
 )
