@@ -193,8 +193,14 @@ def _run_register(pg, ch: ClickHouse, specs: List, *, mode: str = "patch",
       mode='rebuild' — полная пересборка указанных партиций из 1С (ремонт, sweep, backfill)
       mode='keys'    — патч явного списка документов (ремонт, документы до начала истории);
                        та же классификация, watermark не трогается
-    shadow=True — реестр ключей только читается: прямой путь не пишет в PostgreSQL ничего,
-    кроме собственного состояния.
+    shadow=True — пишет только в shadow-таблицы (влияет на run_mode истории).
+
+    Заготовки справочников прямой путь создаёт всегда: это тот же идемпотентный
+    INSERT … ON CONFLICT (guid) DO NOTHING, что у post_load старого пути, id выдаёт
+    IDENTITY справочника — двух выдающих не бывает. Кто выдаёт id документов, решает
+    реестр (doc_key_scope.issuer): пока это старый путь (pg_facts), окно изменений
+    ограничено сверху его последним успешным окном — прямой путь берёт только
+    документы, которым старый путь уже выдал id.
     """
     from ..etl_engine import ETLEngine, _now_local
 
@@ -210,6 +216,10 @@ def _run_register(pg, ch: ClickHouse, specs: List, *, mode: str = "patch",
     cfg = engine.config
     report: Dict = {"register": register, "mode": mode, "source_key": source_key}
 
+    # id документов выдаёт старый путь — окно не обгоняет его
+    own_scope = header.source_params.get("target")
+    follows_old_path = registry._scope(pg, own_scope)[0] == "pg_facts" if own_scope else True
+
     if mode == "rebuild":
         early = sorted(p for p in (partitions or []) if any(patch.prehistory(sp, p) for sp in specs))
         if early:
@@ -224,7 +234,7 @@ def _run_register(pg, ch: ClickHouse, specs: List, *, mode: str = "patch",
     if mode in ("patch", "keys"):
         prov = DirectChangeProvider(
             pg_meta=pg, ch=ch, source_key=source_key, presence_table=header.fqn,
-            upper_bound=old_path_upper_bound(pg, cfg.id) if shadow else None,
+            upper_bound=old_path_upper_bound(pg, cfg.id) if follows_old_path else None,
             retail_table=cfg.retail_table, retail_conn_id=engine.retail_conn_id,
             config_conn_id="etl_prod", register_id=cfg.id, key_column=cfg.retail_uid_column,
             etl_table=None, etl_conn_id=None)
@@ -235,6 +245,7 @@ def _run_register(pg, ch: ClickHouse, specs: List, *, mode: str = "patch",
                     "1970-01-01 00:00:00", None
             else:
                 cdf, from_ts, to_ts = prov.get_changed_uids()
+                cdf = _with_unresolved(ch, header, cdf)
             cs = changes.classify(cdf, from_ts, to_ts,
                                   ready_lookup=lambda keys: engine.ready_keys(hdr_target, keys),
                                   present_lookup=prov._present_uids)
@@ -275,7 +286,7 @@ def _run_register(pg, ch: ClickHouse, specs: List, *, mode: str = "patch",
             continue
         own = t.target_table if t.target_role == "dimension" else None
         df = registry.resolve(pg, df, refs.dim_links(pg, t.id), refs.register_links(pg, t.id),
-                              own_table=own, create_stubs=not shadow)
+                              own_table=own, create_stubs=True)
         df["etl_updated_at"] = _now_local()
         if t.target_role == "dimension":
             df["retail_updated_at"] = df["recorder"].map(
@@ -338,6 +349,27 @@ def _run_register(pg, ch: ClickHouse, specs: List, *, mode: str = "patch",
         _save_watermark(pg, source_key, to_ts, report)
     report["published"] = published
     return report
+
+
+def _with_unresolved(ch: ClickHouse, header, cdf: pd.DataFrame, days: int = 15) -> pd.DataFrame:
+    """
+    Документы витрины с неразрешённым собственным id (0) за последние days суток —
+    в набор изменений: id выдал ещё не старый путь (он загрузит документ позже), и
+    retail повторно о документе не сообщит. Повторяются, пока id не появится.
+    """
+    if not header.source_params.get("own_id") or "id" not in header.target_columns:
+        return cdf
+    out = ch.query(f"SELECT toString(recorder), max(retail_updated_at) FROM {header.fqn} "
+                   f"WHERE id = 0 AND period >= now() - INTERVAL {int(days)} DAY GROUP BY recorder")
+    rows = [l.split("\t") for l in out.splitlines() if l.strip()]
+    if not rows:
+        return cdf
+    extra = pd.DataFrame({"uid": [r[0] for r in rows],
+                          "updated_at": pd.to_datetime([r[1] for r in rows], errors="coerce")})
+    extra = extra[~extra["uid"].isin(set(cdf["uid"].astype(str).str.lower()))]
+    # метка — та, что уже в витрине (она же вернётся в retail_updated_at шапки)
+    extra["updated_at"] = extra["updated_at"].fillna(pd.Timestamp("1970-01-01"))
+    return pd.concat([cdf, extra], ignore_index=True) if len(extra) else cdf
 
 
 def _save_watermark(pg, source_key: str, to_ts, report: Dict) -> None:
