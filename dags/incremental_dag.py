@@ -10,7 +10,7 @@ config_conn_id — одновременно и конфиг, и целевая �
 Источники общие: MSSQL 1С (mssql_1c_conn) и retail (bd_retail).
 
 DAG намеренно тупой. Он знает ровно три вещи:
-  1. какие регистры активны (etl_meta.registers.is_active);
+  1. какие регистры активны (etl_meta.registers.is_active) и пишутся первым hop'ом (pg_fact_write);
   2. какой у каждого pipeline_type;
   3. какой существующий runner соответствует pipeline_type.
 
@@ -157,7 +157,11 @@ def _discover(config_conn_id: str):
         rows = PostgresHook(postgres_conn_id=config_conn_id).get_records(
             "SELECT code, pipeline_type, "
             "       (retail_table IS NOT NULL AND retail_uid_column IS NOT NULL) "
-            "FROM etl_meta.registers WHERE is_active "
+            "FROM etl_meta.registers r WHERE is_active "
+            # pg_fact_write=false — регистр переключён на прямой путь в ClickHouse: первый hop
+            # (и tail_guard) его в PostgreSQL больше не пишет. Через to_jsonb — контур без
+            # миграции 013 (нет колонки) работает как раньше.
+            "  AND coalesce((to_jsonb(r) ->> 'pg_fact_write')::boolean, true) "
             "ORDER BY pipeline_type NULLS LAST, code")
     except Exception as e:  # noqa: BLE001 — любая ошибка БД одинаково важна
         return [], [], f"{type(e).__name__}: {str(e).splitlines()[0][:200]}"
