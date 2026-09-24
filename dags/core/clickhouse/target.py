@@ -22,7 +22,10 @@ class ClickHouse:
         self.base = ["clickhouse-client", "--host", c.host]
         self.env = dict(os.environ)
         self.env["CLICKHOUSE_USER"] = c.login or "default"
-        self.env["CLICKHOUSE_PASSWORD"] = c.get_password() or ""
+        # .password, а не get_password(): внутри таски Airflow 3 отдаёт Connection
+        # из airflow.sdk, у которого метода get_password() нет. Вне таски приходит
+        # ORM-класс, и там .password тоже есть — одно работает в обоих контекстах.
+        self.env["CLICKHOUSE_PASSWORD"] = (c.password or "")
 
     def query(self, sql: str, fmt: str = "TSV") -> str:
         r = subprocess.run(self.base + ["--query", f"{sql} FORMAT {fmt}"],
