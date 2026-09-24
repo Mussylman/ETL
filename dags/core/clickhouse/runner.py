@@ -13,18 +13,57 @@
 Порядок — priority из конфигурации. Регистр 1С обрабатывается на месте своей
 первой конфигурации, все его цели вместе: они питаются одним извлечением.
 
+Режимы регистров 1С:
+  patch   — набор изменений retail (+ хвост), патч документов;
+  rebuild — пересборка явно указанных партиций;
+  hot     — пересборка горячего окна (текущий и прошлый месяц): слепая зона retail —
+            документы без сигнала, правки некассовых документов;
+  sweep   — сверка всей истории с 1С; несошедшиеся месяцы пересобираются.
+Для остальных источников режим не важен: у них свой поиск затронутых партиций.
+
 Любое расхождение — исключение: плохая партиция не публикуется, цель остаётся
 прежней, причина — в ch_sync_history и ch_sync_partition_state.
 """
 
 from collections import OrderedDict
+from datetime import datetime
 from typing import Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from . import engine as eng
 from . import onec
 from .config import load_group_specs
 from .source import open_source
 from .target import ClickHouse
+
+
+def hot_partitions(now: Optional[datetime] = None) -> List[str]:
+    """Текущий и прошлый месяц по бизнес-времени (Almaty)."""
+    now = now or datetime.now(ZoneInfo("Asia/Almaty"))
+    prev = (now.year - (now.month == 1), 12 if now.month == 1 else now.month - 1)
+    return [f"{prev[0]:04d}{prev[1]:02d}", f"{now.year:04d}{now.month:02d}"]
+
+
+def sweep_partitions(pg, ch, ms, specs: List) -> Dict[str, List]:
+    """
+    Партиции регистра, где ClickHouse не совпал с 1С, — по всем целям, которые умеют
+    сверяться (шапка, собранная из строк регистра, сверяется через строки).
+    """
+    from . import onec_reconcile as orc
+    bad: Dict[str, List] = {}
+    for spec in specs:
+        try:
+            p = orc.plan(pg, spec)
+        except RuntimeError:
+            continue
+        parts = [x for x in ch.query(f"SELECT DISTINCT {spec.partition_expr} FROM {spec.fqn}").split() if x]
+        for part in sorted(parts):
+            if orc.prehistory(p, part):
+                continue
+            d = orc.compare(orc.fingerprint_1c(ms, p, part), orc.fingerprint_ch(ch, spec, p, part), p)
+            if d:
+                bad.setdefault(part, []).append((spec.code, d[:3]))
+    return bad
 
 
 def run_group(group: str, *, mode: str = "patch", partitions: Optional[List[str]] = None,
@@ -54,7 +93,17 @@ def run_group(group: str, *, mode: str = "patch", partitions: Optional[List[str]
         if kind == "onec":
             grp = registers[item]
             shadow = bool((grp[0].source_params or {}).get("shadow"))
-            rep = onec.run_register(pg, ch, grp, mode=mode, partitions=partitions, shadow=shadow)
+            if mode == "hot":
+                rep = onec.run_register(pg, ch, grp, mode="rebuild", partitions=hot_partitions(), shadow=shadow)
+            elif mode == "sweep":
+                from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
+                bad = sweep_partitions(pg, ch, MsSqlHook(mssql_conn_id="mssql_1c_conn"), grp)
+                rep = {"register": item[0], "mode": "sweep", "mismatched": {k: v for k, v in bad.items()}}
+                if bad:
+                    rep.update(onec.run_register(pg, ch, grp, mode="rebuild", partitions=sorted(bad), shadow=shadow))
+                    rep["mode"] = "sweep"
+            else:
+                rep = onec.run_register(pg, ch, grp, mode=mode, partitions=partitions, shadow=shadow)
             report["results"].append(rep)
             if rep.get("failed"):
                 report["failed"].append(f"{item[0]}: {rep['failed']}")

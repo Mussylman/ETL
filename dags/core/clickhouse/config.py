@@ -156,7 +156,14 @@ def load_spec(pg, code: str) -> SyncSpec:
 
 
 def load_active_specs(pg) -> List[SyncSpec]:
-    rows = pg.get_records(_SELECT + " WHERE s.is_active ORDER BY s.priority, s.code")
+    """
+    Активные конфигурации обобщённых источников (postgres / mssql) — для второго hop'а
+    и инструментов, которые умеют только их (ch_report, ch_sync --all, ch_ddl --all).
+    Регистры 1С (onec_register) сюда не входят: их оркеструет только runner по группам
+    (load_group_specs) — одним извлечением на регистр, со своей сверкой с 1С.
+    """
+    rows = pg.get_records(_SELECT + " WHERE s.is_active AND s.source_type <> 'onec_register' "
+                                    "ORDER BY s.priority, s.code")
     return [_build(pg, r) for r in rows]
 
 
