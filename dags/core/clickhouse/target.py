@@ -19,7 +19,8 @@ class ClickHouse:
         from airflow.hooks.base import BaseHook
         c = BaseHook.get_connection(conn_id)
         self.database = c.schema
-        self.base = ["clickhouse-client", "--host", c.host]
+        # max_query_size: список изменившихся документов в патче может быть длинным
+        self.base = ["clickhouse-client", "--host", c.host, "--max_query_size", "104857600"]
         self.env = dict(os.environ)
         self.env["CLICKHOUSE_USER"] = c.login or "default"
         # .password, а не get_password(): внутри таски Airflow 3 отдаёт Connection
@@ -79,6 +80,13 @@ def fmt_value(v) -> str:
         return v.strftime("%Y-%m-%d %H:%M:%S")
     if isinstance(v, Decimal):
         return format(v, "f")
+    if isinstance(v, float):
+        # Из MSSQL numeric приходит float64. str(0.00001) даёт '1e-05', которую
+        # ClickHouse в Decimal не примет. Decimal(repr(v)) — та же кратчайшая
+        # запись, что уходит в PostgreSQL у старого пути, но без экспоненты.
+        if v != v:                       # NaN
+            return "0"
+        return format(Decimal(repr(float(v))), "f")   # float(): у numpy 2 repr = "np.float64(..)"
     if isinstance(v, bool):
         return "1" if v else "0"
     s = str(v)

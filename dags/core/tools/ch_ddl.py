@@ -35,7 +35,7 @@ def grants(spec) -> str:
     """
     g = (f"GRANT TRUNCATE, ALTER MOVE PARTITION ON {spec.stage_fqn} TO etl_writer;\n"
          f"GRANT ALTER DELETE ON {spec.fqn} TO etl_writer;")
-    if spec.lookup:
+    if spec.needs_raw:
         g += f"\nGRANT TRUNCATE ON {spec.raw_fqn} TO etl_writer;"
     return g
 
@@ -58,7 +58,7 @@ def main() -> int:
     for spec in specs:
         print(f"\n=== {spec.code} → {spec.fqn} ===")
         tables = [(spec.fqn, spec.ddl(spec.fqn)), (spec.stage_fqn, spec.ddl(spec.stage_fqn))]
-        if spec.lookup:
+        if spec.needs_raw:
             tables.append((spec.raw_fqn, spec.ddl_raw()))
         for table, ddl in tables:
             if args.apply:

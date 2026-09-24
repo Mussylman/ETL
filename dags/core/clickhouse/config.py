@@ -53,6 +53,8 @@ class SyncSpec:
     measure_columns: List[str]
     reconcile_metrics: dict
     lookup: dict
+    source_params: dict
+    priority: int = 100
 
     columns: List[Column] = field(default_factory=list)
 
@@ -76,6 +78,11 @@ class SyncSpec:
     @property
     def stream_columns(self) -> List["Column"]:
         return [c for c in self.columns if not c.source_expr.startswith(self.LOOKUP_MARK)]
+
+    @property
+    def needs_raw(self) -> bool:
+        """Сырой staging нужен для lookup и для патча документов."""
+        return bool(self.lookup) or self.load_mode == "document_patch"
 
     @property
     def raw_fqn(self) -> str:
@@ -107,7 +114,8 @@ _SELECT = """
            s.partition_expr, s.order_by, s.load_mode, s.partition_column,
            s.partition_granularity, s.watermark_column, s.business_key, s.batch_size,
            s.empty_partition_policy, s.hot_window, s.sweep_interval_min,
-           s.checksum_columns, s.measure_columns, s.reconcile_metrics, s.lookup
+           s.checksum_columns, s.measure_columns, s.reconcile_metrics, s.lookup,
+           s.source_params, s.priority
       FROM etl_meta.ch_sync s
 """
 
@@ -125,6 +133,8 @@ def _build(pg, row) -> SyncSpec:
         checksum_columns=list(row[21] or []), measure_columns=list(row[22] or []),
         reconcile_metrics=row[23] or {},
         lookup=row[24] or {},
+        source_params=row[25] or {},
+        priority=row[26] if row[26] is not None else 100,
     )
     spec.columns = [
         Column(ordinal=c[0], source_expr=c[1], target_column=c[2], target_type=c[3], codec=c[4])
