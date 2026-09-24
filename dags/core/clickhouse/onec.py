@@ -262,9 +262,13 @@ def _run_register(pg, ch: ClickHouse, specs: List, *, mode: str = "patch",
             frames[name] = df[df["recorder"].map(registry._norm_uuid).isin(allowed)].reset_index(drop=True)
         report["outside_partition_docs"] = dropped
 
-    deleted = sorted(set(changed) - returned) if mode == "patch" else []
+    # 1С не вернула документ: либо он удалён (лежит в ClickHouse — патч его уберёт),
+    # либо 1С его ещё не получила (в ClickHouse нет — ждёт в хвосте, ничего не меняется)
+    absent = sorted(set(changed) - returned) if mode == "patch" else []
+    deleted = sorted(prov._present_uids(absent)) if absent else []
     report["returned"] = len(returned)
     report["deleted"] = len(deleted)
+    report["not_in_1c_yet"] = len(absent) - len(deleted)
 
     # публикация: цель за целью в порядке priority
     published: Dict[str, List] = {}
