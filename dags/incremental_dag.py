@@ -63,6 +63,20 @@ def _run_reference_dim(code: str, config_conn_id: str, retail_conn_id: str, mssq
     return res
 
 
+def _pg_fact_write(config_conn_id: str, code: str) -> bool:
+    """
+    Пишет ли первый hop факты регистра в PostgreSQL — проверка в момент выполнения.
+    Discovery отражает признак только в новых версиях DAG, а уже созданный DagRun
+    выполняется по своей версии: без этой проверки он записал бы регистр ещё раз
+    после переключения на прямой путь.
+    """
+    from airflow.providers.postgres.hooks.postgres import PostgresHook
+    r = PostgresHook(postgres_conn_id=config_conn_id).get_first(
+        "SELECT coalesce((to_jsonb(r) ->> 'pg_fact_write')::boolean, true) "
+        "FROM etl_meta.registers r WHERE code = %s", parameters=(code,))
+    return bool(r[0]) if r else True
+
+
 # Страховочная сверка хвоста: сколько документов чиним за один прогон. Предохранитель на
 # случай массового расхождения — остаток заберёт следующий час, а не один гигантский reload.
 RECONCILE_LIMIT = 500
@@ -95,6 +109,10 @@ def _run_sales_reconcile(codes, config_conn_id: str, retail_conn_id: str, mssql_
 
     out = {}
     for code in codes:
+        if not _pg_fact_write(config_conn_id, code):
+            print(f"{code}: переключён на прямой путь (pg_fact_write=false) — сверку PostgreSQL пропускаю")
+            out[code] = {"skipped": "pg_fact_write=false"}
+            continue
         print(f"\n=== страховочная сверка: {code} ===")
         out[code] = SalesReconciler(
             conn_id=config_conn_id, register_code=code,
@@ -110,6 +128,9 @@ def _run_etl_engine(code: str, config_conn_id: str, retail_conn_id: str, mssql_c
         sys.path.insert(0, DAGS_PATH)
     from core.etl_engine import ETLEngine
 
+    if not _pg_fact_write(config_conn_id, code):
+        print(f"{code}: переключён на прямой путь (pg_fact_write=false) — первый hop не пишет")
+        return {"skipped": "pg_fact_write=false"}
     res = ETLEngine(
         register_code=code,
         mode="incremental",
