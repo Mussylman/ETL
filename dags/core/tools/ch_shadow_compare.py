@@ -63,6 +63,7 @@ def main() -> int:
     ap.add_argument("--pair", action="append", required=True, help="old_code:new_code")
     ap.add_argument("--partition", action="append")
     ap.add_argument("--all-partitions", action="store_true")
+    ap.add_argument("--exclude", default="", help="колонки, намеренно изменённые решением: a,b")
     ap.add_argument("--ch-conn", default="clickhouse_etl")
     args = ap.parse_args()
     from airflow.providers.postgres.hooks.postgres import PostgresHook
@@ -72,6 +73,13 @@ def main() -> int:
     for pair in args.pair:
         oc, nc = pair.split(":")
         old, new = load_spec(pg, oc), load_spec(pg, nc)
+        # Колонки, изменённые решением, со старым путём обязаны расходиться — их
+        # сверяют против источника отдельно, здесь они из отпечатка исключаются.
+        excl = {c for c in args.exclude.split(",") if c}
+        if excl:
+            old.checksum_columns = [c for c in old.checksum_columns if c not in excl]
+            AUDIT.update(excl)
+            print(f"   исключены из сравнения (решение): {sorted(excl)}")
         if args.all_partitions:
             parts = [x for x in ch.query(f"SELECT DISTINCT {new.partition_expr} AS p FROM {new.fqn} ORDER BY p")
                      .split("\n") if x]

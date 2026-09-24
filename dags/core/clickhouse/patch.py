@@ -85,6 +85,18 @@ def publish(pg, ch: ClickHouse, spec, frame, changed_docs: Iterable[str], *,
         out = ch.query(f"SELECT DISTINCT {pexpr} FROM {spec.fqn} WHERE {doc_key} IN ({_uuid_list(changed)})")
         parts |= {x for x in out.split("\n") if x.strip()}
 
+    # Патч не создаёт историческую партицию. Если документ относится к месяцу,
+    # которого в цели нет, «оставленная часть» пуста, и партиция собралась бы из
+    # одного этого документа — молчаливая потеря всего месяца. Допустима только
+    # новая партиция не раньше последней существующей: текущий или следующий месяц.
+    if not rebuild:
+        existing = {x for x in ch.query(f"SELECT DISTINCT {pexpr} FROM {spec.fqn}").split("\n") if x.strip()}
+        latest = max((int(x) for x in existing), default=0)
+        orphans = sorted(x for x in parts if x not in existing and int(x) < latest)
+        if orphans:
+            raise RuntimeError(f"{spec.code}: патч попал в отсутствующие исторические партиции {orphans} — "
+                               f"их нужно сначала пересобрать (rebuild). Цель не изменена.")
+
     not_changed = f" AND {doc_key} NOT IN ({_uuid_list(changed)})" if changed else ""
     for p in sorted(parts):
         t0 = time.monotonic()
