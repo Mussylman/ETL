@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import pandas as pd
 from airflow.providers.postgres.hooks.postgres import PostgresHook
@@ -193,7 +193,7 @@ class DataChecker:
 
         Возвращает df[uid, updated_at] (Almaty) или None.
         """
-        if not (self.etl_table and self.etl_conn_id):
+        if not self._presence_available():
             return None
 
         from zoneinfo import ZoneInfo
@@ -232,15 +232,8 @@ class DataChecker:
         if cand.empty:
             return None
 
-        # анти-джойн: кого из кандидатов уже нет в DWH.
-        # recorder — конвенция движка для uid документа-регистратора.
-        dwh = PostgresHook(postgres_conn_id=self.etl_conn_id)
-        rows = dwh.get_records(
-            f"SELECT DISTINCT recorder::text FROM {self.etl_table} "
-            f"WHERE recorder = ANY(%s::uuid[])",
-            parameters=(cand["uid_norm"].tolist(),),
-        )
-        present = {r[0] for r in rows}
+        # анти-джойн: кого из кандидатов уже нет в хранилище
+        present = self._present_uids(cand["uid_norm"].tolist())
         missing = cand[~cand["uid_norm"].isin(present)]
         if missing.empty:
             return None
@@ -250,6 +243,24 @@ class DataChecker:
             f"нет в {self.etl_table} — добираем"
         )
         return missing[["uid", "updated_at"]]
+
+    # ------------------------------------------------------------------
+    # Хранилище — единственное, что привязывает проверку к таблице факта.
+    # Вынесено в методы, чтобы прямой путь (факты только в ClickHouse)
+    # переопределил их, не копируя логику окна и добора хвоста.
+    # ------------------------------------------------------------------
+    def _presence_available(self) -> bool:
+        return bool(self.etl_table and self.etl_conn_id)
+
+    def _present_uids(self, uids: List[str]) -> set:
+        """Какие из uid уже есть в хранилище. recorder — конвенция движка для uid документа."""
+        dwh = PostgresHook(postgres_conn_id=self.etl_conn_id)
+        rows = dwh.get_records(
+            f"SELECT DISTINCT recorder::text FROM {self.etl_table} "
+            f"WHERE recorder = ANY(%s::uuid[])",
+            parameters=(uids,),
+        )
+        return {r[0] for r in rows}
 
     # ------------------------------------------------------------------
     # Точка входа (старая сигнатура — для обратной совместимости)
