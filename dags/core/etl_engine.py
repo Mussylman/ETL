@@ -204,6 +204,23 @@ class ETLEngine:
         self.transform = TransformUtils(pg_conn_id=dst_conn_id)
         self.loader = Loaders(dst_conn_id=dst_conn_id)
 
+    def _assert_pg_fact_write(self) -> None:
+        """
+        Запись фактов регистра в PostgreSQL разрешена, пока регистр не переключён на
+        прямой путь в ClickHouse (registers.pg_fact_write). Единственная точка для всех
+        писателей: инкремента, full_period, CLI rebuild_sales/run_full_period, исторической
+        загрузки и страховочной сверки. После переключения id документов выдаёт реестр
+        etl_meta.doc_key — запись в замороженные факты дала бы им другие id.
+        Прямой путь пишет не через run(), а берёт extract_frame, и сюда не попадает.
+        """
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+        r = PostgresHook(postgres_conn_id=self.config_conn_id).get_first(
+            "SELECT coalesce((to_jsonb(r) ->> 'pg_fact_write')::boolean, true) "
+            "FROM etl_meta.registers r WHERE code = %s", parameters=(self.register_code,))
+        if r and not r[0]:
+            raise RuntimeError(f"{self.register_code}: переключён на прямой путь 1С → ClickHouse "
+                               f"(pg_fact_write=false) — факты в PostgreSQL заморожены, запись запрещена")
+
     def run(self) -> Dict[str, int]:
         """
         Главная точка входа.
@@ -211,6 +228,7 @@ class ETLEngine:
         Returns:
             Словарь {target_table: rows_loaded}
         """
+        self._assert_pg_fact_write()
         print(f"ETL START: register={self.register_code}, mode={self.mode}")
         started_at = datetime.now()
 
@@ -879,6 +897,7 @@ class ETLEngine:
         Исчезнувшие строки внутри перечитанного документа убирает штатный post_load
         (DELETE по etl_updated_at в окне последних загрузок) — здесь ничего своего нет.
         """
+        self._assert_pg_fact_write()
         from airflow.providers.postgres.hooks.postgres import PostgresHook
 
         uids = [u for u in (self._normalize_uid(x) for x in uids) if u]
