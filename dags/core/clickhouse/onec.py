@@ -134,9 +134,44 @@ def _period_bounds(partition: str) -> Tuple[str, str]:
     return a, b
 
 
-def run_register(pg, ch: ClickHouse, specs: List, *, mode: str = "patch",
-                 partitions: Optional[List[str]] = None, shadow: bool = True,
-                 quiet: bool = True) -> Dict:
+@contextlib.contextmanager
+def source_lock(pg, source_key: str):
+    """
+    Один прогон на источник: патч раз в 5 минут и пересборка горячего окна пишут в
+    одну и ту же партицию текущего месяца и без блокировки затёрли бы друг друга.
+
+    Двухаргументная форма pg_advisory_lock(int, int) — отдельное пространство ключей
+    от одноаргументной (bigint), которую берёт первый hop по register_id. Поэтому
+    прямой путь не может заблокировать старый, даже на том же регистре.
+    """
+    conn = pg.get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT pg_try_advisory_lock(hashtext('ch_source'), hashtext(%s))", (source_key,))
+        if not cur.fetchone()[0]:
+            raise RuntimeError(f"{source_key}: другой прогон этого источника уже идёт")
+        conn.commit()
+        yield
+    finally:
+        try:
+            cur.execute("SELECT pg_advisory_unlock(hashtext('ch_source'), hashtext(%s))", (source_key,))
+            conn.commit()
+        finally:
+            cur.close()
+            conn.close()
+
+
+def run_register(pg, ch: ClickHouse, specs: List, **kw) -> Dict:
+    """Регистр 1С → все его цели, под блокировкой источника."""
+    params0 = specs[0].source_params or {}
+    key = params0.get("state_key") or f"onec_register:{specs[0].source_object}"
+    with source_lock(pg, key):
+        return _run_register(pg, ch, specs, **kw)
+
+
+def _run_register(pg, ch: ClickHouse, specs: List, *, mode: str = "patch",
+                  partitions: Optional[List[str]] = None, shadow: bool = True,
+                  quiet: bool = True) -> Dict:
     """
     Один регистр → все его цели.
       mode='patch'   — набор изменений из retail, публикация патчем
