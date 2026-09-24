@@ -40,3 +40,16 @@ bf842c2, fdc3f7b, 700fe70, 08475d5, ae48e4b, b063851, e89178c, 2ebd363 (+3ef8197
 Прогон `analytics_sync` 12:15 UTC упал «Task not found» — он был создан по версии DAG до смены
 группы (`sync__shadow_1c` → `sync__onec_1c`); данных не касался.
 Admin-конфиг ClickHouse перенесён в `~/.config/clickhouse/ch_admin.xml` (600).
+
+## Передача id реестру и заморозка PG-фактов (~17:55 Almaty)
+- `etl_meta.doc_key` засеян из `public.sales` (6 042 653) и `public.orders` (462 589) с сохранением id;
+  guid → id и id → guid однозначны, общих guid у областей нет.
+- `ch_pg_handover --register order,sales --apply`: pg_fact_write=false, issuer=registry, справочники
+  и cost_daily → analytics_sync, clickhouse_sync без групп (на паузе), триггер из incremental_prod исчез.
+- Первый цикл: 42 новых заказа и 49 продаж получили id из реестра, в PG их нет; zakaz_id 49/50.
+- `analytics_sync` — одна задача `sync`, группы читаются в момент выполнения.
+- Запись фактов переключённого регистра в PG запрещена в `ETLEngine` (run, reload_documents).
+- Удалены заменённые: UI-плагин etl_meta (Airflow 2), загрузчики TEST sales/dim_incremental,
+  POC ch_load_sales_positions. clickhouse_sync оставлен как путь отката.
+- Найдено: `orders_check_dag.py` не импортируется (нет модуля helpers — с initial commit);
+  в 1С есть проведённые заказы с датами 2080–2081 (мусор данных).
