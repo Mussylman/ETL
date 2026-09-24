@@ -82,6 +82,10 @@ def run_spec(pg, ch, spec, args) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Синхронизация в ClickHouse по конфигурации etl_meta")
     ap.add_argument("--code", help="code из etl_meta.ch_sync")
+    ap.add_argument("--group", help="группа конфигураций (sync_group) — тот же runner, что вызывает DAG")
+    ap.add_argument("--mode", default="patch", choices=["patch", "rebuild"],
+                    help="для регистров 1С: патч документов или пересборка --partition")
+    ap.add_argument("--include-inactive", action="store_true", help="включить неактивные (shadow)")
     ap.add_argument("--all", action="store_true", help="все активные конфигурации")
     ap.add_argument("--partition", help="только одна партиция, например 202608")
     ap.add_argument("--sweep", action="store_true", help="принудительная сверка отпечатков всей истории")
@@ -92,8 +96,20 @@ def main() -> int:
     mode.add_argument("--plan", action="store_true")
     mode.add_argument("--apply", action="store_true")
     args = ap.parse_args()
+    if args.group:
+        if not args.apply:
+            ap.error("--group выполняет загрузку: нужен --apply")
+        from core.clickhouse.runner import run_group
+        rep = run_group(args.group, mode=args.mode,
+                        partitions=[args.partition] if args.partition else None,
+                        include_inactive=args.include_inactive, ch_conn_id=args.ch_conn,
+                        config_conn_id=args.config_conn)
+        print(f"группа {args.group}: объектов {rep['objects']}, сбоев {len(rep['failed'])}")
+        for r in rep.get("results", []):
+            print("   ", {k: v for k, v in r.items() if k != "published"})
+        return 0
     if not args.code and not args.all:
-        ap.error("нужен --code либо --all")
+        ap.error("нужен --code, --group либо --all")
 
     from airflow.providers.postgres.hooks.postgres import PostgresHook
     pg = PostgresHook(postgres_conn_id=args.config_conn)

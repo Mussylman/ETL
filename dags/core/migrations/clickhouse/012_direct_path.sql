@@ -36,3 +36,7 @@ CREATE TABLE IF NOT EXISTS etl_meta.ch_source_state (
     updated_at   timestamp NOT NULL DEFAULT now(),
     details      jsonb
 );
+
+-- Группа конфигураций — единица оркестрации. DAG вызывает runner с именем группы,
+-- а не перечисляет таблицы: новый объект попадает в загрузку записью конфигурации.
+ALTER TABLE etl_meta.ch_sync ADD COLUMN IF NOT EXISTS sync_group varchar;

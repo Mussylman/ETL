@@ -158,3 +158,10 @@ def load_spec(pg, code: str) -> SyncSpec:
 def load_active_specs(pg) -> List[SyncSpec]:
     rows = pg.get_records(_SELECT + " WHERE s.is_active ORDER BY s.priority, s.code")
     return [_build(pg, r) for r in rows]
+
+
+def load_group_specs(pg, group: str, include_inactive: bool = False) -> List[SyncSpec]:
+    """Конфигурации группы в порядке priority. Группа — единица оркестрации."""
+    cond = " WHERE s.sync_group = %s" + ("" if include_inactive else " AND s.is_active")
+    rows = pg.get_records(_SELECT + cond + " ORDER BY s.priority, s.code", parameters=(group,))
+    return [_build(pg, r) for r in rows]
