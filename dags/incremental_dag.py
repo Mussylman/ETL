@@ -198,6 +198,23 @@ def _discover(config_conn_id: str):
     return supported, unsupported, None
 
 
+def _dag_has_groups(config_conn_id: str, dag_id: str) -> bool:
+    """
+    Ведёт ли DAG второго hop'а хоть одну активную группу (etl_meta.ch_sync_group).
+    Когда все группы перешли в analytics_sync, триггер не создаётся: цепочка
+    incremental → clickhouse_sync исчезает правкой конфига. Реестра групп нет
+    (контур без миграции 014) или БД недоступна — как раньше, триггер есть.
+    """
+    try:
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+        r = PostgresHook(postgres_conn_id=config_conn_id).get_first(
+            "SELECT count(*) FILTER (WHERE dag_id = %s AND is_active), count(*) FROM etl_meta.ch_sync_group",
+            parameters=(dag_id,))
+        return bool(r[0]) or not r[1]
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def _report_unsupported(items, error):
     """Одна таска на весь список — чтобы пропуски были видны в UI каждый тик."""
     if error:
@@ -292,7 +309,7 @@ def build_incremental_dag(
         # полностью успешного инкремента — all_success, а не all_done: грузить в
         # аналитический слой заведомо неполный PostgreSQL незачем.
         # Сам перенос живёт в clickhouse_sync_dag.py, здесь только связь.
-        if trigger_dag_id:
+        if trigger_dag_id and _dag_has_groups(config_conn_id, trigger_dag_id):
             from airflow.operators.trigger_dagrun import TriggerDagRunOperator
             last = guard if reconcilable else (chain[-1] if chain else None)
             # Синхронизация ClickHouse идёт дольше пяти минут, а инкремент
