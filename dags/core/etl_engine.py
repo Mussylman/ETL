@@ -1142,6 +1142,59 @@ class ETLEngine:
 
         return rows
 
+    def _key_source(self, target: TargetConfig):
+        """
+        (корневой источник, колонка ключа документа) цели — по типу источника:
+          _AccumRg (standalone)    → _RecorderRRef (UUID документа-регистратора)
+          _Document* (header)      → _IDRRef       (UUID самой шапки)
+          _Document*_VT* (detail)  → JOIN-ится на родителя — ключ и источник родителя
+        """
+        primary = None
+        if target.source_config:
+            primary = target.source_config
+        elif target.union_config and target.union_config.members:
+            primary = next((m.source for m in target.union_config.members if m.source), None)
+        elif self.config.sources:
+            primary = self.config.sources[0]
+        if primary is None:
+            return None, None
+        if primary.source_type == "standalone":
+            return primary, "_RecorderRRef"
+        if primary.source_type == "header":
+            return primary, "_IDRRef"
+        if primary.source_type == "detail":
+            parent = primary.parent_source
+            if parent and parent.source_type == "header":
+                return parent, "_IDRRef"
+            return primary, "_RecorderRRef"
+        return primary, None
+
+    def ready_keys(self, target: TargetConfig, key_values: List[str], batch: int = 2000) -> set:
+        """
+        Какие документы из key_values уже есть в источнике цели — точный lookup по ключу
+        в корневой таблице (с её where_clause), без извлечения строк.
+
+        Отличает «1С документ ещё не получила» от «документ удалён/распроведён»:
+        одно отсутствие в выдаче извлечения этого не различает.
+        """
+        from .transform.binary import binary_to_uuid, uuid_to_mssql_hex_1c
+
+        src, col = self._key_source(target)
+        if src is None or col is None:
+            raise RuntimeError(f"{target.target_table}: не определён ключ документа источника")
+        where = ""
+        if getattr(src, "where_clause", None):
+            where = " AND (" + src.where_clause.replace("{alias}", "a") + ")"
+        schema = getattr(src, "mssql_schema", None) or "dbo"
+        hexes = [h for h in (uuid_to_mssql_hex_1c(u) for u in key_values) if h]
+        found = set()
+        for i in range(0, len(hexes), batch):
+            sql = (f"SELECT DISTINCT [a].[{col}] AS k FROM [{schema}].[{src.mssql_table}] AS [a] "
+                   f"WITH (NOLOCK) WHERE [a].[{col}] IN ({', '.join(hexes[i:i + batch])}){where}")
+            df, _ = self.storage.execute_query(sql, detect_binary=False)
+            found |= {str(binary_to_uuid(bytes(k))) for k in df["k"].tolist() if k is not None}
+        return found
+
     def _build_sql_for_target(
         self,
         target: TargetConfig,
@@ -1150,38 +1203,7 @@ class ETLEngine:
         key_values: Optional[List[str]] = None,
     ) -> str:
         """Генерирует SQL для целевой таблицы."""
-
-        # Определяем ключевую колонку для incremental.
-        # _AccumRg (standalone)    → _RecorderRRef (UUID документа-регистратора)
-        # _Document* (header)      → _IDRRef       (UUID самой шапки)
-        # _Document*_VT* (detail)  → _Document*_IDRRef через JOIN — фильтруем по parent
-        # Берём первый подходящий источник, у которого настроен этот ключ.
-        key_column = None
-        if key_values:
-            # 1. Если target привязан к конкретному источнику — берём его тип
-            primary = None
-            if target.source_config:
-                primary = target.source_config
-            elif target.union_config and target.union_config.members:
-                primary = next(
-                    (m.source for m in target.union_config.members if m.source),
-                    None,
-                )
-            elif self.config.sources:
-                primary = self.config.sources[0]
-
-            if primary:
-                if primary.source_type == "standalone":
-                    key_column = "_RecorderRRef"
-                elif primary.source_type == "header":
-                    key_column = "_IDRRef"
-                elif primary.source_type == "detail":
-                    # detail JOIN-ится на родителя — фильтр через parent
-                    parent = primary.parent_source
-                    if parent and parent.source_type == "header":
-                        key_column = "_IDRRef"
-                    else:
-                        key_column = "_RecorderRRef"
+        key_column = self._key_source(target)[1] if key_values else None
 
         # Специальный путь: AccumRg + headers + VTs через LEFT JOIN
         if (self.config.pipeline_type or "").lower() == "accumrg_with_documents":

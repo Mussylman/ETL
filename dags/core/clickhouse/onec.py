@@ -23,7 +23,7 @@ import pandas as pd
 
 from ..config import refs
 from ..extract.data_checker import DataChecker
-from . import patch, registry
+from . import changes, patch, registry
 from .target import ClickHouse
 
 YEAR_OFFSET = 2000   # год в 1С хранится со сдвигом +2000
@@ -200,6 +200,8 @@ def _run_register(pg, ch: ClickHouse, specs: List, *, mode: str = "patch",
     uid_ts: Dict[str, datetime] = {}
     changed: List[str] = []
     to_ts = None
+    cs = None
+    targets = engine._get_active_targets()
     if mode == "patch":
         prov = DirectChangeProvider(
             pg_meta=pg, ch=ch, source_key=source_key, presence_table=header.fqn,
@@ -207,26 +209,33 @@ def _run_register(pg, ch: ClickHouse, specs: List, *, mode: str = "patch",
             retail_table=cfg.retail_table, retail_conn_id=engine.retail_conn_id,
             config_conn_id="etl_prod", register_id=cfg.id, key_column=cfg.retail_uid_column,
             etl_table=None, etl_conn_id=None)
+        hdr_target = next(t for t in targets if t.target_table == header.source_params["target"])
         with contextlib.redirect_stdout(sink) if quiet else contextlib.nullcontext():
             cdf, from_ts, to_ts = prov.get_changed_uids()
-        for u, ts in zip(cdf["uid"].tolist(), cdf["updated_at"].tolist()):
-            n = registry._norm_uuid(u)
-            if n:
-                uid_ts[n] = ts
-        changed = sorted(uid_ts)
-        report.update(window=(str(from_ts), str(to_ts)), changed=len(changed))
+            cs = changes.classify(cdf, from_ts, to_ts,
+                                  ready_lookup=lambda keys: engine.ready_keys(hdr_target, keys),
+                                  present_lookup=prov._present_uids)
+        uid_ts = cs.signal_ts
+        changed = cs.patch_keys
+        report.update(cs.summary())
         if not changed:
+            # всё ждёт источник: ничего не извлекаем и не публикуем. Окно двигается —
+            # ожидающие документы не в витрине, поэтому остаются в хвосте и
+            # перепроверяются следующими циклами.
             _save_watermark(pg, source_key, to_ts, report)
-            report["published"] = {}
+            report.update(patched=0, published={})
             return report
 
     # извлечение один раз на регистр — все цели
     frames: Dict[str, pd.DataFrame] = {}
     returned: set = set()
-    for t in engine._get_active_targets():
+    for t in targets:
         with contextlib.redirect_stdout(sink) if quiet else contextlib.nullcontext():
             if mode == "patch":
-                df, _, got = engine.extract_frame(t, key_values=changed)
+                if cs.ready:
+                    df, _, got = engine.extract_frame(t, key_values=sorted(cs.ready))
+                else:
+                    df, got = pd.DataFrame(), set()      # только удаления
             else:
                 parts = []
                 got = set()
@@ -237,6 +246,9 @@ def _run_register(pg, ch: ClickHouse, specs: List, *, mode: str = "patch",
                 df = pd.concat([d for d in parts if len(d)], ignore_index=True) if any(len(d) for d in parts) \
                     else parts[0]
         returned |= {registry._norm_uuid(x) for x in got}
+        if df.empty:
+            frames[t.target_table] = df
+            continue
         own = t.target_table if t.target_role == "dimension" else None
         df = registry.resolve(pg, df, refs.dim_links(pg, t.id), refs.register_links(pg, t.id),
                               own_table=own, create_stubs=not shadow)
@@ -246,14 +258,15 @@ def _run_register(pg, ch: ClickHouse, specs: List, *, mode: str = "patch",
                 lambda r: uid_ts.get(registry._norm_uuid(r))) if uid_ts else None
         frames[t.target_table] = df
 
-    if mode == "rebuild":
+    hdr_rb = next((t.target_table for t in targets if t.target_role == "dimension"), None)
+    if mode == "rebuild" and hdr_rb and len(frames[hdr_rb]):
         # Окно извлечения — BETWEEN построителя запроса, включительно с обеих сторон:
         # документ ровно на полуночи 1-го числа следующего месяца попадает в оба окна.
         # Старому пути это безвредно (upsert по документу), а здесь такой документ
         # иначе лёг бы в соседнюю партицию и заменил её целиком. Оставляем только
         # документы, чей период шапки строго внутри пересобираемых месяцев; «полуночный»
         # документ достанется пересборке своего месяца.
-        hdr_t = next(t.target_table for t in engine._get_active_targets() if t.target_role == "dimension")
+        hdr_t = hdr_rb
         per = pd.to_datetime(frames[hdr_t]["period"])
         keep = per.dt.strftime("%Y%m").isin(set(partitions))
         allowed = set(frames[hdr_t].loc[keep, "recorder"].map(registry._norm_uuid))
@@ -262,20 +275,24 @@ def _run_register(pg, ch: ClickHouse, specs: List, *, mode: str = "patch",
             frames[name] = df[df["recorder"].map(registry._norm_uuid).isin(allowed)].reset_index(drop=True)
         report["outside_partition_docs"] = dropped
 
-    # 1С не вернула документ: либо он удалён (лежит в ClickHouse — патч его уберёт),
-    # либо 1С его ещё не получила (в ClickHouse нет — ждёт в хвосте, ничего не меняется)
-    absent = sorted(set(changed) - returned) if mode == "patch" else []
-    deleted = sorted(prov._present_uids(absent)) if absent else []
-    report["returned"] = len(returned)
-    report["deleted"] = len(deleted)
-    report["not_in_1c_yet"] = len(absent) - len(deleted)
+    if mode == "patch":
+        # Lookup и извлечение — два запроса; извлекаются только ключи, найденные lookup'ом.
+        # Документ, исчезнувший между ними, — состояние не определено: ничего не
+        # публикуем, окно не двигаем, следующий цикл повторит.
+        hdr_returned = {registry._norm_uuid(x) for x in frames[hdr_target.target_table]["recorder"]} \
+            if len(frames[hdr_target.target_table]) else set()
+        lost = cs.ready - hdr_returned
+        if lost:
+            raise RuntimeError(f"{source_key}: {len(lost)} документов найдены lookup'ом, но не извлечены "
+                               f"(например {sorted(lost)[:3]}) — публикация отменена")
+        report["patched"] = len(changed)
 
     # публикация: цель за целью в порядке priority
     published: Dict[str, List] = {}
     for spec in specs:
         sp = spec.source_params
         df = frames[sp["target"]].copy()
-        if sp.get("parent"):
+        if sp.get("parent") and len(df):
             pk, pref = sp.get("parent_key", ["recorder", "recorder_type"]), sp.get("parent_prefix", "hdr_")
             hdr = frames[sp["parent"]]
             hdr = hdr.rename(columns={c: f"{pref}{c}" for c in hdr.columns if c not in pk})
