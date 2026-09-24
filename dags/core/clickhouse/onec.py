@@ -63,7 +63,7 @@ class DirectChangeProvider(DataChecker):
     def _present_uids(self, uids: List[str]) -> set:
         if not uids:
             return set()
-        lst = ", ".join(f"toUUID('{u}')" for u in uids)
+        lst = ", ".join(f"'{u}'" for u in uids)   # кортеж констант — один узел AST
         out = self.ch.query(f"SELECT DISTINCT toString(recorder) FROM {self.presence_table} "
                             f"WHERE recorder IN ({lst})")
         return {x.strip() for x in out.split("\n") if x.strip()}

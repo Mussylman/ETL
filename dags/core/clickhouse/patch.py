@@ -46,7 +46,10 @@ def _add(spec, a: List[str], b: List[str]) -> List[str]:
 
 
 def _uuid_list(keys: Iterable[str]) -> str:
-    return ", ".join(f"toUUID('{k}')" for k in keys)
+    # Строковые литералы, а не toUUID(): кортеж констант ClickHouse сворачивает в
+    # один узел разбора, а каждый вызов функции — отдельный узел, и на десятках
+    # тысяч документов запрос упирался в лимит AST (50 000). К UUID приводит сам.
+    return ", ".join(f"'{k}'" for k in keys)
 
 
 def publish(pg, ch: ClickHouse, spec, frame, changed_docs: Iterable[str], *,
@@ -91,7 +94,12 @@ def publish(pg, ch: ClickHouse, spec, frame, changed_docs: Iterable[str], *,
     # новая партиция не раньше последней существующей: текущий или следующий месяц.
     if not rebuild:
         existing = {x for x in ch.query(f"SELECT DISTINCT {pexpr} FROM {spec.fqn}").split("\n") if x.strip()}
-        latest = max((int(x) for x in existing), default=0)
+        if not existing:
+            # Патч по пустой цели собрал бы «историю» из нескольких изменившихся
+            # документов и выглядел бы успешным. Пустую цель наполняет только пересборка.
+            raise RuntimeError(f"{spec.code}: цель пуста — сначала полная пересборка (rebuild). "
+                               f"Патч не применён.")
+        latest = max(int(x) for x in existing)
         orphans = sorted(x for x in parts if x not in existing and int(x) < latest)
         if orphans:
             raise RuntimeError(f"{spec.code}: патч попал в отсутствующие исторические партиции {orphans} — "

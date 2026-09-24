@@ -28,8 +28,11 @@ class ClickHouse:
         # ORM-класс, и там .password тоже есть — одно работает в обоих контекстах.
         self.env["CLICKHOUSE_PASSWORD"] = (c.password or "")
 
+    # Запрос уходит через stdin, а не аргументом --query: список документов для добора
+    # хвоста за 15 суток — десятки тысяч uuid, и аргумент командной строки упирался
+    # в ограничение ОС на длину аргументов (Argument list too long).
     def query(self, sql: str, fmt: str = "TSV") -> str:
-        r = subprocess.run(self.base + ["--query", f"{sql} FORMAT {fmt}"],
+        r = subprocess.run(self.base, input=f"{sql} FORMAT {fmt}",
                            capture_output=True, text=True, env=self.env)
         if r.returncode:
             raise RuntimeError(f"ClickHouse: {r.stderr.strip()[:400]}")
@@ -44,8 +47,7 @@ class ClickHouse:
         return out if out else default
 
     def execute(self, sql: str) -> None:
-        r = subprocess.run(self.base + ["--query", sql],
-                           capture_output=True, text=True, env=self.env)
+        r = subprocess.run(self.base, input=sql, capture_output=True, text=True, env=self.env)
         if r.returncode:
             raise RuntimeError(f"ClickHouse: {r.stderr.strip()[:400]}")
 
