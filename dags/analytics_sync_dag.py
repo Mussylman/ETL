@@ -3,8 +3,9 @@ analytics_sync — единый DAG аналитического слоя: ис�
 
 DAG = только оркестрация. Он не знает ни таблиц, ни источников: группы, которые он
 ведёт, и их порядок — в etl_meta.ch_sync_group (dag_id = 'analytics_sync'), состав
-групп — в etl_meta.ch_sync. Задача на группу, цепочкой по position: справочники
-раньше фактов, заказы раньше продаж (порядок внутри группы — priority).
+групп — в etl_meta.ch_sync. Одна стабильная задача: группы читаются в момент выполнения
+и идут по position (справочники раньше фактов), внутри группы — по priority (заказы
+раньше продаж). Правка конфигурации не меняет структуру DAG.
 
 Режим прогона выбирается по времени запуска (Asia/Almaty):
     каждые 5 минут       — patch: набор изменений retail + хвост, патч документов;
@@ -43,29 +44,18 @@ def pick_mode(logical_date) -> str:
     return "patch"
 
 
-def _run(group: str, **context):
+def _run(**context):
     import sys
     if DAGS_PATH not in sys.path:
         sys.path.insert(0, DAGS_PATH)
-    from core.clickhouse.runner import run_group
+    from core.clickhouse.runner import run_dag
     mode = pick_mode(context["logical_date"])
-    rep = run_group(group, mode=mode, config_conn_id=CONFIG_CONN, ch_conn_id=CH_CONN)
-    print(f"{group} [{mode}]: объектов {rep['objects']}")
-    for r in rep.get("results", []):
-        print("   ", {k: v for k, v in r.items() if k != "published"})
-    return {"mode": mode, "objects": rep["objects"]}
-
-
-def _groups():
-    """Группы этого DAG из control plane; ошибка БД при парсинге — пустой DAG, а не сломанный."""
-    try:
-        from airflow.providers.postgres.hooks.postgres import PostgresHook
-        return [r[0] for r in PostgresHook(postgres_conn_id=CONFIG_CONN).get_records(
-            "SELECT sync_group FROM etl_meta.ch_sync_group "
-            "WHERE dag_id = %s AND is_active ORDER BY position, sync_group", parameters=(DAG_ID,))]
-    except Exception as e:  # noqa: BLE001
-        print(f"{DAG_ID}: группы не прочитаны: {type(e).__name__}: {str(e).splitlines()[0][:200]}")
-        return []
+    rep = run_dag(DAG_ID, mode=mode, config_conn_id=CONFIG_CONN, ch_conn_id=CH_CONN)
+    for g, r in rep["groups"].items():
+        print(f"{g} [{mode}]: объектов {r['objects']}")
+        for x in r.get("results", []):
+            print("   ", {k: v for k, v in x.items() if k != "published"})
+    return {"mode": mode, "groups": list(rep["groups"])}
 
 
 with DAG(
@@ -79,10 +69,5 @@ with DAG(
     default_args={"retries": 1, "retry_delay": timedelta(minutes=2)},
     tags=["clickhouse", "analytics"],
 ) as dag:
-    prev = None
-    for g in _groups():
-        t = PythonOperator(task_id=f"sync__{g}", python_callable=_run, op_kwargs={"group": g},
-                           execution_timeout=timedelta(hours=3))
-        if prev is not None:
-            prev >> t
-        prev = t
+    # одна стабильная задача: группы и их порядок читаются в момент выполнения
+    PythonOperator(task_id="sync", python_callable=_run, execution_timeout=timedelta(hours=3))

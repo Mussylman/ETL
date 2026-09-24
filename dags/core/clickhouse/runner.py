@@ -130,3 +130,22 @@ def run_group(group: str, *, mode: str = "patch", partitions: Optional[List[str]
         # цель не изменена ни по одной несошедшейся партиции — падаем, чтобы это было видно
         raise RuntimeError(f"группа {group} не сошлась:\n  " + "\n  ".join(report["failed"]))
     return report
+
+
+def run_dag(dag_id: str, *, mode: str = "patch", config_conn_id: str = "etl_prod",
+            ch_conn_id: str = "clickhouse_etl") -> Dict:
+    """
+    Все активные группы DAG'а по position (etl_meta.ch_sync_group) — в момент выполнения.
+    Состав и порядок групп — конфигурация, а не структура DAG: её правка не меняет
+    задачи и не ломает уже созданные прогоны. Первая несошедшаяся группа останавливает
+    остальные (факты не публикуются поверх несошедшихся справочников).
+    """
+    from airflow.providers.postgres.hooks.postgres import PostgresHook
+    pg = PostgresHook(postgres_conn_id=config_conn_id)
+    groups = [r[0] for r in pg.get_records(
+        "SELECT sync_group FROM etl_meta.ch_sync_group WHERE dag_id = %s AND is_active "
+        "ORDER BY position, sync_group", parameters=(dag_id,))]
+    out = {"dag_id": dag_id, "mode": mode, "groups": {}}
+    for g in groups:
+        out["groups"][g] = run_group(g, mode=mode, config_conn_id=config_conn_id, ch_conn_id=ch_conn_id)
+    return out

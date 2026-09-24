@@ -118,8 +118,10 @@ def seed_scope(pg, table: str) -> int:
     n = pg.get_first(f"""WITH ins AS (
             INSERT INTO etl_meta.doc_key (doc_table, recorder, recorder_type, id, is_stub)
             SELECT %s, s.recorder, s.recorder_type, s.id, false FROM public.{table} s
+            WHERE NOT EXISTS (SELECT 1 FROM etl_meta.doc_key d WHERE d.doc_table = %s
+                              AND d.recorder = s.recorder AND d.recorder_type = s.recorder_type)
             ON CONFLICT DO NOTHING RETURNING 1)
-        SELECT count(*) FROM ins""", parameters=(table,))[0]
+        SELECT count(*) FROM ins""", parameters=(table, table))[0]
     pg.run("""UPDATE etl_meta.doc_key_scope SET seeded_at = now(),
                   seeded_rows = (SELECT count(*) FROM etl_meta.doc_key WHERE doc_table = %s), updated_at = now()
               WHERE doc_table = %s""", parameters=(table, table))
