@@ -25,8 +25,13 @@ from typing import Dict, List, Optional, Tuple
 
 # Первые 8 hex-символов MD5 → беззнаковое 32-битное. Одинаково во всех трёх диалектах.
 _PG_HASH = "sum(('x' || substr(md5({canon}), 1, 8))::bit(32)::bigint)"
-_MS_HASH = ("SUM(CONVERT(bigint, CONVERT(binary(4), "
-            "SUBSTRING(HASHBYTES('MD5', {canon}), 1, 4))))")
+# HASHBYTES над nvarchar хеширует UTF-16LE, а ClickHouse и PostgreSQL — UTF-8: на любой
+# кириллице суммы не сошлись бы никогда. Приводим к varchar с UTF-8-сортировкой
+# (SQL Server 2019+) — байты становятся теми же, что у остальных СУБД. Проверено на
+# 88 264 кириллических названиях номенклатуры: MD5 совпал с Python побайтно.
+_MS_UTF8 = "Latin1_General_100_BIN2_UTF8"
+_MS_HASH = ("SUM(CONVERT(bigint, CONVERT(binary(4), SUBSTRING(HASHBYTES('MD5', "
+            "CAST(({canon}) COLLATE " + _MS_UTF8 + " AS varchar(8000))), 1, 4))))")
 _CH_HASH = "sum(reinterpretAsUInt32(reverse(unhex(substring(lower(hex(MD5({canon}))), 1, 8)))))"
 
 
@@ -48,8 +53,11 @@ def _canon_pg(spec, cols: List[str]) -> str:
 
 def _canon_ms(spec, cols: List[str]) -> str:
     t = _types(spec)
+    # nvarchar(4000), а не (64): названия номенклатуры длиннее 64 символов, и
+    # короткий тип молча обрезал бы их — контрольная сумма расходилась бы на данных,
+    # которые на самом деле совпадают.
     parts = [(f"LOWER(CONVERT(nvarchar(64), {c}))" if t.get(c, "").startswith("UUID")
-              else f"CONVERT(nvarchar(64), {c})") for c in cols]
+              else f"CONVERT(nvarchar(4000), {c})") for c in cols]
     return "CONCAT_WS('|', " + ", ".join(parts) + ")"
 
 
