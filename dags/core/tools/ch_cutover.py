@@ -107,6 +107,28 @@ def wait_old_path(pg, register_id: int, timeout: int = 900) -> None:
         time.sleep(5)
 
 
+def airflow(*args) -> str:
+    r = subprocess.run(["airflow", *args], capture_output=True, text=True)
+    if r.returncode:
+        raise RuntimeError(f"airflow {' '.join(args)}: {r.stderr.strip()[-300:]}")
+    return r.stdout
+
+
+def quiesce(dags, timeout: int = 900) -> None:
+    """DAG'и на паузу и дождаться завершения идущих прогонов — во время переключения никто не пишет."""
+    for d in dags:
+        airflow("dags", "pause", d)
+    t0 = time.monotonic()
+    while True:
+        busy = [d for d in dags if any(l.split()[2:3] == ["running"] or l.split()[2:3] == ["queued"]
+                                       for l in airflow("dags", "list-runs", d, "-o", "plain").splitlines()[1:])]
+        if not busy:
+            return
+        if time.monotonic() - t0 > timeout:
+            raise RuntimeError(f"прогоны не завершились за {timeout} с: {busy}")
+        time.sleep(10)
+
+
 def ch_admin(cfg: str, sql: str) -> None:
     r = subprocess.run(["clickhouse-client", "--config-file", cfg, "--multiquery"], input=sql,
                        capture_output=True, text=True)
@@ -114,7 +136,7 @@ def ch_admin(cfg: str, sql: str) -> None:
         raise RuntimeError(r.stderr.strip()[:400])
 
 
-def cut_register(pg, ch, reg: str, *, apply: bool, ch_cfg: str) -> None:
+def cut_register(pg, ch, reg: str, *, apply: bool, ch_cfg: str, stop_pg: bool) -> None:
     from core.tools.ch_ddl import grants
     ps = pairs(pg, reg)
     rid = pg.get_first("SELECT id FROM etl_meta.registers WHERE code = %s", parameters=(reg,))[0]
@@ -125,27 +147,24 @@ def cut_register(pg, ch, reg: str, *, apply: bool, ch_cfg: str) -> None:
     step = (lambda s: print(f"   [plan] {s}")) if not apply else (lambda s: print(f"   ✓ {s}"))
 
     print(f"\n=== {reg} ===")
-    if apply:
-        pg.run("UPDATE etl_meta.registers SET pg_fact_write = false, updated_at = now() WHERE id = %s", parameters=(rid,))
-    step(f"registers.pg_fact_write = false (id {rid})")
-    if apply:
-        wait_old_path(pg, rid)
-    step("старый путь не держит блокировку регистра")
-    if apply:
-        n = registry.seed_scope(pg, doc_table)
-        pg.run("UPDATE etl_meta.doc_key_scope SET issuer = 'registry', updated_at = now() WHERE doc_table = %s",
-               parameters=(doc_table,))
-        step(f"реестр документов {doc_table}: засеяно {n}, issuer = registry")
+    if not stop_pg:
+        step("PostgreSQL: старый путь продолжает писать факты (откат и внешние читатели); "
+             "id документов выдаёт он же — прямой путь их читает (issuer pg_facts)")
     else:
-        step(f"реестр документов {doc_table}: засев из public.{doc_table} с сохранением id, issuer = registry")
-
-    ddl = []
-    for d, o in ps:
-        ddl += [f"EXCHANGE TABLES {o.fqn} AND {d.fqn}", f"EXCHANGE TABLES {o.stage_fqn} AND {d.stage_fqn}"]
-    if apply:
-        ch_admin(ch_cfg, ";\n".join(ddl) + ";")
-    for x in ddl:
-        step(f"ClickHouse: {x}")
+        if apply:
+            pg.run("UPDATE etl_meta.registers SET pg_fact_write = false, updated_at = now() WHERE id = %s",
+                   parameters=(rid,))
+        step(f"registers.pg_fact_write = false (id {rid})")
+        if apply:
+            wait_old_path(pg, rid)
+        step("старый путь не держит блокировку регистра")
+        if apply:
+            n = registry.seed_scope(pg, doc_table)
+            pg.run("UPDATE etl_meta.doc_key_scope SET issuer = 'registry', updated_at = now() WHERE doc_table = %s",
+                   parameters=(doc_table,))
+            step(f"реестр документов {doc_table}: засеяно {n}, issuer = registry")
+        else:
+            step(f"реестр документов {doc_table}: засев из public.{doc_table} с сохранением id, issuer = registry")
 
     # ch_sync: второй hop замораживается и указывает на свою (теперь *_direct) таблицу,
     # прямой путь — на прежнее имя
@@ -160,6 +179,14 @@ def cut_register(pg, ch, reg: str, *, apply: bool, ch_cfg: str) -> None:
             if apply:
                 pg.run(q, parameters=prm)
         step(f"ch_sync: {o.code} → {LEGACY_GROUP} ({d.target_table}); {d.code} → {LIVE_GROUP} ({o.target_table})")
+    ddl = []
+    for d, o in ps:
+        ddl += [f"EXCHANGE TABLES {o.fqn} AND {d.fqn}", f"EXCHANGE TABLES {o.stage_fqn} AND {d.stage_fqn}"]
+    if apply:
+        ch_admin(ch_cfg, ";\n".join(ddl) + ";")
+    for x in ddl:
+        step(f"ClickHouse: {x}")
+
     if apply:
         pg.run("""INSERT INTO etl_meta.ch_source_state (source_key, watermark, last_to_ts, updated_at, details)
                   SELECT %s, watermark, last_to_ts, now(), jsonb_build_object('from', source_key)
@@ -179,6 +206,19 @@ def cut_register(pg, ch, reg: str, *, apply: bool, ch_cfg: str) -> None:
         if rep.get("failed"):
             raise RuntimeError(f"{reg}: пересборка горячего окна не прошла: {rep['failed']}")
     step(f"пересборка горячего окна {hot} боевым прямым путём (заготовки создаются)")
+
+
+def live_group(pg, *, apply: bool) -> None:
+    """Боевая группа прямого пути — в analytics_sync; shadow-группа выключается (её конфигурации стали боевыми)."""
+    q = [("INSERT INTO etl_meta.ch_sync_group (sync_group, dag_id, position, description) "
+          "VALUES (%s, 'analytics_sync', 15, 'прямой путь 1С → ClickHouse (боевые факты)') "
+          "ON CONFLICT (sync_group) DO UPDATE SET dag_id = 'analytics_sync', position = 15, is_active = true, "
+          "updated_at = now()", (LIVE_GROUP,)),
+         ("UPDATE etl_meta.ch_sync_group SET is_active = false, updated_at = now() WHERE sync_group = %s", (SHADOW_GROUP,))]
+    for sql, prm in q:
+        if apply:
+            pg.run(sql, parameters=prm)
+    print(f"\n   {'✓' if apply else '[plan]'} группа {LIVE_GROUP} → analytics_sync (15); {SHADOW_GROUP} выключена")
 
 
 def move_groups(pg, *, apply: bool) -> None:
@@ -211,6 +251,9 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--ch-config", help="config-file clickhouse-client под ch_admin (для --apply)")
     ap.add_argument("--skip-history", action="store_true", help="не сверять закрытые месяцы с 1С")
+    ap.add_argument("--stop-pg", action="store_true",
+                    help="полная передача: первый hop перестаёт писать PostgreSQL, id выдаёт реестр, "
+                         "все группы в analytics_sync. Без флага PostgreSQL продолжает обновляться")
     ap.add_argument("--config-conn", default="etl_prod")
     args = ap.parse_args()
     if args.apply and not args.ch_config:
@@ -232,13 +275,27 @@ def main() -> int:
         return 1
     print("   ✓ выполнены")
 
+    dags = ["analytics_sync", "clickhouse_sync"]
+    if args.apply:
+        quiesce(dags)
+    print(f"\n   {'✓' if args.apply else '[plan]'} {', '.join(dags)} на паузе, идущих прогонов нет")
     for reg in order + [r for r in registers if r not in order]:
-        cut_register(pg, ch, reg, apply=args.apply, ch_cfg=args.ch_config)
-    move_groups(pg, apply=args.apply)
+        cut_register(pg, ch, reg, apply=args.apply, ch_cfg=args.ch_config, stop_pg=args.stop_pg)
+    live_group(pg, apply=args.apply)
+    if args.stop_pg:
+        move_groups(pg, apply=args.apply)
+    else:
+        for d in dags:
+            if args.apply:
+                airflow("dags", "unpause", d)
+        print(f"   {'✓' if args.apply else '[plan]'} пауза снята: {', '.join(dags)}")
 
-    print("\nоткат (если понадобится): EXCHANGE TABLES обратно; ch_sync — конфигурации местами; "
-          "pg_fact_write = true; issuer = pg_facts. Документы, получившие id от реестра за это время, "
-          "получат в PostgreSQL новые id от старого пути.")
+    if args.stop_pg:
+        print("\nоткат: EXCHANGE TABLES обратно; ch_sync — конфигурации местами; pg_fact_write = true; "
+              "issuer = pg_facts. Документы, получившие id от реестра, получат в PostgreSQL новые id.")
+    else:
+        print("\nоткат: EXCHANGE TABLES обратно (старые данные — в *_direct) и ch_sync — конфигурации местами; "
+              "PostgreSQL не трогался, второй hop догонит с того места, где остановился.")
     if not args.apply:
         print("\nэто план. Выполнить: --apply --ch-config <ch_admin config>")
     return 0
