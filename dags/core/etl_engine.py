@@ -73,6 +73,21 @@ RAW_REFS_PREFIX = "raw_refs."
 _EMPTY_REF = "00000000-0000-0000-0000-000000000000"
 
 
+_MISSING = object()
+
+
+def _with_ref(raw_refs, key, value):
+    """Копия raw_refs с заменённым ключом. _MISSING — не трогать, None — убрать ключ."""
+    if value is _MISSING or not isinstance(raw_refs, dict):
+        return raw_refs
+    out = dict(raw_refs)
+    if value is None:
+        out.pop(key, None)
+    else:
+        out[key] = value
+    return out
+
+
 def _pack_raw_refs(df: "pd.DataFrame") -> "pd.DataFrame":
     """
     Колонки мэппингов вида raw_refs.<key>[.<sub>] → одна JSONB-колонка raw_refs.
@@ -943,8 +958,20 @@ class ETLEngine:
         ДО фильтра include_columns — по нему missing-логика понимает, какие документы
         1С вернула, а какие исчезли.
         """
+        # Шапка собирается из строк регистра, и «первая строка» должна означать
+        # min(line_no), а не первую в выдаче MSSQL. SELECT цели строится строго из
+        # include_columns, поэтому line_no добавляется только для упорядочивания —
+        # фильтр колонок ниже использует исходный список, в шапку он не попадает.
+        sql_target = target
+        if (target.target_role == "dimension" and target.upsert_keys
+                and target.include_columns and "line_no" not in target.include_columns
+                and self._target_has_column(target, "line_no")):
+            import copy
+            sql_target = copy.copy(target)
+            sql_target.include_columns = list(target.include_columns) + ["line_no"]
+
         sql = self._build_sql_for_target(
-            target=target,
+            target=sql_target,
             period_start=period_start,
             period_end=period_end,
             key_values=key_values,
@@ -967,6 +994,18 @@ class ETLEngine:
         if "recorder" in df.columns:
             returned = set(df["recorder"].dropna().astype(str).tolist())
 
+        # Шапка из строк регистра — детерминированно. Раньше drop_duplicates(keep="last")
+        # брал случайную строку: выдача MSSQL без ORDER BY, а продавец и ссылка на
+        # исходную реализацию живут на строках. У 0.99% чеков продавцы в строках разные,
+        # и значение шапки «плавало» между перезагрузками. Правило (решение 2026-09-24):
+        # шапка = первая строка по line_no; отдельная колонка может переопределить выбор
+        # через transform_params.header_pick.
+        picks = {}
+        if target.target_role == "dimension" and target.upsert_keys:
+            order = list(target.upsert_keys) + (["line_no"] if "line_no" in df.columns else [])
+            df = df.sort_values(order, kind="stable").reset_index(drop=True)
+            picks = self._header_picks(target, df)
+
         if target.include_columns:
             available = [c for c in target.include_columns if c in df.columns]
             if "etl_loaded_at" in df.columns and "etl_loaded_at" not in available:
@@ -978,11 +1017,61 @@ class ETLEngine:
         # у шапки ключ — документ, поэтому схлопываем явно.
         if target.target_role == "dimension" and target.upsert_keys:
             before = len(df)
-            df = df.drop_duplicates(subset=target.upsert_keys, keep="last")
+            df = df.drop_duplicates(subset=target.upsert_keys, keep="first").reset_index(drop=True)
             if before != len(df):
                 print(f"Dim dedup: {before} → {len(df)} rows by keys {target.upsert_keys}")
+            for key, chosen in picks.items():
+                df["raw_refs"] = [
+                    _with_ref(rr, key, chosen.get(str(r).lower(), _MISSING))
+                    for rr, r in zip(df["raw_refs"], df["recorder"])
+                ]
 
         return df, extracted, returned
+
+    def _target_sources(self, target: "TargetConfig") -> list:
+        if target.union_config:
+            return [m.source for m in target.union_config.members if m.source]
+        return [target.source_config] if target.source_config else []
+
+    def _target_has_column(self, target: "TargetConfig", column: str) -> bool:
+        return any(c.target_column == column for src in self._target_sources(target) for c in src.columns)
+
+    def _header_picks(self, target: "TargetConfig", df) -> Dict[str, Dict[str, Any]]:
+        """
+        Переопределения выбора значения шапки, объявленные в метаданных
+        (transform_params.header_pick у мэппинга raw_refs.<key>[.uid]).
+
+          first_non_self — первая по line_no строка, ссылающаяся НЕ на сам документ;
+                           если все строки ссылаются на себя — сам документ.
+                           Для возврата это его исходная реализация, а не самоссылка.
+
+        Возвращает {key: {recorder: значение raw_refs[key]}}.
+        """
+        rules: Dict[str, str] = {}
+        for src in self._target_sources(target):
+            for col in src.columns:
+                pick = (col.transform_params or {}).get("header_pick") if isinstance(col.transform_params, dict) else None
+                if pick and str(col.target_column).startswith("raw_refs."):
+                    rules[col.target_column.split(".")[1]] = pick
+        if not rules or "raw_refs" not in df.columns or "recorder" not in df.columns:
+            return {}
+        out: Dict[str, Dict[str, Any]] = {}
+        for key, rule in rules.items():
+            if rule != "first_non_self":
+                raise ValueError(f"неизвестное правило header_pick={rule!r} у raw_refs.{key}")
+            chosen: Dict[str, Any] = {}
+            for rec, rr in zip(df["recorder"], df["raw_refs"]):
+                r = str(rec).lower()
+                v = rr.get(key) if isinstance(rr, dict) else None
+                is_self = isinstance(v, dict) and str(v.get("uid", "")).lower() == r
+                if r not in chosen:
+                    chosen[r] = v                      # первая строка — запасной вариант
+                    chosen[r + "#real"] = not is_self and v is not None
+                elif not chosen[r + "#real"] and v is not None and not is_self:
+                    chosen[r] = v                      # первая настоящая ссылка вытесняет самоссылку
+                    chosen[r + "#real"] = True
+            out[key] = {k: v for k, v in chosen.items() if not k.endswith("#real")}
+        return out
 
     def _process_target(
         self,
