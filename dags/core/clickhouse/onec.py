@@ -116,6 +116,10 @@ def _typed(series: pd.Series, ch_type: str) -> pd.Series:
 
 def prepare(spec, df: pd.DataFrame) -> pd.DataFrame:
     """Колонки цели из подготовленного кадра: source_expr — имя колонки кадра, тип — из конфига."""
+    if df.empty:
+        # Законный случай: все документы набора изменений из 1С исчезли. Свежих строк
+        # нет, а патч по-прежнему должен убрать эти документы из их партиций.
+        return pd.DataFrame(columns=spec.target_columns)
     out = pd.DataFrame(index=df.index)
     for c in spec.columns:
         src = c.source_expr
