@@ -188,28 +188,6 @@ def _report_unsupported(items, error):
 
 
 
-def _clickhouse_idle(dag_id: str) -> bool:
-    """
-    Идёт ли уже синхронизация ClickHouse. True — можно запускать новую.
-
-    Возвращает False, если есть незавершённый прогон: ставить второй в очередь
-    бессмысленно, он сделает ровно ту же работу над тем же текущим состоянием.
-    """
-    from airflow.settings import Session
-    from sqlalchemy import text
-    s = Session()
-    try:
-        n = s.execute(
-            text("SELECT count(*) FROM dag_run WHERE dag_id = :d AND state IN ('queued','running')"),
-            {"d": dag_id}).scalar() or 0
-    finally:
-        s.close()
-    if n:
-        print(f"{dag_id}: уже выполняется или в очереди прогонов {n} — новый не ставим")
-        return False
-    return True
-
-
 # ──────────────────────────────────────────────────────────────────────────────
 #  Фабрика: один контур = один DAG. Отличаются только conn_id и dag_id.
 # ──────────────────────────────────────────────────────────────────────────────
@@ -291,32 +269,33 @@ def build_incremental_dag(
         # Сам перенос живёт в clickhouse_sync_dag.py, здесь только связь.
         if trigger_dag_id:
             from airflow.operators.trigger_dagrun import TriggerDagRunOperator
-            from airflow.operators.python import ShortCircuitOperator
             last = guard if reconcilable else (chain[-1] if chain else None)
             # Синхронизация ClickHouse идёт дольше пяти минут, а инкремент
-            # запускается каждые пять. Без этой проверки каждый успешный прогон
-            # ставил бы в очередь ещё один sync, и очередь росла бы неограниченно.
-            # Пропуск безвреден: следующий инкремент через пять минут поставит
-            # новый, а синхронизация всегда работает с ТЕКУЩИМ состоянием и
-            # датой запуска не параметризована.
-            gate = ShortCircuitOperator(
-                task_id="gate__clickhouse_idle",
-                python_callable=_clickhouse_idle,
-                op_args=[trigger_dag_id],
+            # запускается каждые пять. Если ставить прогон на каждый успешный
+            # инкремент, очередь растёт неограниченно — за сутки так накопилось 185.
+            #
+            # Спросить «идёт ли уже sync» из таски нельзя: в Airflow 3 у таски нет
+            # доступа к метабазе. Поэтому дросселируем без запросов — run_id общий
+            # для всего 15-минутного окна, а skip_when_already_exists пропускает
+            # повторный триггер в том же окне. Получается не больше одного прогона
+            # на окно, и проверять ничего не нужно.
+            #
+            # Схлопывание безвредно: синхронизация работает с ТЕКУЩИМ состоянием и
+            # датой запуска не параметризована — пропущенный триггер ничего не теряет.
+            trigger = TriggerDagRunOperator(
+                task_id="trigger__clickhouse_sync",
+                trigger_dag_id=trigger_dag_id,
+                trigger_run_id=("auto__{{ logical_date.strftime('%Y%m%dT%H') }}"
+                                "{{ '%02d' % (logical_date.minute // 15 * 15) }}"),
+                skip_when_already_exists=True,
+                reset_dag_run=False,
+                wait_for_completion=False,
                 trigger_rule="all_success",
                 retries=0,
                 execution_timeout=timedelta(minutes=2),
             )
-            trigger = TriggerDagRunOperator(
-                task_id="trigger__clickhouse_sync",
-                trigger_dag_id=trigger_dag_id,
-                wait_for_completion=False,
-                reset_dag_run=True,
-                retries=0,
-                execution_timeout=timedelta(minutes=2),
-            )
             if last is not None:
-                last >> gate >> trigger
+                last >> trigger
 
         if unsupported or error:
             PythonOperator(
