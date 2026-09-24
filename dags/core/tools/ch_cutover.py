@@ -117,18 +117,37 @@ def airflow(*args) -> str:
     return r.stdout
 
 
+ACTIVE_TI = {"running", "queued", "restarting", "deferred"}
+
+
+def _active_tasks(dag: str) -> list:
+    """
+    Задачи DAG'а, которые выполняются или стоят в очереди. Прогон на паузе может
+    навсегда остаться «running»: Airflow доводит начатые задачи, но новые не планирует.
+    Поэтому смотрим на задачи, а не на состояние прогона.
+    """
+    busy = []
+    for line in airflow("dags", "list-runs", dag, "-o", "plain").splitlines()[1:]:
+        f = line.split()
+        if len(f) > 2 and f[2] in ("running", "queued"):
+            for t in airflow("tasks", "states-for-dag-run", dag, f[1], "-o", "plain").splitlines()[1:]:
+                g = t.split()
+                if len(g) > 3 and g[3] in ACTIVE_TI:
+                    busy.append(f"{dag}/{f[1]}/{g[2]}")
+    return busy
+
+
 def quiesce(dags, timeout: int = 900) -> None:
-    """DAG'и на паузу и дождаться завершения идущих прогонов — во время переключения никто не пишет."""
+    """DAG'и на паузу и дождаться завершения выполняющихся задач — во время переключения никто не пишет."""
     for d in dags:
         airflow("dags", "pause", d)
     t0 = time.monotonic()
     while True:
-        busy = [d for d in dags if any(l.split()[2:3] == ["running"] or l.split()[2:3] == ["queued"]
-                                       for l in airflow("dags", "list-runs", d, "-o", "plain").splitlines()[1:])]
+        busy = [x for d in dags for x in _active_tasks(d)]
         if not busy:
             return
         if time.monotonic() - t0 > timeout:
-            raise RuntimeError(f"прогоны не завершились за {timeout} с: {busy}")
+            raise RuntimeError(f"задачи не завершились за {timeout} с: {busy[:5]}")
         time.sleep(10)
 
 
