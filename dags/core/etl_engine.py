@@ -787,39 +787,11 @@ class ETLEngine:
         """
         print(f"Processing target [incremental]: {target.full_table_name}")
 
-        # 1. SQL по списку UID
-        sql = self._build_sql_for_target(target=target, key_values=changed_uids)
-        print(f"Generated SQL:\n{sql[:500]}...")
-
-        # 2. Extract
-        df, binary_columns = self.storage.execute_query(sql)
-        extracted = len(df)
+        # 1–4b. Извлечение — общее с full_period и прямым путём в ClickHouse
+        df, extracted, returned_recorders = self.extract_frame(target, key_values=changed_uids)
         if df.empty:
             print(f"No data for {target.target_table} in incremental")
             return {"loaded": 0, "extracted": 0, "recorders": set()}
-
-        # 3. Transform
-        column_transforms = self._build_column_transforms(target)
-        df = self.transform.transform_dataframe_by_config(
-            df=df, binary_columns=binary_columns, column_transforms=column_transforms,
-        )
-        df = _pack_raw_refs(df)   # raw_refs.<key> → JSONB raw_refs (стандарт ссылок)
-
-        # Сохраняем recorder перед include_columns фильтрацией
-        returned_recorders = set()
-        if "recorder" in df.columns:
-            returned_recorders = set(df["recorder"].dropna().astype(str).tolist())
-
-        # 4. Split по include_columns
-        if target.include_columns:
-            available = [c for c in target.include_columns if c in df.columns]
-            if "etl_loaded_at" in df.columns and "etl_loaded_at" not in available:
-                available.append("etl_loaded_at")
-            df = df[available]
-
-        # 4b. Dedup для dim
-        if target.target_role == "dimension" and target.upsert_keys:
-            df = df.drop_duplicates(subset=target.upsert_keys, keep="last")
 
         # 4c-new. ETL audit-поля для incremental (см. docs/sales_load_modes.md):
         #     retail_updated_at  — per-row retail.updated_at (через map recorder→ts)
@@ -950,6 +922,68 @@ class ETLEngine:
     # ======================================================================
     #  PROCESS TARGET
     # ======================================================================
+    def extract_frame(
+        self,
+        target: "TargetConfig",
+        *,
+        period_start: Optional[str] = None,
+        period_end: Optional[str] = None,
+        key_values: Optional[List[str]] = None,
+    ):
+        """
+        Извлечение одной цели БЕЗ записи куда-либо: SQL → 1С → преобразования →
+        raw_refs → колонки цели → dedup шапки.
+
+        Общая часть full_period, incremental и прямого пути в ClickHouse. До выноса
+        эти шаги были продублированы в _process_target и _process_target_incremental
+        почти дословно; теперь бизнес-логика извлечения из 1С существует в одном
+        месте, и прямой путь получает её, а не копию.
+
+        Возвращает (df, extracted, returned_recorders). returned_recorders снимается
+        ДО фильтра include_columns — по нему missing-логика понимает, какие документы
+        1С вернула, а какие исчезли.
+        """
+        sql = self._build_sql_for_target(
+            target=target,
+            period_start=period_start,
+            period_end=period_end,
+            key_values=key_values,
+        )
+        print(f"Generated SQL:\n{sql[:500]}...")
+
+        df, binary_columns = self.storage.execute_query(sql)
+        extracted = len(df)
+        if df.empty:
+            return df, 0, set()
+        print(f"Extracted: {extracted} rows, binary columns: {binary_columns}")
+
+        column_transforms = self._build_column_transforms(target)
+        df = self.transform.transform_dataframe_by_config(
+            df=df, binary_columns=binary_columns, column_transforms=column_transforms,
+        )
+        df = _pack_raw_refs(df)   # raw_refs.<key> → JSONB raw_refs (стандарт ссылок)
+
+        returned = set()
+        if "recorder" in df.columns:
+            returned = set(df["recorder"].dropna().astype(str).tolist())
+
+        if target.include_columns:
+            available = [c for c in target.include_columns if c in df.columns]
+            if "etl_loaded_at" in df.columns and "etl_loaded_at" not in available:
+                available.append("etl_loaded_at")
+            df = df[available]
+            print(f"Filtered to {len(available)} columns for {target.target_table}")
+
+        # Для регистра накопления один документ порождает N строк по позициям;
+        # у шапки ключ — документ, поэтому схлопываем явно.
+        if target.target_role == "dimension" and target.upsert_keys:
+            before = len(df)
+            df = df.drop_duplicates(subset=target.upsert_keys, keep="last")
+            if before != len(df):
+                print(f"Dim dedup: {before} → {len(df)} rows by keys {target.upsert_keys}")
+
+        return df, extracted, returned
+
     def _process_target(
         self,
         target: TargetConfig,
@@ -970,53 +1004,16 @@ class ETLEngine:
         """
         print(f"Processing target: {target.full_table_name}")
 
-        # 1. Генерируем SQL
-        sql = self._build_sql_for_target(
-            target=target,
+        # 1–4b. Извлечение — общее с incremental и прямым путём в ClickHouse
+        df, _, _ = self.extract_frame(
+            target,
             period_start=period_start,
             period_end=period_end,
             key_values=key_values,
         )
-
-        print(f"Generated SQL:\n{sql[:500]}...")
-
-        # 2. Извлекаем данные
-        df, binary_columns = self.storage.execute_query(sql)
-
         if df.empty:
             print(f"No data for {target.target_table}")
             return 0
-
-        print(f"Extracted: {len(df)} rows, binary columns: {binary_columns}")
-
-        # 3. Трансформируем
-        column_transforms = self._build_column_transforms(target)
-        df = self.transform.transform_dataframe_by_config(
-            df=df,
-            binary_columns=binary_columns,
-            column_transforms=column_transforms,
-        )
-        df = _pack_raw_refs(df)   # raw_refs.<key> → JSONB raw_refs (стандарт ссылок)
-
-        # 4. Filter by include_columns (split)
-        if target.include_columns:
-            available = [c for c in target.include_columns if c in df.columns]
-            # Always keep etl_loaded_at
-            if "etl_loaded_at" in df.columns and "etl_loaded_at" not in available:
-                available.append("etl_loaded_at")
-            df = df[available]
-            print(f"Filtered to {len(available)} columns for {target.target_table}")
-
-        # 4b. Dedup for dimension targets (один документ = одна строка)
-        #     Для регистра накопления один документ порождает N строк по позициям,
-        #     при upsert по ключу dim это N бессмысленных операций + случайный
-        #     порядок перезаписи. Делаем dedup по upsert_keys явно.
-        if target.target_role == "dimension" and target.upsert_keys:
-            before = len(df)
-            df = df.drop_duplicates(subset=target.upsert_keys, keep="last")
-            after = len(df)
-            if before != after:
-                print(f"Dim dedup: {before} → {after} rows by keys {target.upsert_keys}")
 
         # 4c. ETL audit-поля — пишутся ВСЕМ строкам в обоих режимах.
         #     Это служебные колонки (см. docs/sales_load_modes.md), которые
