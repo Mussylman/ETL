@@ -79,6 +79,17 @@ class DirectChangeProvider(DataChecker):
         return df, from_ts, to_ts
 
 
+    def signal_for(self, keys: List[str]) -> pd.DataFrame:
+        """Последний сигнал источника по явному списку ключей (режим keys): df[uid, updated_at]."""
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+        rt = PostgresHook(postgres_conn_id=self.retail_conn_id)
+        got = rt.get_pandas_df(
+            f"SELECT lower({self.key_column}) AS uid, MAX((updated_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Almaty')::timestamp) AS updated_at "
+            f"FROM public.{self.retail_table} WHERE lower({self.key_column}) = ANY(%s) GROUP BY 1", parameters=(list(keys),))
+        ts = dict(zip(got["uid"], got["updated_at"]))
+        return pd.DataFrame({"uid": list(keys), "updated_at": [ts.get(k, pd.NaT) for k in keys]})
+
+
 def old_path_upper_bound(pg, register_id: int) -> Optional[datetime]:
     """Верхняя граница последнего успешного окна старого пути (из load_history)."""
     r = pg.get_first(
@@ -174,12 +185,14 @@ def run_register(pg, ch: ClickHouse, specs: List, **kw) -> Dict:
 
 
 def _run_register(pg, ch: ClickHouse, specs: List, *, mode: str = "patch",
-                  partitions: Optional[List[str]] = None, shadow: bool = True,
-                  quiet: bool = True) -> Dict:
+                  partitions: Optional[List[str]] = None, keys: Optional[List[str]] = None,
+                  shadow: bool = True, quiet: bool = True) -> Dict:
     """
     Один регистр → все его цели.
       mode='patch'   — набор изменений из retail, публикация патчем
       mode='rebuild' — полная пересборка указанных партиций из 1С (ремонт, sweep, backfill)
+      mode='keys'    — патч явного списка документов (ремонт, документы до начала истории);
+                       та же классификация, watermark не трогается
     shadow=True — реестр ключей только читается: прямой путь не пишет в PostgreSQL ничего,
     кроме собственного состояния.
     """
@@ -197,12 +210,18 @@ def _run_register(pg, ch: ClickHouse, specs: List, *, mode: str = "patch",
     cfg = engine.config
     report: Dict = {"register": register, "mode": mode, "source_key": source_key}
 
+    if mode == "rebuild":
+        early = sorted(p for p in (partitions or []) if any(patch.prehistory(sp, p) for sp in specs))
+        if early:
+            raise RuntimeError(f"{source_key}: партиции {early} раньше начала истории (history_from) — "
+                               f"их не пересобирают целиком; отдельные документы — mode='keys'")
+
     uid_ts: Dict[str, datetime] = {}
     changed: List[str] = []
     to_ts = None
     cs = None
     targets = engine._get_active_targets()
-    if mode == "patch":
+    if mode in ("patch", "keys"):
         prov = DirectChangeProvider(
             pg_meta=pg, ch=ch, source_key=source_key, presence_table=header.fqn,
             upper_bound=old_path_upper_bound(pg, cfg.id) if shadow else None,
@@ -211,7 +230,11 @@ def _run_register(pg, ch: ClickHouse, specs: List, *, mode: str = "patch",
             etl_table=None, etl_conn_id=None)
         hdr_target = next(t for t in targets if t.target_table == header.source_params["target"])
         with contextlib.redirect_stdout(sink) if quiet else contextlib.nullcontext():
-            cdf, from_ts, to_ts = prov.get_changed_uids()
+            if mode == "keys":
+                cdf, from_ts, to_ts = prov.signal_for(sorted({changes.norm_key(k) for k in keys or []} - {""})), \
+                    "1970-01-01 00:00:00", None
+            else:
+                cdf, from_ts, to_ts = prov.get_changed_uids()
             cs = changes.classify(cdf, from_ts, to_ts,
                                   ready_lookup=lambda keys: engine.ready_keys(hdr_target, keys),
                                   present_lookup=prov._present_uids)
@@ -222,7 +245,8 @@ def _run_register(pg, ch: ClickHouse, specs: List, *, mode: str = "patch",
             # всё ждёт источник: ничего не извлекаем и не публикуем. Окно двигается —
             # ожидающие документы не в витрине, поэтому остаются в хвосте и
             # перепроверяются следующими циклами.
-            _save_watermark(pg, source_key, to_ts, report)
+            if mode == "patch":
+                _save_watermark(pg, source_key, to_ts, report)
             report.update(patched=0, published={})
             return report
 
@@ -231,7 +255,7 @@ def _run_register(pg, ch: ClickHouse, specs: List, *, mode: str = "patch",
     returned: set = set()
     for t in targets:
         with contextlib.redirect_stdout(sink) if quiet else contextlib.nullcontext():
-            if mode == "patch":
+            if mode in ("patch", "keys"):
                 if cs.ready:
                     df, _, got = engine.extract_frame(t, key_values=sorted(cs.ready))
                 else:
@@ -275,7 +299,7 @@ def _run_register(pg, ch: ClickHouse, specs: List, *, mode: str = "patch",
             frames[name] = df[df["recorder"].map(registry._norm_uuid).isin(allowed)].reset_index(drop=True)
         report["outside_partition_docs"] = dropped
 
-    if mode == "patch":
+    if mode in ("patch", "keys"):
         # Lookup и извлечение — два запроса; извлекаются только ключи, найденные lookup'ом.
         # Документ, исчезнувший между ними, — состояние не определено: ничего не
         # публикуем, окно не двигаем, следующий цикл повторит.

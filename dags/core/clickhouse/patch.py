@@ -52,6 +52,22 @@ def _uuid_list(keys: Iterable[str]) -> str:
     return ", ".join(f"'{k}'" for k in keys)
 
 
+def history_partition(spec) -> Optional[int]:
+    """Первая партиция полной истории цели (source_params.history_from, дата) или None."""
+    h = str((spec.source_params or {}).get("history_from") or "")
+    return int(h[:4] + h[5:7]) if h else None
+
+
+def prehistory(spec, partition) -> bool:
+    """
+    Партиция раньше начала полной истории. Там лежат только отдельные документы,
+    попавшие по сигналу (старый заказ, изменённый сейчас): она частична по определению,
+    поэтому патч может её создать или опустошить, а пересборка — нет.
+    """
+    h = history_partition(spec)
+    return h is not None and int(partition) < h
+
+
 def publish(pg, ch: ClickHouse, spec, frame, changed_docs: Iterable[str], *,
             rebuild: Optional[List[str]] = None, run_mode: str = "patch") -> List[Dict]:
     """
@@ -100,7 +116,7 @@ def publish(pg, ch: ClickHouse, spec, frame, changed_docs: Iterable[str], *,
             raise RuntimeError(f"{spec.code}: цель пуста — сначала полная пересборка (rebuild). "
                                f"Патч не применён.")
         latest = max(int(x) for x in existing)
-        orphans = sorted(x for x in parts if x not in existing and int(x) < latest)
+        orphans = sorted(x for x in parts if x not in existing and int(x) < latest and not prehistory(spec, x))
         if orphans:
             raise RuntimeError(f"{spec.code}: патч попал в отсутствующие исторические партиции {orphans} — "
                                f"их нужно сначала пересобрать (rebuild). Цель не изменена.")
@@ -143,7 +159,7 @@ def publish(pg, ch: ClickHouse, spec, frame, changed_docs: Iterable[str], *,
             problem = f"дублей бизнес-ключа {dup}"
         elif extra:
             problem = "; ".join(f"{l}: {n}" for l, n in extra)
-        elif n_stage == 0 and spec.empty_partition_policy == "fail":
+        elif n_stage == 0 and spec.empty_partition_policy == "fail" and not prehistory(spec, p):
             problem = "партиция опустела бы, empty_partition_policy=fail"
         if problem:
             res.update(status="failed", note=problem)
