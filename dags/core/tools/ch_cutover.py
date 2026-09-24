@@ -2,8 +2,7 @@
 Переключение регистров 1С на прямой путь 1С → ClickHouse.
 
     PYTHONPATH=dags python3 -m core.tools.ch_cutover --register order,sales               # план + предусловия
-    PYTHONPATH=dags python3 -m core.tools.ch_cutover --register order,sales --apply \\
-        --ch-config /path/ch_admin.xml                                                    # выполнить
+    PYTHONPATH=dags python3 -m core.tools.ch_cutover --register order,sales --apply                  # выполнить
 
 Порядок (docs/knowledge/decisions/Прямой путь 1С → ClickHouse — переключение ...):
   0. предусловия: shadow-таблицы наполнены; закрытые месяцы прямого пути = 1С;
@@ -27,12 +26,16 @@
 """
 
 import argparse
+import os
 import json
 import subprocess
 import sys
 import time
 
 sys.path.insert(0, __file__.rsplit("/core/", 1)[0])
+
+# admin-доступ только для DDL; ETL работает под etl_writer, ch_admin в Airflow не заведён
+ADMIN_CFG = os.path.expanduser("~/.config/clickhouse/ch_admin.xml")
 
 from core.clickhouse import onec, onec_reconcile as orc, registry  # noqa: E402
 from core.clickhouse.config import load_spec                        # noqa: E402
@@ -249,7 +252,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Переключение регистров 1С на прямой путь в ClickHouse")
     ap.add_argument("--register", required=True, help="order,sales")
     ap.add_argument("--apply", action="store_true")
-    ap.add_argument("--ch-config", help="config-file clickhouse-client под ch_admin (для --apply)")
+    ap.add_argument("--ch-config", default=ADMIN_CFG,
+                    help=f"config-file clickhouse-client под ch_admin (по умолчанию {ADMIN_CFG}, права 600, вне репозитория)")
     ap.add_argument("--skip-history", action="store_true", help="не сверять закрытые месяцы с 1С")
     ap.add_argument("--stop-pg", action="store_true",
                     help="полная передача: первый hop перестаёт писать PostgreSQL, id выдаёт реестр, "

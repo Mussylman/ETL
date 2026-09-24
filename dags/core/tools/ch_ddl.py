@@ -11,10 +11,14 @@
 """
 
 import argparse
+import os
 import subprocess
 import sys
 
 sys.path.insert(0, __file__.rsplit("/core/", 1)[0])
+
+# admin-доступ только для DDL; ETL работает под etl_writer, ch_admin в Airflow не заведён
+ADMIN_CFG = os.path.expanduser("~/.config/clickhouse/ch_admin.xml")
 
 from core.clickhouse.config import load_active_specs, load_spec   # noqa: E402
 
@@ -44,7 +48,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="DDL целевых таблиц ClickHouse из конфигурации")
     ap.add_argument("--code")
     ap.add_argument("--all", action="store_true")
-    ap.add_argument("--ch-config", required=True, help="config-file clickhouse-client (ch_admin)")
+    ap.add_argument("--ch-config", default=ADMIN_CFG,
+                    help=f"config-file clickhouse-client под ch_admin (по умолчанию {ADMIN_CFG}, права 600, вне репозитория)")
     ap.add_argument("--config-conn", default="etl_prod")
     mode = ap.add_mutually_exclusive_group(required=True)
     mode.add_argument("--plan", action="store_true")

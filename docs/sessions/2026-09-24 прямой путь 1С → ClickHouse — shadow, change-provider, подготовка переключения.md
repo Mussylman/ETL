@@ -31,3 +31,12 @@ date: 2026-09-24
 
 ## Коммиты
 bf842c2, fdc3f7b, 700fe70, 08475d5, ae48e4b, b063851, e89178c, 2ebd363 (+3ef8197).
+
+## Переключение (17:13 Almaty)
+`ch_cutover --register order,sales --skip-history --apply` — PASS. Боевые факты ClickHouse идут
+из 1С напрямую (`onec_1c` в `analytics_sync`), копии для отката `fact_*_direct`, второй hop по
+4 фактам выключен (`legacy_frozen`). PostgreSQL и `incremental_prod` работают как раньше — они
+всё ещё выдают id документов (issuer `pg_facts`); снятие зависимости — следующий шаг.
+Прогон `analytics_sync` 12:15 UTC упал «Task not found» — он был создан по версии DAG до смены
+группы (`sync__shadow_1c` → `sync__onec_1c`); данных не касался.
+Admin-конфиг ClickHouse перенесён в `~/.config/clickhouse/ch_admin.xml` (600).
