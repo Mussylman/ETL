@@ -121,13 +121,25 @@ def compare(spec, src_row, dst_row) -> List[Tuple[str, str, str]]:
     return out
 
 
-def duplicates_sql(spec, table: str, where: str = "") -> Optional[str]:
-    """Дубли бизнес-ключа в ClickHouse. None, если ключ в конфигурации не задан."""
+def duplicates_sql(spec, table: str, where: str = "", bucket: Optional[int] = None,
+                   buckets: int = 1) -> Optional[str]:
+    """
+    Дубли бизнес-ключа. None, если ключ в конфигурации не задан.
+
+    На таблице целиком GROUP BY по десяткам миллионов ключей не помещается в
+    лимит памяти рабочей учётки, поэтому подсчёт разбивается на бакеты по хешу
+    ключа. Одинаковые ключи всегда попадают в один бакет — результат точный,
+    а не приблизительный.
+    """
     if not spec.business_key:
         return None
     keys = ", ".join(spec.business_key)
     nums = ", ".join(str(i + 1) for i in range(len(spec.business_key)))
-    return (f"SELECT count() FROM (SELECT {keys} FROM {table}{where} "
+    cond = ""
+    if bucket is not None and buckets > 1:
+        sep = " AND " if where else " WHERE "
+        cond = f"{sep}cityHash64({keys}) % {buckets} = {bucket}"
+    return (f"SELECT count() FROM (SELECT {keys} FROM {table}{where}{cond} "
             f"GROUP BY {nums} HAVING count() > 1)")
 
 

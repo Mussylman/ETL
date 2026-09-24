@@ -74,8 +74,13 @@ def main() -> int:
                                + f" FROM {src.projected()}")
         b = ch.row(rec.fingerprint_sql(spec, "clickhouse") + f" FROM {spec.fqn}")
         diff = rec.compare(spec, a, b)
-        dup_sql = rec.duplicates_sql(spec, spec.fqn)
-        dup = int(ch.scalar(dup_sql) or 0) if dup_sql else 0
+        # по бакетам: на больших фактах GROUP BY целиком не влезает в лимит памяти
+        B = 16
+        dup = 0
+        if spec.business_key:
+            for bucket in range(B):
+                dup += int(ch.scalar(
+                    rec.duplicates_sql(spec, spec.fqn, bucket=bucket, buckets=B)) or 0)
         ok = not diff and not dup
         all_ok &= ok
         m = sz.get(spec.target_table, {})
