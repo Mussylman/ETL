@@ -7,13 +7,14 @@ DAG = только оркестрация. Он не знает ни табли�
 и идут по position (справочники раньше фактов), внутри группы — по priority (заказы
 раньше продаж). Правка конфигурации не меняет структуру DAG.
 
-Режим прогона выбирается по времени запуска (Asia/Almaty):
-    каждые 5 минут       — patch: набор изменений retail + хвост, патч документов;
-    в начале часа        — hot:   пересборка текущего и прошлого месяца из 1С —
-                                  слепая зона retail (документы без сигнала, правки
-                                  некассовых документов);
-    ночью (03:00)        — sweep: сверка всей истории с 1С, несошедшиеся месяцы
-                                  пересобираются.
+Режим выбирает runner по отметкам последнего успешного выполнения (control plane),
+а не по минуте слота — пропущенный слот не отменяет сверку:
+    patch — набор изменений retail + хвост, патч документов;
+    hot   — раз в час: пересборка текущего и прошлого месяца из 1С — слепая зона
+            retail (документы без сигнала, правки некассовых документов);
+    sweep — раз в сутки после 03:00 (Almaty): сверка всей истории с 1С,
+            несошедшиеся месяцы пересобираются.
+Группы изолированы: сбой одной не останавливает и не перезапускает остальные.
 Для обобщённых источников (postgres / mssql) режим не важен.
 
 Прогоны одного источника не пересекаются: блокировка источника в control plane
@@ -32,30 +33,18 @@ DAGS_PATH = "/home/dev/airflow/dags"
 DAG_ID = "analytics_sync"
 CONFIG_CONN = "etl_prod"
 CH_CONN = "clickhouse_etl"
-SWEEP_HOUR = 3          # первый прогон этого часа — sweep, остальных часов — hot
-
-
-def pick_mode(logical_date) -> str:
-    """Режим по времени запуска в бизнес-часовом поясе."""
-    from zoneinfo import ZoneInfo
-    t = logical_date.astimezone(ZoneInfo("Asia/Almaty"))
-    if t.minute < 5:
-        return "sweep" if t.hour == SWEEP_HOUR else "hot"
-    return "patch"
-
-
 def _run(**context):
     import sys
     if DAGS_PATH not in sys.path:
         sys.path.insert(0, DAGS_PATH)
     from core.clickhouse.runner import run_dag
-    mode = pick_mode(context["logical_date"])
-    rep = run_dag(DAG_ID, mode=mode, config_conn_id=CONFIG_CONN, ch_conn_id=CH_CONN)
+    # режим (patch / hot / sweep) выбирает runner по отметкам в control plane
+    rep = run_dag(DAG_ID, mode="auto", config_conn_id=CONFIG_CONN, ch_conn_id=CH_CONN)
     for g, r in rep["groups"].items():
-        print(f"{g} [{mode}]: объектов {r['objects']}")
+        print(f"{g} [{rep['mode']}]: объектов {r['objects']}")
         for x in r.get("results", []):
             print("   ", {k: v for k, v in x.items() if k != "published"})
-    return {"mode": mode, "groups": list(rep["groups"])}
+    return {"mode": rep["mode"], "groups": list(rep["groups"])}
 
 
 with DAG(
@@ -66,7 +55,8 @@ with DAG(
     catchup=False,
     max_active_runs=1,
     is_paused_upon_creation=True,
-    default_args={"retries": 1, "retry_delay": timedelta(minutes=2)},
+    # без автоповтора: повтор перезапускал бы все группы; следующий прогон — через 5 минут
+    default_args={"retries": 0},
     tags=["clickhouse", "analytics"],
 ) as dag:
     # одна стабильная задача: группы и их порядок читаются в момент выполнения

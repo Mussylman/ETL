@@ -15,7 +15,9 @@
   3. Идёт в 1С по guid, уже имеющимся в dim, и забирает все поля из мэппинга.
   4. Пишет в dim все забранные поля, снимает is_stub, ставит всем ту одну метку.
 
-Строки НЕ создаются: их заводят факты (stub-резолв post_load по guid из 1С).
+Строки заводят факты (stub-резолв по guid из 1С) — у справочников с dim_key_source='facts'.
+Справочник с dim_key_source='source' (номенклатура) заводит строки сам: инкремент — каждый
+объект, о котором сигналит retail; режим register — все объекты таблицы 1С разом.
 Скрипт только дозаполняет уже существующие.
 
 Использование:
@@ -125,7 +127,8 @@ def read_config(pg, dim_code: str) -> Optional[dict]:
       column_mappings  → какие поля тянуть
     """
     reg = pg.get_first("""
-        SELECT r.id, r.code, r.retail_table, t.target_schema, t.target_table, r.retail_uid_column
+        SELECT r.id, r.code, r.retail_table, t.target_schema, t.target_table, r.retail_uid_column,
+               coalesce(to_jsonb(r) ->> 'dim_key_source', 'facts')
         FROM   etl_meta.registers r
         LEFT JOIN etl_meta.register_targets t
                ON t.register_id = r.id AND t.is_active AND t.target_role = 'dimension'
@@ -153,6 +156,10 @@ def read_config(pg, dim_code: str) -> Optional[dict]:
     return {
         "register_id": reg[0], "code": reg[1], "retail_table": reg[2],
         "retail_uid_column": reg[5],
+        # facts  — строки справочника заводят факты (stub по первой ссылке);
+        # source — справочник сам регистрирует каждый объект источника (1С),
+        #          независимо от того, встречался ли он в фактах
+        "key_source": reg[6],
         "dim_schema": reg[3] or "public", "dim_table": reg[4] or dim_code,
         "mssql_schema": src[1], "mssql_table": src[2], "onec_name": src[3],
         # is_expression — как у фактов (QueryBuilder): source_column — готовое
@@ -583,6 +590,18 @@ def process_incremental(cfg: dict, pg, rt, ms, batch: int, dry_run: bool) -> dic
         f"SELECT {k}::text FROM {dim_full} WHERE {k} = ANY(%s::uuid[])",
         parameters=(changed,))}
     guids = [g for g in changed if g in present]
+    registered = 0
+    if cfg.get("key_source") == "source":
+        # Справочник — хозяин ключей: объект, о котором сигналит retail, заводится
+        # с полями из 1С, даже если ни один факт на него ещё не ссылался.
+        new_guids = [g for g in changed if g not in present]
+        if new_guids:
+            rows_new = fetch_from_1c(ms, cfg, new_guids, batch)
+            registered = insert_rows(pg, cfg, rows_new, batch, dry_run)
+            key_pos = [m["tgt"] for m in cfg["mappings"]].index(resolve_dwh_key(cfg))
+            guids += [str(r[key_pos]) for r in rows_new]
+            print(f"    новых объектов в retail {len(new_guids)} | найдено в 1С {len(rows_new)} | "
+                  f"{'заводилось бы' if dry_run else 'заведено'} {registered}")
     if not guids:
         print(f"    watermark {watermark} | изменений в retail {len(changed)} | "
               f"из них есть в dim 0 — новые объекты придут с фактами")
@@ -600,7 +619,8 @@ def process_incremental(cfg: dict, pg, rt, ms, batch: int, dry_run: bool) -> dic
           f"из них в dim {len(guids)} | найдено в 1С {len(rows)} | "
           f"{'обновилось бы' if dry_run else 'обновлено'} {touched}")
     return {"dim": cfg["code"], "changed": len(changed), "in_dim": len(guids),
-            "touched": touched, "watermark": watermark, "touched_guids": touched_guids}
+            "touched": touched, "registered": registered, "watermark": watermark,
+            "touched_guids": touched_guids}
 
 
 def fetch_retail_marks(rt, cfg: dict, guids: List[str]) -> List[Tuple[str, Any]]:
@@ -1039,6 +1059,19 @@ def _process_inner(dim_code: str, pg, rt, ms, mode: str, batch: int,
                 print(f"    ⚠ среди изменённых {moved} групп(ы): если у них сменился parent, "
                       f"путь потомков обновится при следующем reload")
         return res
+    if mode == "register":
+        # Все объекты таблицы 1С, которых нет в справочнике, — с полями, id из IDENTITY.
+        # Существующие строки не меняются (ON CONFLICT (guid) DO NOTHING): id не
+        # переназначается никогда. Идемпотентен — повторный прогон ничего не заводит.
+        dim_full = f'{cfg["dim_schema"]}.{cfg["dim_table"]}'
+        before = pg.get_first(f"SELECT count(*) FROM {dim_full}")[0]
+        read, inserted = full_load_from_1c(ms, pg, cfg, batch, dry_run)
+        print(f"    в справочнике было {before} | прочитано из 1С {read} | "
+              f"{'завелось бы' if dry_run else 'заведено'} {inserted}")
+        res = {"dim": dim_code, "found": read, "touched": inserted, "registered": inserted}
+        if inserted and not dry_run and hierarchy_levels(pg, cfg):
+            res.update(post_hierarchy(pg, cfg, None, dry_run))
+        return res
     if mode == "hierarchy":
         res = process_hierarchy(cfg, pg, ms, batch, dry_run)
         if not dry_run:
@@ -1134,7 +1167,7 @@ def main() -> None:
     ap.add_argument("--dim", nargs="*", default=None,
                     help="коды справочников; по умолчанию все pipeline_type='reference_dim'")
     ap.add_argument("--mode",
-                    choices=["initial", "reload", "incremental", "hierarchy"],
+                    choices=["initial", "reload", "incremental", "hierarchy", "register"],
                     default="initial",
                     help="hierarchy — догрузить недостающих предков по _ParentIDRRef")
     ap.add_argument("--dry-run", action="store_true")

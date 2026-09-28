@@ -132,20 +132,74 @@ def run_group(group: str, *, mode: str = "patch", partitions: Optional[List[str]
     return report
 
 
-def run_dag(dag_id: str, *, mode: str = "patch", config_conn_id: str = "etl_prod",
+SWEEP_HOUR = 3          # ночная сверка — после 03:00 по бизнес-времени
+
+
+def due_mode(pg, dag_id: str, now: Optional[datetime] = None) -> str:
+    """
+    Режим прогона по отметкам последнего успешного выполнения в control plane, а не по
+    минуте слота: прогон, пропустивший слот (предыдущий шёл дольше 5 минут), не отменяет
+    ни сверку, ни пересборку — их выполнит первый же следующий прогон.
+      sweep — последней полной сверки не было после сегодняшних SWEEP_HOUR:00;
+      hot   — в текущем часу горячее окно ещё не пересобиралось;
+      patch — иначе.
+    """
+    from datetime import timedelta
+    now = now or datetime.now(ZoneInfo("Asia/Almaty")).replace(tzinfo=None)
+    last = {k.rsplit(":", 1)[1]: ts for k, ts in pg.get_records(
+        "SELECT source_key, watermark FROM etl_meta.ch_source_state WHERE source_key IN (%s, %s)",
+        parameters=(f"{dag_id}:sweep", f"{dag_id}:hot"))}
+    sweep_due = now.replace(hour=SWEEP_HOUR, minute=0, second=0, microsecond=0)
+    if now < sweep_due:
+        sweep_due -= timedelta(days=1)
+    if last.get("sweep") is None or last["sweep"] < sweep_due:
+        return "sweep"
+    hour = now.replace(minute=0, second=0, microsecond=0)
+    if last.get("hot") is None or last["hot"] < hour:
+        return "hot"
+    return "patch"
+
+
+def _mark_done(pg, dag_id: str, kinds: List[str]) -> None:
+    now = datetime.now(ZoneInfo("Asia/Almaty")).replace(tzinfo=None)
+    for k in kinds:
+        pg.run("""INSERT INTO etl_meta.ch_source_state (source_key, watermark, last_to_ts, updated_at, details)
+                  VALUES (%s, %s, %s, now(), '{}'::jsonb)
+                  ON CONFLICT (source_key) DO UPDATE SET watermark = EXCLUDED.watermark,
+                         last_to_ts = EXCLUDED.last_to_ts, updated_at = now()""",
+               parameters=(f"{dag_id}:{k}", now, now))
+
+
+def run_dag(dag_id: str, *, mode: str = "auto", config_conn_id: str = "etl_prod",
             ch_conn_id: str = "clickhouse_etl") -> Dict:
     """
     Все активные группы DAG'а по position (etl_meta.ch_sync_group) — в момент выполнения.
-    Состав и порядок групп — конфигурация, а не структура DAG: её правка не меняет
-    задачи и не ломает уже созданные прогоны. Первая несошедшаяся группа останавливает
-    остальные (факты не публикуются поверх несошедшихся справочников).
+    Состав и порядок групп — конфигурация, а не структура DAG.
+
+    Группы изолированы: сбой одной (например, cost_daily) не останавливает и не
+    перезапускает другие — каждая публикует только то, что у неё сошлось. Ошибки
+    собираются и поднимаются в конце, прогон виден упавшим. Отметки hot / sweep
+    ставятся, только если все группы с регистрами 1С прошли.
     """
     from airflow.providers.postgres.hooks.postgres import PostgresHook
     pg = PostgresHook(postgres_conn_id=config_conn_id)
+    if mode == "auto":
+        mode = due_mode(pg, dag_id)
     groups = [r[0] for r in pg.get_records(
         "SELECT sync_group FROM etl_meta.ch_sync_group WHERE dag_id = %s AND is_active "
         "ORDER BY position, sync_group", parameters=(dag_id,))]
-    out = {"dag_id": dag_id, "mode": mode, "groups": {}}
+    onec_groups = {r[0] for r in pg.get_records(
+        "SELECT DISTINCT sync_group FROM etl_meta.ch_sync WHERE is_active AND source_type = 'onec_register'")}
+    out = {"dag_id": dag_id, "mode": mode, "groups": {}, "failed": {}}
     for g in groups:
-        out["groups"][g] = run_group(g, mode=mode, config_conn_id=config_conn_id, ch_conn_id=ch_conn_id)
+        try:
+            out["groups"][g] = run_group(g, mode=mode, config_conn_id=config_conn_id, ch_conn_id=ch_conn_id)
+        except Exception as e:  # noqa: BLE001 — любая ошибка группы изолирована
+            out["failed"][g] = str(e)[:2000]
+            print(f"✗ группа {g}: {str(e)[:500]}")
+    if mode in ("hot", "sweep") and not (set(out["failed"]) & onec_groups):
+        _mark_done(pg, dag_id, ["hot", "sweep"] if mode == "sweep" else ["hot"])
+    if out["failed"]:
+        raise RuntimeError(f"{dag_id} [{mode}]: не сошлись группы {sorted(out['failed'])}:\n  "
+                           + "\n  ".join(f"{g}: {m[:300]}" for g, m in out["failed"].items()))
     return out
