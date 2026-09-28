@@ -132,6 +132,34 @@ def run_group(group: str, *, mode: str = "patch", partitions: Optional[List[str]
     return report
 
 
+def run_reference_dims(pg, *, retail_conn_id: str = "bd_retail", mssql_conn_id: str = "mssql_1c_conn") -> Dict:
+    """
+    Справочники 1С → реестр PostgreSQL: все активные регистры pipeline_type='reference_dim'
+    (load_dim_from_config, режим incremental). Список — из etl_meta.registers, не из кода.
+    Сбой одного справочника не останавливает остальные.
+    """
+    from airflow.providers.postgres.hooks.postgres import PostgresHook
+    from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
+    from ..tools.load_dim_from_config import process
+    rt = PostgresHook(postgres_conn_id=retail_conn_id)
+    ms = MsSqlHook(mssql_conn_id=mssql_conn_id)
+    codes = [r[0] for r in pg.get_records(
+        "SELECT code FROM etl_meta.registers WHERE is_active AND pipeline_type = 'reference_dim' ORDER BY code")]
+    report: Dict = {"objects": len(codes), "results": [], "failed": []}
+    for code in codes:
+        try:
+            res = process(code, pg, rt, ms, mode="incremental", batch=500, dry_run=False)
+            if res is None:
+                raise RuntimeError("нет конфига или мэппингов")
+            report["results"].append({"code": code, **{k: res.get(k) for k in
+                                      ("changed", "touched", "registered", "stub_filled") if k in res}})
+        except Exception as e:  # noqa: BLE001
+            report["failed"].append(f"{code}: {str(e)[:300]}")
+    if report["failed"]:
+        raise RuntimeError("справочники не загрузились:\n  " + "\n  ".join(report["failed"]))
+    return report
+
+
 SWEEP_HOUR = 3          # ночная сверка — после 03:00 по бизнес-времени
 
 
@@ -185,15 +213,18 @@ def run_dag(dag_id: str, *, mode: str = "auto", config_conn_id: str = "etl_prod"
     pg = PostgresHook(postgres_conn_id=config_conn_id)
     if mode == "auto":
         mode = due_mode(pg, dag_id)
-    groups = [r[0] for r in pg.get_records(
-        "SELECT sync_group FROM etl_meta.ch_sync_group WHERE dag_id = %s AND is_active "
-        "ORDER BY position, sync_group", parameters=(dag_id,))]
+    groups = pg.get_records(
+        "SELECT sync_group, coalesce(to_jsonb(g) ->> 'runner', 'ch_sync') FROM etl_meta.ch_sync_group g "
+        "WHERE dag_id = %s AND is_active ORDER BY position, sync_group", parameters=(dag_id,))
     onec_groups = {r[0] for r in pg.get_records(
         "SELECT DISTINCT sync_group FROM etl_meta.ch_sync WHERE is_active AND source_type = 'onec_register'")}
     out = {"dag_id": dag_id, "mode": mode, "groups": {}, "failed": {}}
-    for g in groups:
+    for g, kind in groups:
         try:
-            out["groups"][g] = run_group(g, mode=mode, config_conn_id=config_conn_id, ch_conn_id=ch_conn_id)
+            if kind == "reference_dim":
+                out["groups"][g] = run_reference_dims(pg)
+            else:
+                out["groups"][g] = run_group(g, mode=mode, config_conn_id=config_conn_id, ch_conn_id=ch_conn_id)
         except Exception as e:  # noqa: BLE001 — любая ошибка группы изолирована
             out["failed"][g] = str(e)[:2000]
             print(f"✗ группа {g}: {str(e)[:500]}")

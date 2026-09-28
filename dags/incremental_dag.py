@@ -1,9 +1,9 @@
 """
-incremental / incremental_prod — единый инкремент всех активных сущностей etl_meta.
+incremental — инкремент всех активных сущностей etl_meta TEST-контура.
 
 Один файл, одна фабрика build_incremental_dag(), два контура:
   • incremental       — TEST, etl_meta в postgre_test_base (10.10.1.142/test)
-  • incremental_prod  — PROD, etl_meta в etl_prod          (10.10.1.142/etl_prod)
+  (PROD-контур incremental_prod удалён 2026-09-28 — его функции в analytics_sync)
 
 Каждый DAG читает ТОЛЬКО свой etl_meta и пишет только в свою витрину:
 config_conn_id — одновременно и конфиг, и целевая БД (dst) для runner'ов.
@@ -198,23 +198,6 @@ def _discover(config_conn_id: str):
     return supported, unsupported, None
 
 
-def _dag_has_groups(config_conn_id: str, dag_id: str) -> bool:
-    """
-    Ведёт ли DAG второго hop'а хоть одну активную группу (etl_meta.ch_sync_group).
-    Когда все группы перешли в analytics_sync, триггер не создаётся: цепочка
-    incremental → clickhouse_sync исчезает правкой конфига. Реестра групп нет
-    (контур без миграции 014) или БД недоступна — как раньше, триггер есть.
-    """
-    try:
-        from airflow.providers.postgres.hooks.postgres import PostgresHook
-        r = PostgresHook(postgres_conn_id=config_conn_id).get_first(
-            "SELECT count(*) FILTER (WHERE dag_id = %s AND is_active), count(*) FROM etl_meta.ch_sync_group",
-            parameters=(dag_id,))
-        return bool(r[0]) or not r[1]
-    except Exception:  # noqa: BLE001
-        return True
-
-
 def _report_unsupported(items, error):
     """Одна таска на весь список — чтобы пропуски были видны в UI каждый тик."""
     if error:
@@ -243,7 +226,6 @@ def build_incremental_dag(
     start_date: datetime = datetime(2026, 9, 1),
     is_paused_upon_creation: bool = True,
     tags=("incremental", "etl"),
-    trigger_dag_id: str = None,
 ) -> DAG:
     supported, unsupported, error = _discover(config_conn_id)
     conn_kwargs = {
@@ -305,40 +287,6 @@ def build_incremental_dag(
             if chain:
                 chain[-1] >> guard
 
-        # Второй hop: перенос витрины в ClickHouse. Запускается ТОЛЬКО после
-        # полностью успешного инкремента — all_success, а не all_done: грузить в
-        # аналитический слой заведомо неполный PostgreSQL незачем.
-        # Сам перенос живёт в clickhouse_sync_dag.py, здесь только связь.
-        if trigger_dag_id and _dag_has_groups(config_conn_id, trigger_dag_id):
-            from airflow.operators.trigger_dagrun import TriggerDagRunOperator
-            last = guard if reconcilable else (chain[-1] if chain else None)
-            # Синхронизация ClickHouse идёт дольше пяти минут, а инкремент
-            # запускается каждые пять. Если ставить прогон на каждый успешный
-            # инкремент, очередь растёт неограниченно — за сутки так накопилось 185.
-            #
-            # Спросить «идёт ли уже sync» из таски нельзя: в Airflow 3 у таски нет
-            # доступа к метабазе. Поэтому дросселируем без запросов — run_id общий
-            # для всего 15-минутного окна, а skip_when_already_exists пропускает
-            # повторный триггер в том же окне. Получается не больше одного прогона
-            # на окно, и проверять ничего не нужно.
-            #
-            # Схлопывание безвредно: синхронизация работает с ТЕКУЩИМ состоянием и
-            # датой запуска не параметризована — пропущенный триггер ничего не теряет.
-            trigger = TriggerDagRunOperator(
-                task_id="trigger__clickhouse_sync",
-                trigger_dag_id=trigger_dag_id,
-                trigger_run_id=("auto__{{ logical_date.strftime('%Y%m%dT%H') }}"
-                                "{{ '%02d' % (logical_date.minute // 15 * 15) }}"),
-                skip_when_already_exists=True,
-                reset_dag_run=False,
-                wait_for_completion=False,
-                trigger_rule="all_success",
-                retries=0,
-                execution_timeout=timedelta(minutes=2),
-            )
-            if last is not None:
-                last >> trigger
-
         if unsupported or error:
             PythonOperator(
                 task_id="unsupported_report",
@@ -353,8 +301,5 @@ def build_incremental_dag(
 # TEST — как было: тот же dag_id, те же task_id, тот же conn. Состояние (unpaused) не меняется.
 incremental = build_incremental_dag("incremental", "postgre_test_base")
 
-# PROD — новый, создаётся paused. Включается вручную после контролируемого прогона.
-incremental_prod = build_incremental_dag(
-    "incremental_prod", "etl_prod", tags=("incremental", "etl", "prod"),
-    trigger_dag_id="clickhouse_sync",
-)
+# PROD-контур (incremental_prod) удалён 2026-09-28: факты sales/orders идут 1С → ClickHouse
+# прямым путём, справочники 1С → PostgreSQL грузит analytics_sync (группа dim_registry).

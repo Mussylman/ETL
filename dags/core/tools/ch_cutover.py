@@ -139,6 +139,8 @@ def _active_tasks(dag: str) -> list:
 
 def quiesce(dags, timeout: int = 900) -> None:
     """DAG'и на паузу и дождаться завершения выполняющихся задач — во время переключения никто не пишет."""
+    known = {l.split()[0] for l in airflow("dags", "list", "-o", "plain").splitlines()[1:] if l.split()}
+    dags = [d for d in dags if d in known]      # удалённые DAG'и (clickhouse_sync, incremental_prod) пропускаем
     for d in dags:
         airflow("dags", "pause", d)
     t0 = time.monotonic()
