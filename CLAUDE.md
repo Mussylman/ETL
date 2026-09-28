@@ -23,7 +23,7 @@ ETL-платформа: Apache Airflow + FastAPI конфигуратор. Ан�
 `cost_daily`, `dim_*`. Копии для отката — `fact_*_direct` (ROLLBACK_KEEP).
 
 ## Ключевые пути
-- DAG'и: `dags/` — core ETL один: `analytics_sync_dag.py`; `incremental_dag.py` — только TEST-контур
+- DAG'и: `dags/` — core ETL один: `analytics_sync_dag.py` (остальные — отдельные бизнес-DAG'и: GFK, PowerBI, check_orders)
 - Прямой путь и runner: `dags/core/clickhouse/` (runner.py, onec.py, patch.py, changes.py,
   registry.py, onec_reconcile.py, engine.py)
 - Извлечение из 1С по метаданным: `dags/core/etl_engine.py` (`extract_frame`, `ready_keys`)
@@ -99,7 +99,7 @@ python3 etl_config_app/tests/validator_test.py
 **Не для PROD:** `core.tools.rebuild_sales`, `run_full_period`, `docs/audits/sql/sales_recon.py` —
 инструменты фактов PostgreSQL. На PROD факты заморожены: `rebuild_sales` отказывает до любого шага
 (`pg_fact_write=false`, а `--from-scratch` — в любом контуре с `etl_meta.doc_key`), `ETLEngine.run`
-запись запрещает. Для TEST-контура они по-прежнему работают.
+запись запрещает. DAG `incremental` (TEST-контур) удалён 2026-09-28.
 
 ## Архитектура
 
