@@ -39,7 +39,7 @@ class ETLCore:
 
         # --- коннекты ---
         src_conn_id: str = "mssql_1c_conn",        # 1С (MSSQL)
-        dst_conn_id: str = "postgre_test_base",    # ETL-база (Postgres)
+        dst_conn_id: str = None,              # PostgreSQL — только явно
         retail_conn_id: str = "bd_retail",         # retail (Postgres)
 
         # --- для full_period ---

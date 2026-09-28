@@ -42,7 +42,9 @@ class TransformUtils:
     # Реестр трансформеров
     TRANSFORMERS: Dict[str, Callable] = {}
 
-    def __init__(self, pg_conn_id: str = "postgre_test_base"):
+    def __init__(self, pg_conn_id: str = None):
+        from ..conn import require_conn
+        require_conn("pg_conn_id", pg_conn_id)
         self.pg_conn_id = pg_conn_id
         self._register_transformers()
 

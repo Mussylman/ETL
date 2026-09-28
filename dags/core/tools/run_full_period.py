@@ -31,6 +31,7 @@ from datetime import datetime
 
 def main():
     parser = argparse.ArgumentParser(description="Запуск ETL full_period")
+    parser.add_argument("--pg-conn", required=True, help="conn_id PostgreSQL (etl_meta + витрина) — только явно")
     parser.add_argument("--register", default="sales", help="код регистра (default: sales)")
     parser.add_argument("--start", required=True, help="start_date в формате 1С, напр. 4026-06-14")
     parser.add_argument("--end", required=True, help="end_date в формате 1С, напр. 4026-06-18")
@@ -95,7 +96,8 @@ def main():
     # Run
     from core.etl_engine import ETLEngine
     kwargs = dict(register_code=args.register, mode="full_period",
-                  start_date=args.start, end_date=args.end)
+                  start_date=args.start, end_date=args.end,
+                  config_conn_id=args.pg_conn, dst_conn_id=args.pg_conn)
     if args.targets:
         kwargs["target_tables"] = [t.strip() for t in args.targets.split(",") if t.strip()]
 
@@ -110,7 +112,7 @@ def main():
         print("\n[dim-names] догружаю имена справочников…")
         try:
             from core.tools.load_dim_names import enrich_all
-            totals = enrich_all(only_stub=True, raise_on_error=False)
+            totals = enrich_all(args.pg_conn, only_stub=True, raise_on_error=False)
             print(f"[dim-names] {totals}")
         except Exception as e:
             print(f"[dim-names] ПРОПУЩЕНО из-за ошибки: {str(e)[:200]}")

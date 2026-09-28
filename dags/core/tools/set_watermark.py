@@ -27,7 +27,6 @@ from typing import Optional
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 
-CONFIG_CONN_ID = "postgre_test_base"
 
 
 def _get_register_id(pg, code: str) -> int:
@@ -40,7 +39,7 @@ def _get_register_id(pg, code: str) -> int:
     return rows[0][0]
 
 
-def get_watermark(register_code: str, config_conn_id: str = CONFIG_CONN_ID) -> Optional[str]:
+def get_watermark(register_code: str, config_conn_id: str) -> Optional[str]:
     """Текущий watermark per-register (последний success checkpoint)."""
     pg = PostgresHook(postgres_conn_id=config_conn_id)
     reg_id = _get_register_id(pg, register_code)
@@ -65,7 +64,7 @@ def set_watermark(
     register_code: str,
     checkpoint: str,
     note: str = "cutover",
-    config_conn_id: str = CONFIG_CONN_ID,
+    config_conn_id: str = None,
 ) -> int:
     """
     Установить watermark per-register, вставив success-строку в load_history.
@@ -78,6 +77,8 @@ def set_watermark(
     Returns:
         ID добавленной строки в load_history.
     """
+    from core.conn import require_conn
+    require_conn("config_conn_id", config_conn_id)
     # Валидация timestamp
     try:
         datetime.fromisoformat(checkpoint.replace("Z", "+00:00"))
@@ -107,7 +108,7 @@ def set_watermark_from_backfill(
     register_code: str,
     backfill_start: str,
     safety_gap: timedelta = timedelta(hours=1),
-    config_conn_id: str = CONFIG_CONN_ID,
+    config_conn_id: str = None,
 ) -> int:
     """
     Удобный cutover после full_period: watermark = backfill_start - safety_gap.
@@ -115,6 +116,8 @@ def set_watermark_from_backfill(
 
     backfill_start — реальный момент старта вашего full_period (NOW() на запуске).
     """
+    from core.conn import require_conn
+    require_conn("config_conn_id", config_conn_id)
     start_dt = datetime.fromisoformat(backfill_start.replace("Z", "+00:00"))
     cp = (start_dt - safety_gap).strftime("%Y-%m-%d %H:%M:%S.%f")
     return set_watermark(register_code, checkpoint=cp, note="cutover_from_full", config_conn_id=config_conn_id)
@@ -123,6 +126,7 @@ def set_watermark_from_backfill(
 if __name__ == "__main__":
     import argparse, sys
     p = argparse.ArgumentParser(description="ETL incremental watermark helper")
+    p.add_argument("--pg-conn", required=True, help="conn_id PostgreSQL — только явно")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     p_get = sub.add_parser("get", help="Показать текущий watermark")
@@ -143,12 +147,12 @@ if __name__ == "__main__":
     args = p.parse_args()
 
     if args.cmd == "get":
-        wm = get_watermark(args.register)
+        wm = get_watermark(args.register, config_conn_id=args.pg_conn)
         print(wm if wm else "(не установлен — fallback to 2000-01-01)")
     elif args.cmd == "set":
-        set_watermark(args.register, args.checkpoint, args.note)
+        set_watermark(args.register, args.checkpoint, args.note, config_conn_id=args.pg_conn)
     elif args.cmd == "cutover":
         set_watermark_from_backfill(
             args.register, args.backfill_start,
-            safety_gap=timedelta(hours=args.gap_hours),
+            safety_gap=timedelta(hours=args.gap_hours), config_conn_id=args.pg_conn,
         )

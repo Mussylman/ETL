@@ -427,7 +427,7 @@ def _print_report(pairs, applied: Dict[int, List[str]], apply_safe: bool):
 
 def main():
     ap = argparse.ArgumentParser(description="Generic parent-child integrity manager (etl_meta)")
-    ap.add_argument("--conn", default="etl_prod", help="Airflow conn_id к БД витрины и etl_meta")
+    ap.add_argument("--conn", required=True, help="Airflow conn_id к БД витрины и etl_meta")
     ap.add_argument("--register", default=None, help="только один регистр (код из etl_meta.registers)")
     mode = ap.add_mutually_exclusive_group(required=True)
     mode.add_argument("--plan", action="store_true", help="показать план, ничего не менять")

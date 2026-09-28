@@ -279,7 +279,7 @@ def main() -> int:
     ap.add_argument("--stop-pg", action="store_true",
                     help="полная передача: первый hop перестаёт писать PostgreSQL, id выдаёт реестр, "
                          "все группы в analytics_sync. Без флага PostgreSQL продолжает обновляться")
-    ap.add_argument("--config-conn", default="etl_prod")
+    ap.add_argument("--config-conn", required=True)
     args = ap.parse_args()
     if args.apply and not args.ch_config:
         ap.error("--apply требует --ch-config (EXCHANGE TABLES выполняет ch_admin)")

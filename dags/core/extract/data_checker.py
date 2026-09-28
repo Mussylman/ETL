@@ -56,13 +56,15 @@ class DataChecker:
         self,
         retail_table: str = "sales",
         retail_conn_id: str = "bd_retail",
-        config_conn_id: str = "postgre_test_base",
+        config_conn_id: Optional[str] = None,
         register_id: Optional[int] = None,
         key_column: str = "document_uid",
         # legacy-параметры для обратной совместимости (не используются для watermark)
         etl_table: Optional[str] = None,
         etl_conn_id: Optional[str] = None,
     ):
+        from ..conn import require_conn
+        require_conn("config_conn_id", config_conn_id)
         self.retail_table = retail_table
         self.retail_conn_id = retail_conn_id
         self.config_conn_id = config_conn_id

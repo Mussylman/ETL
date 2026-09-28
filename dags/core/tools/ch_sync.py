@@ -91,7 +91,7 @@ def main() -> int:
     ap.add_argument("--sweep", action="store_true", help="принудительная сверка отпечатков всей истории")
     ap.add_argument("--create-table", action="store_true", help="создать цель и staging из конфигурации")
     ap.add_argument("--ch-conn", default="clickhouse_etl", help="Airflow conn_id ClickHouse")
-    ap.add_argument("--config-conn", default="etl_prod", help="Airflow conn_id control plane")
+    ap.add_argument("--config-conn", required=True, help="Airflow conn_id control plane")
     mode = ap.add_mutually_exclusive_group(required=True)
     mode.add_argument("--plan", action="store_true")
     mode.add_argument("--apply", action="store_true")

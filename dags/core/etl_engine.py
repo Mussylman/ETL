@@ -165,9 +165,9 @@ class ETLEngine:
         mode: Optional[str] = None,
 
         # Connections
-        config_conn_id: str = "postgre_test_base",
+        config_conn_id: Optional[str] = None,
         src_conn_id: str = "mssql_1c_conn",
-        dst_conn_id: str = "postgre_test_base",
+        dst_conn_id: Optional[str] = None,
         retail_conn_id: str = "bd_retail",
 
         # Database
@@ -180,6 +180,9 @@ class ETLEngine:
         # For specific targets
         target_tables: Optional[List[str]] = None,
     ):
+        from .conn import require_conn
+        require_conn("config_conn_id", config_conn_id)
+        require_conn("dst_conn_id", dst_conn_id)
         self.register_code = register_code
         self.start_date = start_date
         self.end_date = end_date

@@ -50,7 +50,7 @@ def main() -> int:
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--ch-config", default=ADMIN_CFG,
                     help=f"config-file clickhouse-client под ch_admin (по умолчанию {ADMIN_CFG}, права 600, вне репозитория)")
-    ap.add_argument("--config-conn", default="etl_prod")
+    ap.add_argument("--config-conn", required=True)
     mode = ap.add_mutually_exclusive_group(required=True)
     mode.add_argument("--plan", action="store_true")
     mode.add_argument("--apply", action="store_true")

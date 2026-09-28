@@ -30,7 +30,9 @@ class ColumnMapper:
         'fix_year': fix_year,
     }
 
-    def __init__(self, pg_conn_id: str = "postgre_test_base"):
+    def __init__(self, pg_conn_id: str = None):
+        from ..conn import require_conn
+        require_conn("pg_conn_id", pg_conn_id)
         self.pg_conn_id = pg_conn_id
         self._cache: Dict[int, List[dict]] = {}
 
@@ -134,6 +136,6 @@ FROM [{database}].[{schema}].[{table_name}]
 """.strip()
 
 
-def load_column_mapper(pg_conn_id: str = "postgre_test_base") -> ColumnMapper:
+def load_column_mapper(pg_conn_id: str = None) -> ColumnMapper:
     """Создаёт ColumnMapper."""
     return ColumnMapper(pg_conn_id)

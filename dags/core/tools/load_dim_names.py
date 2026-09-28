@@ -77,7 +77,7 @@ def load_dim(
     dim_table: str,
     onec_name: str,
     fallback_table: str,
-    pg_conn_id: str = "postgre_test_base",
+    pg_conn_id: str,
     mssql_conn_id: str = "mssql_1c_conn",
     only_stub: bool = True,
     batch: int = 500,
@@ -176,7 +176,7 @@ def load_dim(
 
 
 def enrich_all(
-    pg_conn_id: str = "postgre_test_base",
+    pg_conn_id: str,
     mssql_conn_id: str = "mssql_1c_conn",
     only_stub: bool = True,
     dims: Optional[List[str]] = None,
@@ -224,7 +224,7 @@ def main():
     parser.add_argument("--all", action="store_true", help="обновлять и не-stub строки")
     parser.add_argument("--dry-run", action="store_true", help="ничего не писать")
     parser.add_argument("--batch", type=int, default=500, help="размер IN-батча (default 500)")
-    parser.add_argument("--pg-conn", default="postgre_test_base")
+    parser.add_argument("--pg-conn", required=True)
     parser.add_argument("--mssql-conn", default="mssql_1c_conn")
     args = parser.parse_args()
 

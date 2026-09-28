@@ -13,7 +13,9 @@ class Loaders:
       - replace : DELETE + INSERT (для полной перезагрузки)
     """
 
-    def __init__(self, dst_conn_id: str = "postgre_test_base"):
+    def __init__(self, dst_conn_id: str = None):
+        from ..conn import require_conn
+        require_conn("dst_conn_id", dst_conn_id)
         self.dst_conn_id = dst_conn_id
 
     def _normalize_datetimes(self, df: pd.DataFrame) -> pd.DataFrame:

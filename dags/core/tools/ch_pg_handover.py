@@ -68,7 +68,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Реестр документов выдаёт id; факты в PostgreSQL замораживаются")
     ap.add_argument("--register", required=True, help="order,sales")
     ap.add_argument("--apply", action="store_true")
-    ap.add_argument("--config-conn", default="etl_prod")
+    ap.add_argument("--config-conn", required=True)
     args = ap.parse_args()
 
     from airflow.providers.postgres.hooks.postgres import PostgresHook

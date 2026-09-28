@@ -80,16 +80,16 @@ cd etl_config_app && ETL_CONFIG_DB_NAME=etl_prod ETL_CONFIG_ENV_LABEL="PROD / et
   nohup ../venv/bin/uvicorn app:app --host 0.0.0.0 --port 5556 > ../logs/etl_config_prod.log 2>&1 &
 
 # Группа analytics_sync вручную (то же, что делает DAG; режим patch | rebuild | hot | sweep)
-PYTHONPATH=dags python3 -m core.tools.ch_sync --group onec_1c --mode patch --apply
+PYTHONPATH=dags python3 -m core.tools.ch_sync --config-conn etl_prod --group onec_1c --mode patch --apply
 # Пересборка месяцев регистра 1С в ClickHouse (ремонт / backfill; generic)
-PYTHONPATH=dags python3 -m core.tools.ch_sync --group onec_1c --mode rebuild --partition 202609 --apply
+PYTHONPATH=dags python3 -m core.tools.ch_sync --config-conn etl_prod --group onec_1c --mode rebuild --partition 202609 --apply
 
 # Справочники 1С → реестр PostgreSQL (то же, что группа dim_registry)
 PYTHONPATH=dags python3 -m core.tools.load_dim_from_config --dim dim_nomenklatura --mode incremental --pg-conn etl_prod
 #   --mode register — завести все объекты 1С, которых нет в справочнике (id существующих не меняются)
 
 # Отчёт сверки источник ↔ ClickHouse по обобщённым источникам (справочники, cost_daily)
-PYTHONPATH=dags python3 -m core.tools.ch_report
+PYTHONPATH=dags python3 -m core.tools.ch_report --config-conn etl_prod
 
 # Тесты конфигуратора — ТОЛЬКО вручную и ТОЛЬКО на архивной test (создают/удаляют свои схемы);
 # на etl_prod не запускать
@@ -103,10 +103,13 @@ ETL_CONFIG_DB_NAME=test python3 etl_config_app/tests/validator_test.py
 (`pg_fact_write=false`, а `--from-scratch` — в любом контуре с `etl_meta.doc_key`), `ETLEngine.run`
 запись запрещает.
 
+**Соединение с PostgreSQL — только явно.** У CLI (`--pg-conn` / `--config-conn` / `--conn`) и классов
+движка (`ETLEngine`, `ConfigLoader`, `DataChecker`, `TransformUtils`, `Loaders`) значения по умолчанию нет:
+пропущенное соединение — немедленный отказ до подключения (`core/conn.py`). Не заменять умолчанием `etl_prod`.
+
 **TEST-контур удалён 2026-09-28**: DAG `incremental` и TEST-конфигуратор :5555. База `test`
 (`postgre_test_base`) сохранена как пассивная test/archive DB — ни один DAG, сервис, cron или триггер в неё
-не пишет. Core-модули и CLI по умолчанию ещё указывают `postgre_test_base` — это только ручной запуск;
-`analytics_sync` везде передаёт `etl_prod` явно.
+не пишет; доступ к ней — только явным `--pg-conn postgre_test_base` / `ETL_CONFIG_DB_NAME=test`.
 
 ## Архитектура
 

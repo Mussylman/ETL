@@ -305,7 +305,7 @@ def truncate_facts(targets: List[dict], pg_conn_id: str) -> None:
 # ──────────────────────────────────────────────────────────────────────
 # Шаг 6: загрузка
 # ──────────────────────────────────────────────────────────────────────
-def run_full_period(register_code: str, start_1c: str, end_1c: str,
+def run_full_period(register_code: str, start_1c: str, end_1c: str, pg_conn: str,
                     attempts: int = 3) -> dict:
     """
     full_period с повтором при гонке с живой 1С.
@@ -327,6 +327,8 @@ def run_full_period(register_code: str, start_1c: str, end_1c: str,
             mode="full_period",
             start_date=start_1c,
             end_date=end_1c,
+            config_conn_id=pg_conn,
+            dst_conn_id=pg_conn,
         )
         try:
             result = etl.run() or {}
@@ -401,7 +403,7 @@ def _refuse_if_switched(pg_conn: str, register: str, from_scratch: bool) -> None
     на прямой путь 1С → ClickHouse, он разрушителен:
       • pg_fact_write = false — факты PostgreSQL заморожены как копия для отката, писать
         в них нельзя; ClickHouse пересобирается generic runner'ом
-        (ch_sync --group onec_1c --mode rebuild --partition YYYYMM);
+        (ch_sync --config-conn etl_prod --group onec_1c --mode rebuild --partition YYYYMM);
       • есть реестр etl_meta.doc_key — --from-scratch сделал бы TRUNCATE ... RESTART
         IDENTITY: документы получили бы новые id, расходящиеся с реестром и ClickHouse,
         а таблицы для отката опустели бы раньше, чем защита ETLEngine остановит загрузку.
@@ -413,7 +415,7 @@ def _refuse_if_switched(pg_conn: str, register: str, from_scratch: bool) -> None
     if r and not r[0]:
         raise SystemExit(f"ОТКАЗ: регистр '{register}' в {pg_conn} переключён на прямой путь 1С → ClickHouse "
                          f"(pg_fact_write=false). Факты PostgreSQL заморожены (ROLLBACK_KEEP). "
-                         f"Пересборка ClickHouse: ch_sync --group onec_1c --mode rebuild --partition YYYYMM --apply")
+                         f"Пересборка ClickHouse: ch_sync --config-conn etl_prod --group onec_1c --mode rebuild --partition YYYYMM --apply")
     if from_scratch and pg.get_first("SELECT to_regclass('etl_meta.doc_key') IS NOT NULL")[0]:
         raise SystemExit(f"ОТКАЗ: --from-scratch в {pg_conn} запрещён — в контуре есть реестр etl_meta.doc_key; "
                          f"TRUNCATE ... RESTART IDENTITY перенумеровал бы документы в обход реестра.")
@@ -429,7 +431,7 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="показать план и выйти")
     parser.add_argument("--skip-recon", action="store_true",
                         help="без финальной сверки (теряется критерий успеха)")
-    parser.add_argument("--pg-conn", default="postgre_test_base")
+    parser.add_argument("--pg-conn", required=True)
     parser.add_argument("--mssql-conn", default="mssql_1c_conn")
     parser.add_argument("--verbose", action="store_true",
                         help="полный лог Airflow и текст всех SQL (по умолчанию скрыт)")
@@ -486,7 +488,7 @@ def main() -> None:
 
                 _log("ШАГ 6/8", f"full_period {start_1c}..{end_1c}")
                 t6 = time.time()
-                run_full_period(args.register, start_1c, end_1c)
+                run_full_period(args.register, start_1c, end_1c, args.pg_conn)
                 print(f"  ✓ загрузка заняла {time.time() - t6:.0f} с")
 
             _log("ШАГ 7/8", "имена справочников")

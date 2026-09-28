@@ -175,7 +175,7 @@ def main() -> None:
     ap.add_argument("--dim", nargs="*", default=None, help=f"по умолчанию все: {list(MAPPING)}")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--batch", type=int, default=1000)
-    ap.add_argument("--pg-conn", default="postgre_test_base")
+    ap.add_argument("--pg-conn", required=True)
     ap.add_argument("--retail-conn", default="bd_retail")
     args = ap.parse_args()
     warnings.filterwarnings("ignore")

@@ -21,7 +21,9 @@ class ConfigLoader:
     Загружает полную конфигурацию регистра из PostgreSQL (схема etl_meta).
     """
 
-    def __init__(self, config_conn_id: str = "postgre_test_base"):
+    def __init__(self, config_conn_id: str = None):
+        from ..conn import require_conn
+        require_conn("config_conn_id", config_conn_id)
         self.config_conn_id = config_conn_id
 
     def load_register(self, register_code: str) -> RegisterConfig:

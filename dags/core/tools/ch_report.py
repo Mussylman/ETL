@@ -49,7 +49,7 @@ def human(n):
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Итоговая сверка аналитического слоя ClickHouse")
-    ap.add_argument("--config-conn", default="etl_prod")
+    ap.add_argument("--config-conn", required=True)
     ap.add_argument("--ch-conn", default="clickhouse_etl")
     ap.add_argument("--ch-admin", help="config-file ch_admin для размеров")
     args = ap.parse_args()

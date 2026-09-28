@@ -1182,7 +1182,7 @@ def main() -> None:
     ap.add_argument("--no-retail-mark", action="store_true",
                     help="initial: не трогать retail_updated_at (только поля из 1С). "
                          "Для reload — устарел и игнорируется: там метка и так выключена")
-    ap.add_argument("--pg-conn", default="postgre_test_base")
+    ap.add_argument("--pg-conn", required=True)
     ap.add_argument("--retail-conn", default="bd_retail")
     ap.add_argument("--mssql-conn", default="mssql_1c_conn")
     args = ap.parse_args()
