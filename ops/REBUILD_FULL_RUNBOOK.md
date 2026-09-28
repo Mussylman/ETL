@@ -1,3 +1,9 @@
+> **УСТАРЕЛО (2026-09-28), ROLLBACK_KEEP / только TEST-контур.** Описывает пересборку фактов PostgreSQL.
+> На PROD факты `public.sales*` / `orders*` заморожены с 2026-09-24 как копия для отката; аналитика — ClickHouse
+> через `analytics_sync`. `ops/rebuild_full_truncate.sql` удалён (обнулял реестр `dim_*` c RESTART IDENTITY);
+> `rebuild_sales` на PROD отказывает до любого шага. Пересборка ClickHouse:
+> `ch_sync --group onec_1c --mode rebuild --partition YYYYMM --apply`. См. CLAUDE.md.
+
 # Полный пересбор витрины продаж с нуля (тестовая база)
 
 Порядок жёсткий. Каждый шаг запускается вручную, следующий — только после проверки предыдущего.
@@ -36,7 +42,7 @@ psql -h 10.10.1.142 -U airflow_admin -d test -f dags/core/migrations/009_dim_ret
 
 ### 1b. TRUNCATE витрины
 ```bash
-psql -h 10.10.1.142 -U airflow_admin -d test -f ops/rebuild_full_truncate.sql
+# (скрипт ops/rebuild_full_truncate.sql удалён 2026-09-28 — обнулял реестр dim_* с RESTART IDENTITY)
 ```
 
 **Что труним (10 таблиц):**
@@ -122,7 +128,7 @@ PYTHONPATH=dags python3 -m core.tools.load_dim_names
 ## ШАГ 5. End-to-end проверка
 
 ```bash
-psql -h 10.10.1.142 -U airflow_admin -d test -f ops/rebuild_full_verify.sql
+# (скрипт ops/rebuild_full_verify.sql удалён 2026-09-28 вместе с truncate)
 ```
 
 Пять блоков:

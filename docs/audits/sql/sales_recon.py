@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Агрегатная сверка витрины продаж с 1С: MSSQL _AccumRg17844 vs PostgreSQL sales/sales_positions.
+"""
+УСТАРЕЛО для PROD (2026-09-28): сверяет факты PostgreSQL, которые заморожены (ROLLBACK_KEEP).
+Сверка ClickHouse с 1С — core.clickhouse.onec_reconcile / ночной sweep analytics_sync.
+Агрегатная сверка витрины продаж с 1С: MSSQL _AccumRg17844 vs PostgreSQL sales/sales_positions.
 
 Использование:
     python3 docs/audits/sql/sales_recon.py                      # последние 30 дней включая сегодня

@@ -3,19 +3,35 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Проект
-ETL-платформа: Apache Airflow + FastAPI конфигуратор для загрузки данных из 1С (MSSQL) в PostgreSQL.
-Главная витрина — продажи (`public.sales` + `public.sales_positions`) со слоем справочников `public.dim_*`.
+ETL-платформа: Apache Airflow + FastAPI конфигуратор. Аналитический слой — **ClickHouse**
+(`analytics_poc`), наполняется напрямую из источников:
+
+```
+1С (MSSQL) / Retail  →  analytics_sync  →  ClickHouse
+```
+
+**PostgreSQL (`etl_prod`) — control plane и реестр ключей, не хранилище фактов:**
+- `etl_meta.*` — конфиги, маппинги, watermark, история и состояние публикаций;
+- `etl_meta.doc_key` — реестр id документов (guid → id, строки не удаляются никогда);
+- `public.dim_*` — реестр справочников (guid → id) + атрибуты, реплицируются в ClickHouse;
+- `public.sales`, `sales_positions`, `orders`, `order_positions` — **ROLLBACK_KEEP**:
+  заморожены 2026-09-24 ~17:41 Almaty, ~15 GB, `analytics_sync` их не читает и не пишет,
+  запись запрещена в `ETLEngine` (`registers.pg_fact_write = false`). Удаление — отдельным
+  решением после окна отката.
+
+Витрины ClickHouse: `fact_sales`, `fact_sales_positions`, `fact_orders`, `fact_order_positions`,
+`cost_daily`, `dim_*`. Копии для отката — `fact_*_direct` (ROLLBACK_KEEP).
 
 ## Ключевые пути
-- DAGи: `dags/`
-- ETL ядро: `dags/core/` (etl_engine.py, etl_core.py, sales_etl.py)
-- Трансформации: `dags/core/transform/` (binary.py, dates.py)
-- CLI-инструменты: `dags/core/tools/` (rebuild_sales, run_full_period, load_dim_names)
-- Миграции: `dags/core/migrations/` (+ `etl_meta_dump.sql` — снимок конфига)
-- Плагины: `plugins/`
-- Конфигуратор: `etl_config_app/` (FastAPI, порт 5555)
-- Obsidian vault: `docs/`
-- Отчёты аудитов: `reports/`, `docs/audits/`
+- DAG'и: `dags/` — core ETL один: `analytics_sync_dag.py`; `incremental_dag.py` — только TEST-контур
+- Прямой путь и runner: `dags/core/clickhouse/` (runner.py, onec.py, patch.py, changes.py,
+  registry.py, onec_reconcile.py, engine.py)
+- Извлечение из 1С по метаданным: `dags/core/etl_engine.py` (`extract_frame`, `ready_keys`)
+- Справочники: `dags/core/tools/load_dim_from_config.py`
+- CLI: `dags/core/tools/` (ch_sync, ch_report, ch_ddl, load_dim_from_config, ch_cutover, ch_pg_handover)
+- Миграции: `dags/core/migrations/` (control plane ClickHouse-контура — `migrations/clickhouse/`)
+- Конфигуратор: `etl_config_app/` (FastAPI, TEST :5555, PROD :5556)
+- Obsidian vault: `docs/`; отчёты аудитов: `reports/`, `docs/audits/`
 
 ## Obsidian Knowledge Vault
 При старте сессии прочитай `docs/00-home/index.md` для понимания контекста.
@@ -45,32 +61,34 @@ ETL-платформа: Apache Airflow + FastAPI конфигуратор для
 
 | Система | Адрес | Airflow conn_id |
 |---|---|---|
-| PostgreSQL (витрина + `etl_meta`) | 10.10.1.142:5432/test | `postgre_test_base` |
+| PostgreSQL PROD (control plane, реестры) | 10.10.1.142:5432/etl_prod | `etl_prod` |
+| PostgreSQL TEST (TEST-контур конфигуратора) | 10.10.1.142:5432/test | `postgre_test_base` |
+| ClickHouse (аналитический слой) | 10.10.1.142:9000/analytics_poc | `clickhouse_etl` (etl_writer) |
 | MSSQL 1С УПП | 10.10.1.61:1433/UPP_JAN | `mssql_1c_conn` |
 | retail (сигнал об изменениях) | 10.10.1.99:5432/ims_db | `bd_retail` |
+| retail себестоимость | 10.10.1.85:5432/main_db | `retail_cost` |
 | 1С meta API | http://192.168.18.224:8090/NikitaBase/hs/meta | — |
+
+Admin ClickHouse (только ручной DDL, в Airflow не заведён): `~/.config/clickhouse/ch_admin.xml`
+(600, вне репозитория) — дефолт `--ch-config` в `ch_ddl` / `ch_cutover`.
+MSSQL PowerBI 10.10.1.136 — **вне scope**, не трогать.
 
 ## Команды
 ```bash
 # Конфигуратор
 cd etl_config_app && uvicorn app:app --host 0.0.0.0 --port 5555 --reload
 
-# Полная пересборка витрины продаж (одна команда; критерий успеха — сверка в ноль)
-PYTHONPATH=dags python3 -m core.tools.rebuild_sales --start 2026-06-15 --from-scratch
-#   --dry-run план  --verbose полный лог  --from-scratch TRUNCATE только фактов
+# Группа analytics_sync вручную (то же, что делает DAG; режим patch | rebuild | hot | sweep)
+PYTHONPATH=dags python3 -m core.tools.ch_sync --group onec_1c --mode patch --apply
+# Пересборка месяцев регистра 1С в ClickHouse (ремонт / backfill; generic)
+PYTHONPATH=dags python3 -m core.tools.ch_sync --group onec_1c --mode rebuild --partition 202609 --apply
 
-# Загрузка за период отдельно
-PYTHONPATH=dags python3 -m core.tools.run_full_period --register sales --start 4026-06-15 --end 4026-06-26
-#   даты в формате 1С (+2000 к году!), --skip-names отключает догрузку имён
+# Справочники 1С → реестр PostgreSQL (то же, что группа dim_registry)
+PYTHONPATH=dags python3 -m core.tools.load_dim_from_config --dim dim_nomenklatura --mode incremental --pg-conn etl_prod
+#   --mode register — завести все объекты 1С, которых нет в справочнике (id существующих не меняются)
 
-# Имена справочников из 1С
-PYTHONPATH=dags python3 -m core.tools.load_dim_names            # только stub-строки
-PYTHONPATH=dags python3 -m core.tools.load_dim_names --all      # + подхватить переименования
-
-# Сверка витрины с 1С — главный инструмент проверки расхождений
-python3 docs/audits/sql/sales_recon.py                          # последние 30 дней
-python3 docs/audits/sql/sales_recon.py --start 2026-06-15 --full
-python3 docs/audits/sql/sales_recon.py --strict                 # exit 1 при расхождении
+# Отчёт сверки источник ↔ ClickHouse по обобщённым источникам (справочники, cost_daily)
+PYTHONPATH=dags python3 -m core.tools.ch_report
 
 # Тесты конфигуратора (каждый — самостоятельный скрипт, без pytest)
 python3 etl_config_app/tests/golden_sales_test.py   # round-trip spec + эталон SQL; запускать ПЕРВЫМ
@@ -78,55 +96,81 @@ python3 etl_config_app/tests/sync_ddl_test.py       # DDL-инварианты S
 python3 etl_config_app/tests/validator_test.py
 ```
 
-## Архитектура: как устроена загрузка продаж
+**Не для PROD:** `core.tools.rebuild_sales`, `run_full_period`, `docs/audits/sql/sales_recon.py` —
+инструменты фактов PostgreSQL. На PROD факты заморожены: `rebuild_sales` отказывает до любого шага
+(`pg_fact_write=false`, а `--from-scratch` — в любом контуре с `etl_meta.doc_key`), `ETLEngine.run`
+запись запрещает. Для TEST-контура они по-прежнему работают.
 
-**Конфиг живёт в БД, а не в коде.** Схема `etl_meta`: `registers` → `register_sources` (таблицы 1С) →
-`column_mappings` (source-колонка → target-колонка + transform) → `register_targets` (целевые таблицы,
-`upsert_keys`, `post_load_sql`). Движок читает это через `ConfigLoader` и строит SQL на лету.
-Снимок конфига — `dags/core/migrations/etl_meta_dump.sql`.
+## Архитектура
 
-**Pipeline `accumrg_with_documents`** (`builder/query_builder.py`): один SELECT — регистр
-`_AccumRg17844` как основа + LEFT JOIN шапок документов по `_RecorderTRef` + LEFT JOIN табличных
-частей по `_LineNo`, значения из нескольких источников через COALESCE.
+**Один core ETL DAG — `analytics_sync`**: одна стабильная задача `sync`, раз в 5 минут. Группы и их
+порядок runner читает в момент выполнения из `etl_meta.ch_sync_group` (правка конфига не меняет
+структуру DAG):
 
-**Два режима** (`etl_engine.py`): `full_period` (по диапазону дат) и `incremental` (по сигналу retail).
-Инкремент: watermark = `MAX(sales.retail_updated_at)`, окно `[watermark−5мин, now−5сек)` + **добор
-хвоста** за 15 суток (uid из retail, которых нет в DWH) — без него терялось ~23% документов, потому
-что данные появляются в MSSQL позже, чем retail о них сигналит. Было 48ч, расширено 2026-08-18:
-магазин, синхронизировавшийся с 1С на третьи сутки, за 48ч не успевал и терялся навсегда.
+| position | группа | runner | что делает |
+|---|---|---|---|
+| 5 | `dim_registry` | reference_dim | справочники 1С → реестр PostgreSQL (`dim_*`) |
+| 10 | `core_pg_to_ch` | ch_sync | справочники PostgreSQL → ClickHouse |
+| 15 | `onec_1c` | ch_sync | заказы, затем продажи: 1С → ClickHouse напрямую |
+| 20 | `retail` | ch_sync | `cost_daily` |
 
-**Слой справочников (guid→id).** `post_load_sql` таргета после каждой загрузки: создаёт stub-строку
-в `dim_*` для незнакомого guid (`ON CONFLICT (guid) DO NOTHING`) и проставляет `*_id` в факте.
-Имена приезжают отдельно (`load_dim_names`) из `_Reference*` по guid. `id` справочника выдаётся
-один раз и не меняется никогда — на него будет ссылаться BI.
+Группы изолированы: сбой одной не останавливает и не перезапускает остальные. Режим прогона —
+по отметкам последнего успешного выполнения в `ch_source_state` (не по минуте слота):
+**patch** (набор изменений retail + 15-дневный хвост), **hot** (раз в час — пересборка текущего и
+прошлого месяца: документы без сигнала retail, правки некассовых документов), **sweep** (раз в сутки
+после 03:00 Almaty — сверка всей истории 1С ↔ ClickHouse, несошедшиеся месяцы пересобираются).
 
-Подробное обоснование: `reports/dwh_int_fk_readiness_2026-07-27.md`, `README_REBUILD.md`,
-`docs/sales_load_modes.md`.
+**Конфиг живёт в БД, а не в коде.** Извлечение из 1С — `etl_meta.registers` → `register_sources` →
+`column_mappings` → `register_targets` (как и раньше, через `ConfigLoader` / `ETLEngine.extract_frame`).
+Публикация в ClickHouse — `etl_meta.ch_sync` + `ch_sync_columns`. Снимок конфига первого hop'а —
+`dags/core/migrations/etl_meta_dump.sql`.
+
+**Change-provider** (`changes.py`): сигнал retail ≠ готовность в 1С. Кандидаты → точный lookup в 1С →
+`ready` (в патч) / `pending` (нет в 1С и в витрине — ждёт в хвосте) / `actually_deleted` (нет в 1С,
+есть в витрине — патч удаляет). Watermark — в control plane, не `MAX()` факта.
+
+**Публикация партиций** (`patch.py`): текущая партиция − старые строки изменившихся документов +
+свежие строки → сверка отпечатков → атомарный REPLACE/MOVE PARTITION. Плохая партиция не публикуется.
+
+**Реестр ключей.** Документы: `etl_meta.doc_key` (issuer `registry`, последовательности — те же, что у
+старых фактов); ссылки на ещё не загруженный документ получают заготовку `is_stub`. Справочники:
+`dim_*`, stub по первой ссылке (`ON CONFLICT (guid) DO NOTHING`); номенклатура
+(`dim_key_source='source'`) регистрирует все товары 1С сама — `cost_daily` и будущие остатки не
+зависят от продаж. `id` выдаётся один раз и не меняется никогда.
+
+**Сверка — критерий корректности**: независимый отпечаток 1С ↔ ClickHouse (`onec_reconcile.py`),
+выводится из метаданных; ночной sweep делает её по всей истории.
+
+Решения: `docs/knowledge/decisions/Прямой путь 1С → ClickHouse — переключение без двух выдающих id и
+без потери ссылок.md`, лог переключения — `docs/sessions/2026-09-24 …`.
 
 ## Ловушки, на которых уже спотыкались
-- **Год в 1С хранится с офсетом +2000**: 2026 → `4026-06-15`. CLI `run_full_period` принимает даты
-  уже в формате 1С, `rebuild_sales` — обычные и конвертирует сам.
-- **Время**: `period` — бизнес-дата продажи (Almaty). Все `etl_*`/`retail_*` — Almaty naive.
-  `retail.updated_at` — UTC, конвертируется при чтении. `load_history.started_at` — UTC.
+- **Год в 1С хранится с офсетом +2000**: 2026 → `4026-06-15`. Runner и `_period_bounds` конвертируют
+  сами; даты в запросах к MSSQL — в формате 1С.
+- **Время**: `period` — бизнес-дата (Almaty). `etl_*`/`retail_*`, watermark — Almaty naive.
+  `retail.updated_at` — UTC, конвертируется при чтении. `load_history.started_at` — UTC. Сервер — UTC.
 - **Запросы в MSSQL идут с `WITH (NOLOCK)`** — иначе SELECT-ы становились жертвой deadlock боевой 1С.
-- **DDL таблиц фактов не в миграциях** — их создаёт Sync конфигуратора из мэппингов. Поэтому порядок
-  чистой сборки: миграции `etl_meta` → Sync → `007_dim_layer.sql` → загрузка.
+- **MSSQL-хэши для сверки — через UTF-8 collation** `Latin1_General_100_BIN2_UTF8` (nvarchar = UTF-16LE).
+- **ClickHouse: AST-лимит и ARG_MAX** — длинные списки ключей строковыми литералами, запросы через stdin.
 - **Миграции 002/003 — seed без ON CONFLICT**: на живой базе продублируют конфиг. Восстанавливать
   конфиг нужно из `etl_meta_dump.sql`, а не из них.
-- **Sync дропает колонки, которых нет в мэппингах.** Защищены: `SYSTEM_COLS` в `dao.py`, суффикс `_id`
-  (FK dim-слоя) и `is_stub`. Добавляя служебную колонку — проверь, что она под защитой.
-- **`recorder` + `recorder_type` + `line_no` — технический хребет** (upsert, добор хвоста,
-  missing-delete, сверка). Эти uuid из фактов не удаляются никогда.
+- **Sync конфигуратора дропает колонки, которых нет в мэппингах** (факты PostgreSQL — ROLLBACK_KEEP:
+  Sync по регистрам sales/order на PROD не запускать).
+- **`recorder` + `recorder_type` + `line_no` — технический хребет** (патч, хвост, удаления, сверка).
 - **Пустая ссылка 1С** `00000000-0000-0000-0000-000000000000` — семантически NULL: в справочник не
-  попадает, `*_id` остаётся NULL. Это норма, не дыра.
-- **retail сигналит не обо всём**: ЧекККМ покрыт полностью; у B2B-реализаций сигнал только при
-  создании (правки невидимы); ОтчётКомитенту и возвраты без чека отсутствуют. Некассовые документы
-  актуализирует не инкремент, а пересборка + сверка.
+  попадает, `*_id` = 0. Это норма, не дыра.
+- **retail сигналит не обо всём**: B2B-реализации и заказы — только при создании (правки невидимы);
+  ОтчётКомитенту и возвраты без чека отсутствуют; даже ЧекККМ — не все (сентябрь 2026: 12 из 39 092).
+  Это закрывает не патч, а hot-пересборка и ночной sweep.
+- **Реплики `dim_*` в ClickHouse** обновляются группой `core_pg_to_ch`: заготовка, созданная фактом в
+  том же прогоне, появится в реплике в следующем — сверка по guid на это время покажет расхождение.
 
 ## Правила разработки
 - UI на русском языке
 - Трансформации автоматические по MSSQL типам
 - Union/Target/Sync — скрытая механика, не показывать пользователю
 - Source of truth для колонок — Column Builder
-- Прод-данные меняются только по явному подтверждению; сверка `sales_recon.py` — критерий, что
-  витрина сходится с 1С
+- Прод-данные меняются только по явному подтверждению; критерий, что ClickHouse сходится с 1С, —
+  сверка `onec_reconcile` / ночной sweep
+- Не ждать внешние процессы: без sleep / polling / background waiters — одна проверка статуса,
+  RUNNING/PENDING и дальше

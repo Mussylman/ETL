@@ -394,6 +394,31 @@ def run_recon(start: str, end: str) -> None:
         )
 
 
+def _refuse_if_switched(pg_conn: str, register: str, from_scratch: bool) -> None:
+    """
+    Жёсткий отказ до любого шага (миграции, Sync, TRUNCATE, загрузка) — без молчаливого
+    обхода. Инструмент пересобирает витрину ФАКТОВ PostgreSQL; в контуре, переключённом
+    на прямой путь 1С → ClickHouse, он разрушителен:
+      • pg_fact_write = false — факты PostgreSQL заморожены как копия для отката, писать
+        в них нельзя; ClickHouse пересобирается generic runner'ом
+        (ch_sync --group onec_1c --mode rebuild --partition YYYYMM);
+      • есть реестр etl_meta.doc_key — --from-scratch сделал бы TRUNCATE ... RESTART
+        IDENTITY: документы получили бы новые id, расходящиеся с реестром и ClickHouse,
+        а таблицы для отката опустели бы раньше, чем защита ETLEngine остановит загрузку.
+    """
+    from airflow.providers.postgres.hooks.postgres import PostgresHook
+    pg = PostgresHook(postgres_conn_id=pg_conn)
+    r = pg.get_first("SELECT coalesce((to_jsonb(r) ->> 'pg_fact_write')::boolean, true) "
+                     "FROM etl_meta.registers r WHERE code = %s", parameters=(register,))
+    if r and not r[0]:
+        raise SystemExit(f"ОТКАЗ: регистр '{register}' в {pg_conn} переключён на прямой путь 1С → ClickHouse "
+                         f"(pg_fact_write=false). Факты PostgreSQL заморожены (ROLLBACK_KEEP). "
+                         f"Пересборка ClickHouse: ch_sync --group onec_1c --mode rebuild --partition YYYYMM --apply")
+    if from_scratch and pg.get_first("SELECT to_regclass('etl_meta.doc_key') IS NOT NULL")[0]:
+        raise SystemExit(f"ОТКАЗ: --from-scratch в {pg_conn} запрещён — в контуре есть реестр etl_meta.doc_key; "
+                         f"TRUNCATE ... RESTART IDENTITY перенумеровал бы документы в обход реестра.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Полная пересборка витрины продаж")
     parser.add_argument("--start", required=True, help="начало периода YYYY-MM-DD")
@@ -411,6 +436,7 @@ def main() -> None:
     args = parser.parse_args()
 
     warnings.filterwarnings("ignore")
+    _refuse_if_switched(args.pg_conn, args.register, args.from_scratch)
     end = args.end or (date.today() + timedelta(days=1)).isoformat()
     start_1c, end_1c = _to_1c_date(args.start), _to_1c_date(end)
 

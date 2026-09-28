@@ -1,3 +1,9 @@
+> **УСТАРЕЛО (2026-09-28), ROLLBACK_KEEP / только TEST-контур.** Описывает пересборку фактов PostgreSQL.
+> На PROD факты `public.sales*` / `orders*` заморожены с 2026-09-24 как копия для отката; аналитика — ClickHouse
+> через `analytics_sync`. `ops/rebuild_full_truncate.sql` удалён (обнулял реестр `dim_*` c RESTART IDENTITY);
+> `rebuild_sales` на PROD отказывает до любого шага. Пересборка ClickHouse:
+> `ch_sync --group onec_1c --mode rebuild --partition YYYYMM --apply`. См. CLAUDE.md.
+
 # Витрина продаж: сборка и сверка с 1С
 
 Короткая инструкция для передачи. Всё, что нужно, чтобы собрать витрину с нуля
