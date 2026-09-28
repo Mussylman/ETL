@@ -20,13 +20,20 @@ from datetime import datetime
 sys.path.insert(0, '/home/dev/airflow/dags')
 from core.transform.binary import binary_to_int
 import psycopg2, pymssql
+from airflow.hooks.base import BaseHook   # учётные данные — только из Airflow connections
+def _ms():
+    c = BaseHook.get_connection("mssql_1c_conn")
+    return pymssql.connect(server=c.host, port=c.port or 1433, user=c.login, password=c.password, database=c.schema)
+def _pg(conn_id):
+    c = BaseHook.get_connection(conn_id)
+    return psycopg2.connect(host=c.host, port=c.port or 5432, user=c.login, password=c.password, dbname=c.schema)
 import pandas as pd
 
 ap = argparse.ArgumentParser()
 ap.add_argument('--start', default=None, help='начало периода YYYY-MM-DD (включительно)')
 ap.add_argument('--end', default=None, help='конец периода YYYY-MM-DD (исключительно)')
 ap.add_argument('--full', action='store_true', help='показать все дни, не только с дельтой')
-ap.add_argument('--dbname', default='test', help='база PostgreSQL с витриной (test | etl_prod)')
+ap.add_argument('--pg-conn', required=True, help='Airflow conn_id PostgreSQL с витриной — только явно')
 ap.add_argument('--strict', action='store_true',
                 help='выйти с кодом 1, если закрытые дни не сошлись (для rebuild-оркестратора)')
 args = ap.parse_args()
@@ -39,7 +46,7 @@ ms_end = end.replace(year=end.year + 2000)
 
 print(f"Сверка [{start}, {end}) — end исключительно; сегодня {today} (частичный день)\n")
 
-ms = pymssql.connect(server='10.10.1.61', user='musulmon.k', password='Zz123456', database='UPP_JAN')
+ms = _ms()
 mdf = pd.read_sql(f"""
     SELECT CAST(_Period AS date) AS d, _RecorderTRef AS tref,
            COUNT(DISTINCT _RecorderRRef) AS docs, COUNT(*) AS rows_cnt,
@@ -50,7 +57,7 @@ mdf = pd.read_sql(f"""
 ms.close()
 mdf['d'] = mdf['d'].apply(lambda x: (pd.Timestamp(x) - pd.DateOffset(years=2000)).date())
 
-pg = psycopg2.connect(host='10.10.1.142', user='airflow_admin', password='1234Aa', dbname=args.dbname)
+pg = _pg(args.pg_conn)
 gdf = pd.read_sql(f"""
     SELECT s.period::date AS d, p.recorder_type AS tref,
            COUNT(DISTINCT p.recorder) AS docs, COUNT(*) AS rows_cnt,

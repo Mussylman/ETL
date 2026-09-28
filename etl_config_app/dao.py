@@ -13,15 +13,24 @@ from typing import List, Optional, Dict
 # Подключение к etl_meta задаётся окружением: PROD UI :5556 → ETL_CONFIG_DB_NAME=etl_prod.
 # База по умолчанию намеренно не задана: TEST-экземпляр :5555 (база test) удалён 2026-09-28,
 # и запуск без явного ETL_CONFIG_DB_NAME не должен молча писать в пассивную тестовую базу.
-if not os.getenv("ETL_CONFIG_DB_NAME"):
-    raise RuntimeError("ETL_CONFIG_DB_NAME не задан — конфигуратор запускается только с явной базой "
-                       "(PROD: ETL_CONFIG_DB_NAME=etl_prod, см. etl_config_app/RUNNING.md)")
+
+
+def _required(name: str) -> str:
+    """Обязательная переменная окружения; нет — отказ до подключения. Значение в лог не пишется."""
+    v = os.getenv(name)
+    if not v:
+        raise RuntimeError(f"{name} не задан — секреты и база конфигуратора приходят только из окружения "
+                           f"(PROD: ~/.config/etl_config/prod.env, см. etl_config_app/RUNNING.md)")
+    return v
+
+
+_required("ETL_CONFIG_DB_NAME")
 DB_CONFIG = {
     "host": os.getenv("ETL_CONFIG_DB_HOST", "10.10.1.142"),
     "port": int(os.getenv("ETL_CONFIG_DB_PORT", "5432")),
     "dbname": os.environ["ETL_CONFIG_DB_NAME"],
-    "user": os.getenv("ETL_CONFIG_DB_USER", "airflow_admin"),
-    "password": os.getenv("ETL_CONFIG_DB_PASSWORD", "1234Aa"),
+    "user": _required("ETL_CONFIG_DB_USER"),
+    "password": _required("ETL_CONFIG_DB_PASSWORD"),
 }
 IS_PROD = DB_CONFIG["dbname"] == "etl_prod" or os.getenv("ETL_CONFIG_ENV", "").lower() == "prod"
 ENV_LABEL = os.getenv("ETL_CONFIG_ENV_LABEL") or (
@@ -32,13 +41,9 @@ ENV_LABEL = os.getenv("ETL_CONFIG_ENV_LABEL") or (
 # такие действия остаются в плане с requires_confirm, но не применяются: их место в миграции.
 ALLOW_DESTRUCTIVE = os.getenv("ETL_CONFIG_ALLOW_DESTRUCTIVE", "0") == "1"
 
-RETAIL_DB_CONFIG = {
-    "host": "10.10.1.142",
-    "port": 5432,
-    "dbname": "bd_retail",
-    "user": "airflow_admin",
-    "password": "1234Aa",
-}
+# retail конфигуратора — только из окружения; проверяется при первом подключении (страницы retail)
+RETAIL_ENV = ("ETL_CONFIG_RETAIL_DB_HOST", "ETL_CONFIG_RETAIL_DB_NAME",
+              "ETL_CONFIG_RETAIL_DB_USER", "ETL_CONFIG_RETAIL_DB_PASSWORD")
 
 SCHEMA = "etl_meta"
 
@@ -48,7 +53,9 @@ def get_conn():
 
 
 def get_retail_conn():
-    return psycopg2.connect(**RETAIL_DB_CONFIG)
+    host, dbname, user, password = (_required(n) for n in RETAIL_ENV)
+    return psycopg2.connect(host=host, port=int(os.getenv("ETL_CONFIG_RETAIL_DB_PORT", "5432")),
+                            dbname=dbname, user=user, password=password)
 
 
 def query(sql: str, params=None) -> List[dict]:

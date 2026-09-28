@@ -5,10 +5,19 @@ import sys
 sys.path.insert(0, '/home/dev/airflow/dags')
 from core.transform.binary import binary_to_int
 import psycopg2, pymssql
+from airflow.hooks.base import BaseHook   # учётные данные — только из Airflow connections
+def _ms():
+    c = BaseHook.get_connection("mssql_1c_conn")
+    return pymssql.connect(server=c.host, port=c.port or 1433, user=c.login, password=c.password, database=c.schema)
+def _pg(conn_id):
+    c = BaseHook.get_connection(conn_id)
+    return psycopg2.connect(host=c.host, port=c.port or 5432, user=c.login, password=c.password, dbname=c.schema)
+if len(sys.argv) < 2:
+    sys.exit("укажите conn_id PostgreSQL явно: python sales_aggregate_recon_2026-07-21.py <conn_id>")
 import pandas as pd
 
 # --- MSSQL: агрегаты по дню и типу (год в 1С +2000) ---
-ms = pymssql.connect(server='10.10.1.61', user='musulmon.k', password='Zz123456', database='UPP_JAN')
+ms = _ms()
 mdf = pd.read_sql("""
     SELECT CAST(_Period AS date) AS d, _RecorderTRef AS tref,
            COUNT(DISTINCT _RecorderRRef) AS docs, COUNT(*) AS rows_cnt,
@@ -23,7 +32,7 @@ mdf['tref'] = mdf['tref'].apply(binary_to_int)
 mdf['d'] = mdf['d'].apply(lambda x: (pd.Timestamp(x) - pd.DateOffset(years=2000)).date())
 
 # --- PostgreSQL: те же агрегаты (позиции + шапки; period из шапки) ---
-pg = psycopg2.connect(host='10.10.1.142', user='airflow_admin', password='1234Aa', dbname='test')
+pg = _pg(sys.argv[1])   # conn_id PostgreSQL — только явно: python ... <conn_id>
 gdf = pd.read_sql("""
     SELECT s.period::date AS d, p.recorder_type AS tref,
            COUNT(DISTINCT p.recorder) AS docs, COUNT(*) AS rows_cnt,

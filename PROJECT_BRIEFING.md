@@ -372,11 +372,10 @@ Row-level вычисления через `dags/core/transform/custom.py`:
 | `etl_gfk` | MSSQL | GFK витрина |
 | `conn_inventory` | Postgres | Inventory `public.orders` (используется в `orders_check_dag`) |
 
-### Захардкоженные креды в коде (technical debt — задача «вынести в env» открыта)
-- `etl_config_app/dao.py:DB_CONFIG` — Postgres `airflow_admin / 1234Aa` @ `10.10.1.142:5432/test`
-- `etl_config_app/dao.py:RETAIL_DB_CONFIG` — Postgres `airflow_admin / 1234Aa` @ `10.10.1.142:5432/bd_retail`
-- `etl_config_app/mssql_client.py:MSSQL_CONFIG` — MSSQL `musulmon.k / Zz123456` @ `10.10.1.61:1433/UPP_JAN`
-- `airflow.cfg:sql_alchemy_conn` — Postgres `airflow_admin:1234Aa` @ `10.10.1.142:5432/airflow`
+### Креды (с 2026-09-28 в tracked-файлах нет; старые значения были в git — см. ротацию в CLAUDE.md)
+- `etl_config_app/dao.py` — PostgreSQL и retail конфигуратора: только из окружения (`ETL_CONFIG_DB_*`, `ETL_CONFIG_RETAIL_DB_*`), PROD — `~/.config/etl_config/prod.env` (600); значений в коде нет (с 2026-09-28)
+- `etl_config_app/mssql_client.py` — 1С MSSQL: только из окружения (`ETL_CONFIG_MSSQL_*`); значений в коде нет (с 2026-09-28)
+- `airflow.cfg:sql_alchemy_conn` — метабаза Airflow `airflow_admin@10.10.1.142:5432/airflow`; файл локальный, не в git
 
 ### Имена ENV-переменных (только имена)
 - В коде на `os.environ` / `os.getenv` явных обращений **не нашёл** — Airflow Variables и хардкод. Это плохой паттерн, упомянут в TODO.

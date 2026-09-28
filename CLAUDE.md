@@ -69,6 +69,10 @@ ETL-платформа: Apache Airflow + FastAPI конфигуратор. Ан�
 | retail себестоимость | 10.10.1.85:5432/main_db | `retail_cost` |
 | 1С meta API | http://192.168.18.224:8090/NikitaBase/hs/meta | — |
 
+Конфигуратор: секреты только из окружения — PROD `~/.config/etl_config/prod.env` (700/600, из Airflow
+connections), имена — `etl_config_app/.env.example`; нет обязательной переменной — отказ до подключения.
+**Ротация:** пароли `airflow_admin` (PostgreSQL 10.10.1.142) и `musulmon.k` (1С MSSQL) были в git
+с первого коммита 2026-04-14 — сменить, затем обновить Airflow connections и prod.env.
 Admin ClickHouse (только ручной DDL, в Airflow не заведён): `~/.config/clickhouse/ch_admin.xml`
 (600, вне репозитория) — дефолт `--ch-config` в `ch_ddl` / `ch_cutover`.
 MSSQL PowerBI 10.10.1.136 — **вне scope**, не трогать.

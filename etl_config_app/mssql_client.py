@@ -4,22 +4,25 @@ Used to discover recorder types from accumulation registers.
 """
 import pymssql
 
-MSSQL_CONFIG = {
-    "server": "10.10.1.61",
-    "port": 1433,
-    "database": "UPP_JAN",
-    "user": "musulmon.k",
-    "password": "Zz123456",
-}
+import os
+
+
+def _required(name: str) -> str:
+    """Обязательная переменная окружения; нет — отказ до подключения. Значение в лог не пишется."""
+    v = os.getenv(name)
+    if not v:
+        raise RuntimeError(f"{name} не задан — учётные данные 1С приходят только из окружения "
+                           f"(PROD: ~/.config/etl_config/prod.env, см. etl_config_app/RUNNING.md)")
+    return v
 
 
 def get_conn():
     return pymssql.connect(
-        server=MSSQL_CONFIG["server"],
-        port=MSSQL_CONFIG["port"],
-        database=MSSQL_CONFIG["database"],
-        user=MSSQL_CONFIG["user"],
-        password=MSSQL_CONFIG["password"],
+        server=_required("ETL_CONFIG_MSSQL_SERVER"),
+        port=int(os.getenv("ETL_CONFIG_MSSQL_PORT", "1433")),
+        database=_required("ETL_CONFIG_MSSQL_DATABASE"),
+        user=_required("ETL_CONFIG_MSSQL_USER"),
+        password=_required("ETL_CONFIG_MSSQL_PASSWORD"),
     )
 
 

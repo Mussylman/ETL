@@ -8,7 +8,9 @@ TEST-экземпляр :5555 (база `test`) удалён 2026-09-28: TEST-к
 как пассивная — в неё ничего не пишет автоматически. Без `ETL_CONFIG_DB_NAME` конфигуратор не запускается.
 
 ## Переменные окружения (`dao.py`)
-- `ETL_CONFIG_DB_NAME` — база, **обязательна** (`etl_prod`); `ETL_CONFIG_DB_HOST/PORT/USER/PASSWORD` — при необходимости.
+- `ETL_CONFIG_DB_NAME`, `ETL_CONFIG_DB_USER`, `ETL_CONFIG_DB_PASSWORD` — **обязательны**; `ETL_CONFIG_DB_HOST/PORT` — при необходимости.
+- `ETL_CONFIG_RETAIL_DB_*`, `ETL_CONFIG_MSSQL_*` — retail и 1С; проверяются до подключения. Значений в коде нет.
+- Полный список имён — `.env.example`; PROD-значения — `~/.config/etl_config/prod.env` (из Airflow connections).
 - `ETL_CONFIG_ENV_LABEL` — текст метки (по умолчанию выводится из имени базы).
 - `ETL_CONFIG_ALLOW_DESTRUCTIVE=1` — разрешить destructive DDL (DROP COLUMN, сужение типа, recreate) через
   кнопку Sync с подтверждением. По умолчанию выключено: такие изменения — миграцией.
@@ -17,8 +19,9 @@ TEST-экземпляр :5555 (база `test`) удалён 2026-09-28: TEST-к
 ```bash
 cd /home/dev/airflow/etl_config_app
 
-# PROD: без --reload (правки кода применяются только явным рестартом)
-ETL_CONFIG_DB_NAME=etl_prod ETL_CONFIG_ENV_LABEL="PROD / etl_prod" \
+# PROD: без --reload (правки кода применяются только явным рестартом).
+# Секреты и база — из ~/.config/etl_config/prod.env (700/600, вне репозитория; имена — .env.example)
+set -a; . ~/.config/etl_config/prod.env; set +a
 nohup /home/dev/airflow/venv/bin/uvicorn app:app --host 0.0.0.0 --port 5556 \
       > /home/dev/airflow/logs/etl_config_prod.log 2>&1 &
 
