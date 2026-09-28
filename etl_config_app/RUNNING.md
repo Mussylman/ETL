@@ -1,25 +1,21 @@
-# Запуск конфигуратора: два экземпляра, один код
+# Запуск конфигуратора
 
-| Экземпляр | Порт | База etl_meta/витрины | Метка в UI |
+| Экземпляр | Порт | База etl_meta | Метка в UI |
 |---|---|---|---|
-| TEST | 5555 | `test` (значения по умолчанию) | синяя `TEST / test` |
 | PROD | 5556 | `etl_prod` (`ETL_CONFIG_DB_NAME=etl_prod`) | красная `PROD / etl_prod` |
 
-Переключателя TEST/PROD внутри интерфейса нет намеренно: окружение задаётся только при запуске.
+TEST-экземпляр :5555 (база `test`) удалён 2026-09-28: TEST-контур больше не нужен, база `test` сохранена
+как пассивная — в неё ничего не пишет автоматически. Без `ETL_CONFIG_DB_NAME` конфигуратор не запускается.
 
 ## Переменные окружения (`dao.py`)
-- `ETL_CONFIG_DB_NAME` — база (`test` | `etl_prod`); `ETL_CONFIG_DB_HOST/PORT/USER/PASSWORD` — при необходимости.
+- `ETL_CONFIG_DB_NAME` — база, **обязательна** (`etl_prod`); `ETL_CONFIG_DB_HOST/PORT/USER/PASSWORD` — при необходимости.
 - `ETL_CONFIG_ENV_LABEL` — текст метки (по умолчанию выводится из имени базы).
 - `ETL_CONFIG_ALLOW_DESTRUCTIVE=1` — разрешить destructive DDL (DROP COLUMN, сужение типа, recreate) через
-  кнопку Sync с подтверждением. По умолчанию выключено в обоих окружениях: такие изменения — миграцией.
+  кнопку Sync с подтверждением. По умолчанию выключено: такие изменения — миграцией.
 
 ## Команды
 ```bash
 cd /home/dev/airflow/etl_config_app
-
-# TEST (как исторически): auto-reload, читает код с диска
-nohup /home/dev/airflow/venv/bin/uvicorn app:app --host 0.0.0.0 --port 5555 --reload \
-      > /tmp/uvicorn.log 2>&1 &
 
 # PROD: без --reload (правки кода применяются только явным рестартом)
 ETL_CONFIG_DB_NAME=etl_prod ETL_CONFIG_ENV_LABEL="PROD / etl_prod" \

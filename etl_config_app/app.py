@@ -1,9 +1,6 @@
 """
 ETL Config — standalone web application.
-FastAPI + Jinja2, port 5555.
-
-Run:  python app.py
-  or: uvicorn app:app --host 0.0.0.0 --port 5555 --reload
+FastAPI + Jinja2. Один экземпляр — PROD на :5556; запуск и окружение — etl_config_app/RUNNING.md.
 """
 
 import json
@@ -2254,7 +2251,3 @@ async def api_wizard_create(request: Request):
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
-
-# ────────────────────────────────────────────
-if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=5555, reload=True)

@@ -10,14 +10,16 @@ import psycopg2.extras
 from typing import List, Optional, Dict
 
 
-# Подключение к etl_meta/витрине задаётся окружением. Один код — два экземпляра:
-#   TEST UI :5555 → dbname test      (значения по умолчанию, поведение как раньше)
-#   PROD UI :5556 → ETL_CONFIG_DB_NAME=etl_prod
-# Переключателя TEST/PROD внутри интерфейса нет намеренно.
+# Подключение к etl_meta задаётся окружением: PROD UI :5556 → ETL_CONFIG_DB_NAME=etl_prod.
+# База по умолчанию намеренно не задана: TEST-экземпляр :5555 (база test) удалён 2026-09-28,
+# и запуск без явного ETL_CONFIG_DB_NAME не должен молча писать в пассивную тестовую базу.
+if not os.getenv("ETL_CONFIG_DB_NAME"):
+    raise RuntimeError("ETL_CONFIG_DB_NAME не задан — конфигуратор запускается только с явной базой "
+                       "(PROD: ETL_CONFIG_DB_NAME=etl_prod, см. etl_config_app/RUNNING.md)")
 DB_CONFIG = {
     "host": os.getenv("ETL_CONFIG_DB_HOST", "10.10.1.142"),
     "port": int(os.getenv("ETL_CONFIG_DB_PORT", "5432")),
-    "dbname": os.getenv("ETL_CONFIG_DB_NAME", "test"),
+    "dbname": os.environ["ETL_CONFIG_DB_NAME"],
     "user": os.getenv("ETL_CONFIG_DB_USER", "airflow_admin"),
     "password": os.getenv("ETL_CONFIG_DB_PASSWORD", "1234Aa"),
 }

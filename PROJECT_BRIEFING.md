@@ -8,7 +8,7 @@
 
 ## 1. Назначение проекта
 
-ETL-платформа: оркестрирует выгрузку оперативных данных из 1С:Управление производственным предприятием (УПП) в PostgreSQL-витрину для Power BI и собственных дашбордов. Под капотом — Apache Airflow для расписаний и FastAPI-конфигуратор (порт 5555), в котором аналитики маппят колонки 1С на целевые таблицы и распределяют их по dim/fact через канбан-интерфейс.
+ETL-платформа: оркестрирует выгрузку оперативных данных из 1С:Управление производственным предприятием (УПП) в PostgreSQL-витрину для Power BI и собственных дашбордов. Под капотом — Apache Airflow для расписаний и FastAPI-конфигуратор (PROD :5556), в котором аналитики маппят колонки 1С на целевые таблицы и распределяют их по dim/fact через канбан-интерфейс.
 
 **Бизнес-процессы 1С которые обслуживает (по коду / зарегистрированным конфигурациям):**
 - Продажи: `Документ.ЧекККМ`, `Документ.РеализацияТоваровУслуг`, `Документ.ВозвратТоваровОтПокупателя` (и ещё 3 типа документов, найденные через Discover в регистре накопления `_AccumRg17844`)
@@ -40,7 +40,7 @@ ETL-платформа: оркестрирует выгрузку операти
 1. **ETL Engine** (`dags/core/etl_engine.py`) — конфигурируемый движок. Читает `etl_meta` схему, строит SQL c JOIN/UNION ALL, тянет данные, трансформирует, грузит.
 2. **SalesETL** (`dags/core/sales_etl.py`) — специализированный оркестратор для пары `sales` + `sales_positions`: UPSERT шапок, DELETE+INSERT позиций.
 3. **ETLCore** (`dags/core/etl_core.py`) — legacy движок с hardcoded конфигурацией (помечен deprecated).
-4. **ETL Config App** (`etl_config_app/`) — отдельное FastAPI-приложение (порт 5555). Не процесс Airflow, запускается отдельно через uvicorn. Управляет схемой `etl_meta` (регистры, источники, маппинги колонок, юнионы, таргеты, include_columns, target_role).
+4. **ETL Config App** (`etl_config_app/`) — отдельное FastAPI-приложение (PROD :5556; TEST :5555 удалён 2026-09-28). Не процесс Airflow, запускается отдельно через uvicorn. Управляет схемой `etl_meta` (регистры, источники, маппинги колонок, юнионы, таргеты, include_columns, target_role).
 
 ### Целевые хранилища
 - **PostgreSQL `10.10.1.142:5432/test`**:
@@ -167,7 +167,7 @@ PostgreSQL public.*  →  Power BI / прочие дашборды
 │   ├── helpers/                 # log_setup, telegram_loggerr
 │   └── plugins/                 # gfk_client.GFK
 │
-├── etl_config_app/              # FastAPI-конфигуратор (порт 5555)
+├── etl_config_app/              # FastAPI-конфигуратор (PROD :5556)
 │   ├── app.py                   # FastAPI endpoints + Jinja routes
 │   ├── dao.py                   # доступ к etl_meta схеме + retail Postgres
 │   ├── mssql_client.py          # лёгкий клиент MSSQL для discover
@@ -366,7 +366,7 @@ Row-level вычисления через `dags/core/transform/custom.py`:
 | conn_id | Тип | Назначение |
 |---|---|---|
 | `mssql_1c_conn` | MSSQL | 1С backend `UPP_JAN` (10.10.1.61:1433) |
-| `postgre_test_base` | Postgres | Целевая БД `test` (etl_meta + public) |
+| `postgre_test_base` | Postgres | БД `test` — пассивная архивная, автоматически не пишется (2026-09-28) |
 | `bd_retail` | Postgres | Retail-БД для инкрементальной загрузки |
 | `powerbi_connect` | MSSQL | Power BI витрина (для dim_user_name, dim_asp_products) |
 | `etl_gfk` | MSSQL | GFK витрина |
@@ -390,7 +390,7 @@ Row-level вычисления через `dags/core/transform/custom.py`:
   - `90458bb` ETL Platform: initial commit
 
 ### Доступ к UI
-- ETL Config App: `http://10.10.1.142:5555/`
+- ETL Config App: `http://10.10.1.142:5556/` (PROD; TEST :5555 удалён)
 - Airflow webserver: порт **по умолчанию 8080** на хосте `sev`, **в коде не подтверждено** — проверь `airflow.cfg` секцию webserver / api_server.
 
 ---

@@ -30,7 +30,7 @@ ETL-платформа: Apache Airflow + FastAPI конфигуратор. Ан�
 - Справочники: `dags/core/tools/load_dim_from_config.py`
 - CLI: `dags/core/tools/` (ch_sync, ch_report, ch_ddl, load_dim_from_config, ch_cutover, ch_pg_handover)
 - Миграции: `dags/core/migrations/` (control plane ClickHouse-контура — `migrations/clickhouse/`)
-- Конфигуратор: `etl_config_app/` (FastAPI, TEST :5555, PROD :5556)
+- Конфигуратор: `etl_config_app/` (FastAPI, один экземпляр — PROD :5556, запуск — `etl_config_app/RUNNING.md`)
 - Obsidian vault: `docs/`; отчёты аудитов: `reports/`, `docs/audits/`
 
 ## Obsidian Knowledge Vault
@@ -62,7 +62,7 @@ ETL-платформа: Apache Airflow + FastAPI конфигуратор. Ан�
 | Система | Адрес | Airflow conn_id |
 |---|---|---|
 | PostgreSQL PROD (control plane, реестры) | 10.10.1.142:5432/etl_prod | `etl_prod` |
-| PostgreSQL TEST (TEST-контур конфигуратора) | 10.10.1.142:5432/test | `postgre_test_base` |
+| PostgreSQL `test` — пассивная архивная БД, автоматически не пишется | 10.10.1.142:5432/test | `postgre_test_base` (только ручной доступ) |
 | ClickHouse (аналитический слой) | 10.10.1.142:9000/analytics_poc | `clickhouse_etl` (etl_writer) |
 | MSSQL 1С УПП | 10.10.1.61:1433/UPP_JAN | `mssql_1c_conn` |
 | retail (сигнал об изменениях) | 10.10.1.99:5432/ims_db | `bd_retail` |
@@ -75,8 +75,9 @@ MSSQL PowerBI 10.10.1.136 — **вне scope**, не трогать.
 
 ## Команды
 ```bash
-# Конфигуратор
-cd etl_config_app && uvicorn app:app --host 0.0.0.0 --port 5555 --reload
+# Конфигуратор — только PROD :5556 (без ETL_CONFIG_DB_NAME не стартует; полная команда — RUNNING.md)
+cd etl_config_app && ETL_CONFIG_DB_NAME=etl_prod ETL_CONFIG_ENV_LABEL="PROD / etl_prod" \
+  nohup ../venv/bin/uvicorn app:app --host 0.0.0.0 --port 5556 > ../logs/etl_config_prod.log 2>&1 &
 
 # Группа analytics_sync вручную (то же, что делает DAG; режим patch | rebuild | hot | sweep)
 PYTHONPATH=dags python3 -m core.tools.ch_sync --group onec_1c --mode patch --apply
@@ -90,16 +91,22 @@ PYTHONPATH=dags python3 -m core.tools.load_dim_from_config --dim dim_nomenklatur
 # Отчёт сверки источник ↔ ClickHouse по обобщённым источникам (справочники, cost_daily)
 PYTHONPATH=dags python3 -m core.tools.ch_report
 
-# Тесты конфигуратора (каждый — самостоятельный скрипт, без pytest)
-python3 etl_config_app/tests/golden_sales_test.py   # round-trip spec + эталон SQL; запускать ПЕРВЫМ
-python3 etl_config_app/tests/sync_ddl_test.py       # DDL-инварианты Sync (нужен эталон из golden)
-python3 etl_config_app/tests/validator_test.py
+# Тесты конфигуратора — ТОЛЬКО вручную и ТОЛЬКО на архивной test (создают/удаляют свои схемы);
+# на etl_prod не запускать
+ETL_CONFIG_DB_NAME=test python3 etl_config_app/tests/golden_sales_test.py   # запускать ПЕРВЫМ
+ETL_CONFIG_DB_NAME=test python3 etl_config_app/tests/sync_ddl_test.py
+ETL_CONFIG_DB_NAME=test python3 etl_config_app/tests/validator_test.py
 ```
 
 **Не для PROD:** `core.tools.rebuild_sales`, `run_full_period`, `docs/audits/sql/sales_recon.py` —
 инструменты фактов PostgreSQL. На PROD факты заморожены: `rebuild_sales` отказывает до любого шага
 (`pg_fact_write=false`, а `--from-scratch` — в любом контуре с `etl_meta.doc_key`), `ETLEngine.run`
-запись запрещает. DAG `incremental` (TEST-контур) удалён 2026-09-28.
+запись запрещает.
+
+**TEST-контур удалён 2026-09-28**: DAG `incremental` и TEST-конфигуратор :5555. База `test`
+(`postgre_test_base`) сохранена как пассивная test/archive DB — ни один DAG, сервис, cron или триггер в неё
+не пишет. Core-модули и CLI по умолчанию ещё указывают `postgre_test_base` — это только ручной запуск;
+`analytics_sync` везде передаёт `etl_prod` явно.
 
 ## Архитектура
 
