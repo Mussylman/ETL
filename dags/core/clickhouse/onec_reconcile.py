@@ -152,15 +152,18 @@ def fingerprint_1c(ms, p: Dict, partition: str) -> List[str]:
     total = None
     for mb in p["members"]:
         canon = "CONCAT_WS('|', " + ", ".join(mb["keys"] + mb["refs"]) + ")"
-        h = (f"ISNULL(SUM(CONVERT(bigint, CONVERT(binary(4), SUBSTRING(HASHBYTES('MD5', "
-             f"CAST(({canon}) COLLATE {UTF8} AS varchar(4000))), 1, 4)))),0)")
-        meas = ", ".join(f"ISNULL(SUM({e}),0), ISNULL(SUM(CAST({e} AS decimal(38,8))*CAST({e} AS decimal(38,8))),0)"
-                         for e in mb["measures"])
+        # Построчно во внутреннем запросе, агрегаты — во внешнем: ссылка или мера может быть
+        # подзапросом (ссылка из документа-источника), а SQL Server не допускает агрегат
+        # над выражением с подзапросом.
+        inner = [f"CONVERT(bigint, CONVERT(binary(4), SUBSTRING(HASHBYTES('MD5', "
+                 f"CAST(({canon}) COLLATE {UTF8} AS varchar(4000))), 1, 4))) AS h"]
+        inner += [f"CAST({e} AS decimal(38,8)) AS m{i}" for i, e in enumerate(mb["measures"])]
+        meas = ", ".join(f"ISNULL(SUM(m{i}),0), ISNULL(SUM(m{i}*m{i}),0)" for i in range(len(mb["measures"])))
         # окно партиции — строго исключительное справа: документ ровно на полуночи 1-го
         # числа относится к следующему месяцу, как и в пересборке прямого пути
         cond = [f"{mb['period']} >= '{a}'", f"{mb['period']} < '{b}'"] + [f"({w})" for w in mb["where"]]
-        sql = (f"SELECT COUNT(*), {h}" + (f", {meas}" if meas else "") +
-               f" FROM {mb['from']} WHERE " + " AND ".join(cond))
+        sql = (f"SELECT COUNT(*), ISNULL(SUM(h),0)" + (f", {meas}" if meas else "") +
+               f" FROM (SELECT {', '.join(inner)} FROM {mb['from']} WHERE " + " AND ".join(cond) + ") x")
         row = [Decimal(str(x if x is not None else 0)) for x in ms.get_first(sql)]
         total = row if total is None else [u + v for u, v in zip(total, row)]
     return [format(x, "f") for x in total]

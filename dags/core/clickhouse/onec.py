@@ -237,7 +237,8 @@ def _run_register(pg, ch: ClickHouse, specs: List, *, mode: str = "patch",
             upper_bound=old_path_upper_bound(pg, cfg.id) if follows_old_path else None,
             retail_table=cfg.retail_table, retail_conn_id=engine.retail_conn_id,
             config_conn_id="etl_prod", register_id=cfg.id, key_column=cfg.retail_uid_column,
-            etl_table=None, etl_conn_id=None)
+            etl_table=None, etl_conn_id=None,
+            signal_sources=(header.source_params or {}).get("signal_sources"))
         hdr_target = next(t for t in targets if t.target_table == header.source_params["target"])
         with contextlib.redirect_stdout(sink) if quiet else contextlib.nullcontext():
             if mode == "keys":
@@ -359,7 +360,10 @@ def _with_unresolved(ch: ClickHouse, header, cdf: pd.DataFrame, days: int = 15) 
     """
     if not header.source_params.get("own_id") or "id" not in header.target_columns:
         return cdf
-    out = ch.query(f"SELECT toString(recorder), max(retail_updated_at) FROM {header.fqn} "
+    # колонка цели с меткой сигнала — та, что питается из retail_updated_at кадра (имя — из конфига)
+    ts_col = next((c.target_column for c in header.columns if c.source_expr == "retail_updated_at"), None)
+    ts_expr = f"max({ts_col})" if ts_col else "toDateTime(0)"
+    out = ch.query(f"SELECT toString(recorder), {ts_expr} FROM {header.fqn} "
                    f"WHERE id = 0 AND period >= now() - INTERVAL {int(days)} DAY GROUP BY recorder")
     rows = [l.split("\t") for l in out.splitlines() if l.strip()]
     if not rows:

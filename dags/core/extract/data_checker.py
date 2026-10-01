@@ -62,6 +62,9 @@ class DataChecker:
         # legacy-параметры для обратной совместимости (не используются для watermark)
         etl_table: Optional[str] = None,
         etl_conn_id: Optional[str] = None,
+        # несколько источников сигнала: [{table, key_column, updated_at_column?, filter?}].
+        # Не задано — один источник retail_table / key_column, как раньше.
+        signal_sources: Optional[List[dict]] = None,
     ):
         from ..conn import require_conn
         require_conn("config_conn_id", config_conn_id)
@@ -73,6 +76,31 @@ class DataChecker:
         # legacy — оставляем поля чтобы не сломать существующие вызовы
         self.etl_table = etl_table
         self.etl_conn_id = etl_conn_id
+        self.signal_sources = signal_sources or [
+            {"table": retail_table, "key_column": key_column, "updated_at_column": "updated_at"}]
+
+    def _signal_sql(self, aggregate: bool) -> str:
+        """
+        Сигнал изменений из всех источников: uid + updated_at (UTC → Almaty) в окне [%s, %s).
+        Источники объединяются UNION ALL; uid нормализуется (lower), при aggregate —
+        GROUP BY uid с MAX(updated_at). Параметры окна повторяются на каждый источник.
+        """
+        parts = []
+        for src in self.signal_sources:
+            ts = f"({src.get('updated_at_column') or 'updated_at'} AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Almaty')::timestamp"
+            flt = f" AND ({src['filter']})" if src.get("filter") else ""
+            parts.append(f"SELECT lower({src['key_column']}::text) AS uid, {ts} AS updated_at FROM public.{src['table']} "
+                         f"WHERE {ts} >= %s AND {ts} < %s AND {src['key_column']} IS NOT NULL{flt}")
+        body = "\n    UNION ALL\n    ".join(parts)
+        if aggregate or len(parts) > 1:
+            return f"SELECT uid, MAX(updated_at) AS updated_at FROM (\n    {body}\n) s GROUP BY uid ORDER BY 2"
+        return body + " ORDER BY updated_at ASC"
+
+    def _signal_params(self, a: str, b: str) -> tuple:
+        return tuple(x for _ in self.signal_sources for x in (a, b))
+
+    def _signal_name(self) -> str:
+        return " + ".join(s["table"] for s in self.signal_sources)
 
     # ------------------------------------------------------------------
     # 1) Watermark per-register
@@ -153,19 +181,11 @@ class DataChecker:
         # retail.updated_at хранится в UTC — конвертируем в Almaty через AT TIME ZONE
         # (учитывает DST, если когда-нибудь появится).
         # updated_at в df — уже в Almaty, идёт прямо в наш retail_updated_at.
-        sql = f"""
-            SELECT {self.key_column} AS uid,
-                   (updated_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Almaty')::timestamp AS updated_at
-            FROM   public.{self.retail_table}
-            WHERE  (updated_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Almaty')::timestamp >= %s
-              AND  (updated_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Almaty')::timestamp <  %s
-            ORDER BY updated_at ASC
-        """
-        df = pg.get_pandas_df(sql, parameters=(from_ts, to_ts))
+        df = pg.get_pandas_df(self._signal_sql(aggregate=False), parameters=self._signal_params(from_ts, to_ts))
 
         print(
             f"🔵 Incremental window [{from_ts}, {to_ts}): "
-            f"{len(df)} changed docs in {self.retail_table}"
+            f"{len(df)} changed docs in {self._signal_name()}"
         )
 
         # Добор хвоста: uid за TAIL_LOOKBACK, отсутствующие в DWH
@@ -208,15 +228,7 @@ class DataChecker:
             return None
 
         pg = PostgresHook(postgres_conn_id=self.retail_conn_id)
-        sql = f"""
-            SELECT {self.key_column} AS uid,
-                   MAX((updated_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Almaty')::timestamp) AS updated_at
-            FROM   public.{self.retail_table}
-            WHERE  (updated_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Almaty')::timestamp >= %s
-              AND  (updated_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Almaty')::timestamp <  %s
-            GROUP BY {self.key_column}
-        """
-        cand = pg.get_pandas_df(sql, parameters=(tail_from, window_from))
+        cand = pg.get_pandas_df(self._signal_sql(aggregate=True), parameters=self._signal_params(tail_from, window_from))
         if cand.empty:
             return None
 
