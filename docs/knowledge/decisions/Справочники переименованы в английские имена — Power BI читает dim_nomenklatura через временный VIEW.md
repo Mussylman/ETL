@@ -55,3 +55,8 @@ WHERE type = 'QueryFinish' AND has(tables, 'analytics_poc.dim_nomenklatura') AND
 перевыдача прав `ch_ddl --apply`), при приостановленном `analytics_sync`.
 
 Связано: [[Инвентаризация таблиц PostgreSQL и ClickHouse — кандидатов на безусловное удаление нет 2026-10-06]].
+
+**VIEW удалён 2026-10-06 11:33 UTC.** Модель Power BI переведена на `dim_product`: по query_log 10.10.1.136 ходит в
+`dim_product` напрямую с 11:09, последнее обращение к VIEW — 11:11:51; Desktop (192.168.18.233) — тоже напрямую.
+Если какой-то отчёт всё же читает старое имя — восстановить мгновенно:
+`CREATE VIEW analytics_poc.dim_nomenklatura AS SELECT * FROM analytics_poc.dim_product` (ch_admin).

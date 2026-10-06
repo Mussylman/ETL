@@ -19,7 +19,7 @@ Read-only аудит 2026-10-06 (до переименования справо�
    разобраться (ETLEngine их не пишет — `pg_fact_write = false`, — но флаг вводит в заблуждение).
 4. Rollback/shadow (`fact_*_direct` + их stage, `fact_stock*_shadow` + stage/raw, записи `*:shadow` в
    `ch_source_state`) — не удалять до решения об окончании окна отката.
-5. TEMP VIEW `analytics_poc.dim_nomenklatura` → удалить только после перевода Power BI на `dim_product` и проверки
+5. ~~TEMP VIEW `analytics_poc.dim_nomenklatura`~~ — удалён 2026-10-06 11:33 UTC после перевода Power BI на `dim_product` (проверка
    `system.query_log`: обращений к `dim_nomenklatura` больше нет.
 6. Вне классификации, решение владельца: БД `bd_retail` на 10.10.1.142 (6.6 GB, обращений нет; Airflow conn
    `bd_retail` указывает на 10.10.1.99) и архивная `test` (1.1 GB).
