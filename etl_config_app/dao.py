@@ -109,11 +109,24 @@ def list_registers(include_inactive=False) -> List[dict]:
                (SELECT array_agg(t.target_table ORDER BY t.priority, t.id)
                   FROM {SCHEMA}.register_targets t
                   WHERE t.register_id = r.id AND t.is_active) AS target_tables,
-               (SELECT MAX(h.finished_at) FROM {SCHEMA}.load_history h
-                  WHERE h.register_id = r.id AND h.status = 'success') AS last_success_at,
-               (SELECT h.status FROM {SCHEMA}.load_history h
-                  WHERE h.register_id = r.id
-                  ORDER BY h.started_at DESC NULLS LAST, h.id DESC LIMIT 1) AS last_status
+               -- последняя синхронизация — из обоих журналов: load_history (загрузка в PostgreSQL:
+               -- справочники, старый путь фактов) и ch_sync_history (прямой путь 1С → ClickHouse,
+               -- активные ch_sync с source_object = код регистра)
+               GREATEST(
+                   (SELECT MAX(h.finished_at) FROM {SCHEMA}.load_history h
+                      WHERE h.register_id = r.id AND h.status = 'success'),
+                   (SELECT MAX(h.finished_at) FROM {SCHEMA}.ch_sync_history h
+                      JOIN {SCHEMA}.ch_sync s ON s.id = h.sync_id
+                      WHERE s.source_type = 'onec_register' AND s.source_object = r.code
+                        AND s.is_active AND h.status = 'success')) AS last_success_at,
+               (SELECT x.status FROM (
+                    SELECT h.status, h.started_at, 0 AS ord FROM {SCHEMA}.load_history h
+                     WHERE h.register_id = r.id
+                    UNION ALL
+                    SELECT h.status, h.started_at, 1 FROM {SCHEMA}.ch_sync_history h
+                      JOIN {SCHEMA}.ch_sync s ON s.id = h.sync_id
+                     WHERE s.source_type = 'onec_register' AND s.source_object = r.code AND s.is_active) x
+                  ORDER BY x.started_at DESC NULLS LAST, x.ord DESC LIMIT 1) AS last_status
         FROM {SCHEMA}.registers r
         {"" if include_inactive else "WHERE r.is_active = TRUE"}
         ORDER BY r.code
