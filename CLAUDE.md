@@ -89,7 +89,7 @@ PYTHONPATH=dags python3 -m core.tools.ch_sync --config-conn etl_prod --group one
 PYTHONPATH=dags python3 -m core.tools.ch_sync --config-conn etl_prod --group onec_1c --mode rebuild --partition 202609 --apply
 
 # Справочники 1С → реестр PostgreSQL (то же, что группа dim_registry)
-PYTHONPATH=dags python3 -m core.tools.load_dim_from_config --dim dim_nomenklatura --mode incremental --pg-conn etl_prod
+PYTHONPATH=dags python3 -m core.tools.load_dim_from_config --dim dim_product --mode incremental --pg-conn etl_prod
 #   --mode register — завести все объекты 1С, которых нет в справочнике (id существующих не меняются)
 
 # Отчёт сверки источник ↔ ClickHouse по обобщённым источникам (справочники, cost_daily)

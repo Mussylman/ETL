@@ -5,7 +5,7 @@
 а он в обычном ETL не участвует и в Airflow не заводится. Загрузчик etl_writer
 создавать таблицы не может и не должен.
 
-    PYTHONPATH=dags python -m core.tools.ch_ddl --code dim_sklad --ch-config <admin.xml> --apply
+    PYTHONPATH=dags python -m core.tools.ch_ddl --code dim_warehouse --ch-config <admin.xml> --apply
     ... --all        все активные конфигурации
     ... --plan       только показать DDL и гранты
 """

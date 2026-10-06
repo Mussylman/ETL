@@ -16,7 +16,7 @@
     cd /home/dev/airflow
     PYTHONPATH=dags python3 -m core.tools.load_dim_names              # только stub-строки
     PYTHONPATH=dags python3 -m core.tools.load_dim_names --all        # обновить и уже известные имена
-    PYTHONPATH=dags python3 -m core.tools.load_dim_names --dim dim_sklad dim_kachestvo
+    PYTHONPATH=dags python3 -m core.tools.load_dim_names --dim dim_warehouse dim_quality
     PYTHONPATH=dags python3 -m core.tools.load_dim_names --dry-run
 
 Параметры:
@@ -35,14 +35,14 @@ from typing import Dict, List, Optional, Tuple
 # Номер резолвится через meta API по имени; fallback используется, если API
 # недоступен. В другой базе 1С номера отличаются — имя надёжнее.
 DIM_SOURCES: Dict[str, Tuple[str, str]] = {
-    "dim_nomenklatura":  ("Справочник.Номенклатура",           "_Reference123"),
-    "dim_sklad":         ("Справочник.Склады",                 "_Reference169"),
-    "dim_kontragent":    ("Справочник.Контрагенты",            "_Reference108"),
-    "dim_podrazdelenie": ("Справочник.Подразделения",          "_Reference141"),
-    "dim_organizatsiya": ("Справочник.Организации",            "_Reference131"),
-    "dim_dogovor":       ("Справочник.ДоговорыКонтрагентов",   "_Reference75"),
-    "dim_otvetstvennyy": ("Справочник.Пользователи",           "_Reference145"),
-    "dim_kachestvo":     ("Справочник.Качество",               "_Reference97"),
+    "dim_product":  ("Справочник.Номенклатура",           "_Reference123"),
+    "dim_warehouse":         ("Справочник.Склады",                 "_Reference169"),
+    "dim_counterparty":    ("Справочник.Контрагенты",            "_Reference108"),
+    "dim_department": ("Справочник.Подразделения",          "_Reference141"),
+    "dim_organization": ("Справочник.Организации",            "_Reference131"),
+    "dim_contract":       ("Справочник.ДоговорыКонтрагентов",   "_Reference75"),
+    "dim_responsible_person": ("Справочник.Пользователи",           "_Reference145"),
+    "dim_quality":     ("Справочник.Качество",               "_Reference97"),
 }
 
 META_API = "http://192.168.18.224:8090/NikitaBase/hs/meta"

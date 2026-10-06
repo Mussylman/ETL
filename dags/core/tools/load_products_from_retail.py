@@ -1,5 +1,5 @@
 """
-Первичная заливка справочника номенклатуры из retail: retail.products → public.dim_nomenklatura.
+Первичная заливка справочника номенклатуры из retail: retail.products → public.dim_product.
 
 ЗАПУСКАЕТСЯ ВРУЧНУЮ. Это не DAG и не часть инкремента.
 
@@ -11,7 +11,7 @@
 
 Чего скрипт НЕ делает (осознанно):
     • никаких DELETE / TRUNCATE;
-    • не трогает и не дропает констрейнты (на dim_nomenklatura внешних FK
+    • не трогает и не дропает констрейнты (на dim_product внешних FK
       сейчас нет — связь с фактами логическая, но скрипт корректен и при них:
       он только INSERT/UPDATE, ссылочная целостность не нарушается);
     • не удаляет строки, которых нет в retail (в dim живут объекты из 1С,
@@ -63,7 +63,7 @@ SELECT_RETAIL = f"""
 # колонок здесь. is_stub=false — наша константа, её нет в данных retail, поэтому
 # она зашита в template, а не тянется 124к раз по сети.
 UPSERT = """
-    INSERT INTO public.dim_nomenklatura (guid, name, code, is_stub, retail_updated_at)
+    INSERT INTO public.dim_product (guid, name, code, is_stub, retail_updated_at)
     VALUES %s
     ON CONFLICT (guid) DO UPDATE SET
         name              = EXCLUDED.name,
@@ -71,10 +71,10 @@ UPSERT = """
         is_stub           = false,
         retail_updated_at = EXCLUDED.retail_updated_at,
         etl_updated_at    = timezone('Asia/Almaty', now())
-    WHERE dim_nomenklatura.name              IS DISTINCT FROM EXCLUDED.name
-       OR dim_nomenklatura.code              IS DISTINCT FROM EXCLUDED.code
-       OR dim_nomenklatura.is_stub           IS DISTINCT FROM false
-       OR dim_nomenklatura.retail_updated_at IS DISTINCT FROM EXCLUDED.retail_updated_at
+    WHERE dim_product.name              IS DISTINCT FROM EXCLUDED.name
+       OR dim_product.code              IS DISTINCT FROM EXCLUDED.code
+       OR dim_product.is_stub           IS DISTINCT FROM false
+       OR dim_product.retail_updated_at IS DISTINCT FROM EXCLUDED.retail_updated_at
 """
 
 # (guid, name, code) → из retail; false → is_stub; (retail_updated_at) → из retail
@@ -102,7 +102,7 @@ def apply_migration(pg) -> None:
 def snapshot_ids(pg) -> dict:
     """guid → id существующих строк. Нужен, чтобы ДОКАЗАТЬ неизменность id после заливки."""
     return {g: i for g, i in pg.get_records(
-        "SELECT guid::text, id FROM public.dim_nomenklatura")}
+        "SELECT guid::text, id FROM public.dim_product")}
 
 
 def state(pg) -> dict:
@@ -110,17 +110,17 @@ def state(pg) -> dict:
         SELECT count(*), count(*) FILTER (WHERE is_stub),
                count(*) FILTER (WHERE retail_updated_at IS NOT NULL),
                max(id)
-        FROM public.dim_nomenklatura""")
+        FROM public.dim_product""")
     orphans = pg.get_first("""
         SELECT count(*) FROM public.sales_positions p
-        LEFT JOIN public.dim_nomenklatura d ON d.id = p.nomenklatura_id
+        LEFT JOIN public.dim_product d ON d.id = p.nomenklatura_id
         WHERE p.nomenklatura_id IS NOT NULL AND d.id IS NULL""")[0]
     return {"rows": row[0], "stub": row[1], "with_retail_dt": row[2],
             "max_id": row[3], "orphan_facts": orphans}
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Заливка retail.products → dim_nomenklatura")
+    ap = argparse.ArgumentParser(description="Заливка retail.products → dim_product")
     ap.add_argument("--dry-run", action="store_true", help="ничего не писать")
     ap.add_argument("--batch", type=int, default=1000)
     ap.add_argument("--limit", type=int, default=None, help="только первые N строк retail")
@@ -134,7 +134,7 @@ def main() -> None:
     pg, rt = _hooks(args.pg_conn, args.retail_conn)
 
     print("=" * 78)
-    print(f"  ЗАЛИВКА retail.products → dim_nomenklatura{'  [DRY-RUN]' if args.dry_run else ''}")
+    print(f"  ЗАЛИВКА retail.products → dim_product{'  [DRY-RUN]' if args.dry_run else ''}")
     print("=" * 78)
 
     # 1. Миграция
@@ -147,7 +147,7 @@ def main() -> None:
 
     has_col = pg.get_first(
         "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' "
-        "AND table_name='dim_nomenklatura' AND column_name='retail_updated_at'")[0]
+        "AND table_name='dim_product' AND column_name='retail_updated_at'")[0]
     if not has_col:
         print("  ✗ колонки retail_updated_at нет — примените миграцию 009 и повторите")
         sys.exit(1)

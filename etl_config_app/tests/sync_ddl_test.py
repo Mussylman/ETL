@@ -100,7 +100,7 @@ def main():
         check(f"{tbl}: повторный план пуст (идемпотентно)", plan["actions"] == [],
               str([(a["kind"], a["col"]) for a in plan["actions"]]))
 
-    # 4b. FK-колонки dim-слоя (*_id) не дропаются Sync-ом (пилот dim_nomenklatura)
+    # 4b. FK-колонки dim-слоя (*_id) не дропаются Sync-ом (пилот dim_product)
     dao.execute(f'ALTER TABLE "etl_test"."{FACT}" ADD COLUMN "nomenklatura_id" integer')
     plan = dao.compute_sync_plan(fact_id)
     drops = [a["col"] for a in plan["actions"] if a["kind"] == "drop_column"]

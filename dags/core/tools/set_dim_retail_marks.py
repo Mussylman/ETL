@@ -27,7 +27,7 @@ retail_updated_at. Здесь обе роли живёт в одной коло�
     PYTHONPATH=dags python3 -m core.tools.set_dim_retail_marks --mode initial --dry-run
     PYTHONPATH=dags python3 -m core.tools.set_dim_retail_marks --mode initial
     PYTHONPATH=dags python3 -m core.tools.set_dim_retail_marks --mode incremental
-    PYTHONPATH=dags python3 -m core.tools.set_dim_retail_marks --dim dim_sklad --mode reload
+    PYTHONPATH=dags python3 -m core.tools.set_dim_retail_marks --dim dim_warehouse --mode reload
 """
 
 import argparse
@@ -36,10 +36,10 @@ import warnings
 from typing import Dict, List, Optional, Tuple
 
 MAPPING: Dict[str, str] = {
-    "dim_nomenklatura":  "products",
-    "dim_sklad":         "warehouses",
-    "dim_podrazdelenie": "departments",
-    "dim_kachestvo":     "qualities",
+    "dim_product":  "products",
+    "dim_warehouse":         "warehouses",
+    "dim_department": "departments",
+    "dim_quality":     "qualities",
 }
 
 UUID_RE = r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'

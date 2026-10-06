@@ -22,8 +22,8 @@
 
 Использование:
     source venv/bin/activate
-    PYTHONPATH=dags python3 -m core.tools.load_dim_from_config --dim dim_sklad --dry-run
-    PYTHONPATH=dags python3 -m core.tools.load_dim_from_config --dim dim_sklad
+    PYTHONPATH=dags python3 -m core.tools.load_dim_from_config --dim dim_warehouse --dry-run
+    PYTHONPATH=dags python3 -m core.tools.load_dim_from_config --dim dim_warehouse
     PYTHONPATH=dags python3 -m core.tools.load_dim_from_config            # все reference_dim
     PYTHONPATH=dags python3 -m core.tools.load_dim_from_config --mode reload   # поля из 1С, метку не трогает
 

@@ -992,7 +992,7 @@ def raw_ref_dim_links(target: dict) -> List[dict]:
     """
     Ссылки таргета на справочники по стандарту raw_refs: для каждого мэппинга
     raw_refs.<key> (не полиморфного .uid/.type) — dim-таблица и FK-колонка <key>_id.
-    Таблица справочника: transform_params.dim у мэппинга (явно, напр. {"dim": "dim_kontragent"}
+    Таблица справочника: transform_params.dim у мэппинга (явно, напр. {"dim": "dim_counterparty"}
     для gruzopoluchatel) либо public.dim_<key>, если существует. Нерезолвимые ключи
     (vid_operatsii, tip_cen …) остаются только в raw_refs — фейковых *_id не бывает.
     """

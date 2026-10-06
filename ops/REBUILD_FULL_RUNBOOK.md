@@ -50,7 +50,7 @@ psql -h 10.10.1.142 -U airflow_admin -d test -f dags/core/migrations/009_dim_ret
 | Категория | Таблицы |
 |---|---|
 | Факты | `sales_positions`, `sales` |
-| Справочники (8) | `dim_nomenklatura`, `dim_sklad`, `dim_kontragent`, `dim_podrazdelenie`, `dim_organizatsiya`, `dim_dogovor`, `dim_otvetstvennyy`, `dim_kachestvo` |
+| Справочники (8) | `dim_product`, `dim_warehouse`, `dim_counterparty`, `dim_department`, `dim_organization`, `dim_contract`, `dim_responsible_person`, `dim_quality` |
 
 **Что НЕ труним:** `order`, `order_positions` (другой регистр, пусты, вне scope);
 `salesTEST_dim`, `salesTEST_pos`, `wt_sales`, `wt_sales_positions`, `stock_positions` (legacy).
@@ -78,7 +78,7 @@ PYTHONPATH=dags python3 -m core.tools.load_products_from_retail --skip-migration
 ```sql
 SELECT count(*), min(retail_updated_at), max(retail_updated_at),
        count(*) FILTER (WHERE is_stub) AS stub
-FROM public.dim_nomenklatura;
+FROM public.dim_product;
 ```
 Ожидаем: ~124 тыс. строк, `stub = 0`, `max(retail_updated_at)` ≈ текущее время —
 **это стартовая метка справочника**, от неё поедет будущий инкремент справочников.
@@ -103,7 +103,7 @@ PYTHONPATH=dags python3 -m core.tools.rebuild_sales --start 2026-03-01 --from-sc
 advisory-локом → `load_dim_names` → `sales_recon --strict`. Ориентир: 6–10 минут.
 
 **Важно:** факты сами создадут stub-строки в остальных семи справочниках по guid из 1С
-(`post_load_sql`), и им же проставят `*_id`. Для `dim_nomenklatura` stub'ы почти не появятся —
+(`post_load_sql`), и им же проставят `*_id`. Для `dim_product` stub'ы почти не появятся —
 guid уже залиты из retail (покрытие 100%).
 
 Критерий успеха — шаг 8 оркестратора: `sales_recon --strict` в ноль. Иначе сборка падает
@@ -120,7 +120,7 @@ guid уже залиты из retail (покрытие 100%).
 PYTHONPATH=dags python3 -m core.tools.load_dim_names
 ```
 
-`dim_nomenklatura` пропустится сам («нечего обогащать») — там `is_stub=false` из retail.
+`dim_product` пропустится сам («нечего обогащать») — там `is_stub=false` из retail.
 Остальные семь получат имена из `_Reference*` по guid.
 
 ---

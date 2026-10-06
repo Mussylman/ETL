@@ -104,6 +104,10 @@ def dim_links(pg, target_id: int) -> List[Dict]:
         table = dim or f"dim_{key}"
         if _dim_exists(pg, table):
             out.append({"key": key, "dim_table": table, "fk_col": f"{key}_id"})
+        elif dim:
+            # справочник назван в конфиге явно, а таблицы нет — молча потерять ссылку нельзя:
+            # факты получили бы *_id = 0 без единой ошибки
+            raise RuntimeError(f"raw_refs.{key}: справочник {table} (transform_params.dim) не найден")
     return out
 
 

@@ -31,8 +31,8 @@ GROUP = "shadow_stock"
 HDR, POS = "analytics_poc.fact_stock_shadow", "analytics_poc.fact_stock_positions_shadow"
 UTF8 = orc.UTF8
 ZERO = "00000000-0000-0000-0000-000000000000"
-REF_DIMS = [("nomenklatura", "dim_nomenklatura"), ("sklad", "dim_sklad"),
-            ("kachestvo", "dim_kachestvo"), ("kontragent", "dim_kontragent")]
+REF_DIMS = [("nomenklatura", "dim_product"), ("sklad", "dim_warehouse"),
+            ("kachestvo", "dim_quality"), ("kontragent", "dim_counterparty")]
 
 
 def months(frm: str, to: str):
