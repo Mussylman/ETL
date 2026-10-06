@@ -275,9 +275,17 @@ def _run_register(pg, ch: ClickHouse, specs: List, *, mode: str = "patch",
             else:
                 parts = []
                 got = set()
+                # Окна месяцев включительны с обеих сторон: документ ровно на полуночи 1-го
+                # числа извлекается двумя соседними окнами — повтор отбрасываем, иначе
+                # партиция получит дубль бизнес-ключа и не опубликуется
+                seen: set = set()
                 for p in partitions:
                     a, b = _period_bounds(p)
                     d, _, g = engine.extract_frame(t, period_start=a, period_end=b)
+                    if len(d) and seen:
+                        d = d[~d["recorder"].map(registry._norm_uuid).isin(seen)]
+                    if len(d):
+                        seen |= set(d["recorder"].map(registry._norm_uuid))
                     parts.append(d); got |= g
                 df = pd.concat([d for d in parts if len(d)], ignore_index=True) if any(len(d) for d in parts) \
                     else parts[0]
