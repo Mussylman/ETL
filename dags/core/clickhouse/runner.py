@@ -93,7 +93,11 @@ def run_group(group: str, *, mode: str = "patch", partitions: Optional[List[str]
         if kind == "onec":
             grp = registers[item]
             shadow = bool((grp[0].source_params or {}).get("shadow"))
-            if mode == "hot":
+            if mode == "hot" and any((s.source_params or {}).get("hot_rebuild") is False for s in grp):
+                # источник без ежечасной пересборки (source_params.hot_rebuild = false):
+                # в этот слот — обычный патч, расхождения без сигнала чинит ночной sweep
+                rep = onec.run_register(pg, ch, grp, mode="patch", partitions=partitions, shadow=shadow)
+            elif mode == "hot":
                 rep = onec.run_register(pg, ch, grp, mode="rebuild", partitions=hot_partitions(), shadow=shadow)
             elif mode == "sweep":
                 from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
