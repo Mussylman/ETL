@@ -515,6 +515,8 @@
                 <thead>
                     <tr>
                         <th>Начало</th>
+                        <th>Путь</th>
+                        <th>Цель</th>
                         <th>Режим</th>
                         <th>Статус</th>
                         <th>Строк</th>
@@ -526,6 +528,8 @@
                     {% for h in history %}
                     <tr>
                         <td>{{ h.started_at.strftime('%d.%m.%Y %H:%M:%S') if h.started_at else '—' }}</td>
+                        <td>{{ h.path or '—' }}</td>
+                        <td><code>{{ h.target_table or '—' }}</code></td>
                         <td><code>{{ h.run_mode or '—' }}</code></td>
                         <td>
                             <span class="dt-history-status {{ h.status }}">

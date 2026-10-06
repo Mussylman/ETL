@@ -2082,11 +2082,31 @@ def get_retail_columns(table: str) -> List[dict]:
 # ================================================================
 
 def list_load_history(register_id: int, limit: int = 20) -> List[dict]:
-    sql = f"""
-        SELECT h.*, t.target_table
-        FROM {SCHEMA}.load_history h
-        LEFT JOIN {SCHEMA}.register_targets t ON t.id = h.target_id
-        WHERE h.register_id = %s
-        ORDER BY h.started_at DESC LIMIT %s
     """
-    return query(sql, [register_id, limit])
+    История загрузок регистра из обоих журналов в общей форме:
+      load_history    — загрузка в PostgreSQL (справочники, старый путь фактов);
+      ch_sync_history — прямой путь 1С → ClickHouse: активные ch_sync, source_object = код регистра.
+    Новые сверху.
+    """
+    sql = f"""
+        SELECT * FROM (
+            SELECT h.started_at, h.finished_at, h.status, h.run_mode,
+                   '1С → PostgreSQL' AS path, t.target_table,
+                   h.rows_loaded, h.checkpoint_value, h.error_message
+              FROM {SCHEMA}.load_history h
+              LEFT JOIN {SCHEMA}.register_targets t ON t.id = h.target_id
+             WHERE h.register_id = %s
+            UNION ALL
+            SELECT h.started_at, h.finished_at, h.status, h.run_mode,
+                   '1С → ClickHouse' AS path, s.target_table,
+                   h.rows_target::int AS rows_loaded,
+                   CASE WHEN h.partition_key IS NOT NULL THEN 'партиция ' || h.partition_key END AS checkpoint_value,
+                   h.error_message
+              FROM {SCHEMA}.ch_sync_history h
+              JOIN {SCHEMA}.ch_sync s ON s.id = h.sync_id
+              JOIN {SCHEMA}.registers r ON r.code = s.source_object
+             WHERE r.id = %s AND s.source_type = 'onec_register' AND s.is_active
+        ) x
+        ORDER BY x.started_at DESC NULLS LAST LIMIT %s
+    """
+    return query(sql, [register_id, register_id, limit])
