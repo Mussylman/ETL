@@ -64,7 +64,6 @@ ETL-платформа: Apache Airflow + FastAPI конфигуратор. Ан�
 | Система | Адрес | Airflow conn_id |
 |---|---|---|
 | PostgreSQL PROD (control plane, реестры) | 10.10.1.142:5432/etl_prod | `etl_prod` |
-| PostgreSQL `test` — пассивная архивная БД, автоматически не пишется | 10.10.1.142:5432/test | `postgre_test_base` (только ручной доступ) |
 | ClickHouse (аналитический слой) | 10.10.1.142:9000/analytics_poc | `clickhouse_etl` (etl_writer) |
 | MSSQL 1С УПП | 10.10.1.61:1433/UPP_JAN | `mssql_1c_conn` |
 | retail (сигнал об изменениях) | 10.10.1.99:5432/ims_db | `bd_retail` |
@@ -96,13 +95,12 @@ PYTHONPATH=dags python3 -m core.tools.load_dim_from_config --dim dim_product --m
 
 # Отчёт сверки источник ↔ ClickHouse по обобщённым источникам (справочники, cost_daily)
 PYTHONPATH=dags python3 -m core.tools.ch_report --config-conn etl_prod
-
-# Тесты конфигуратора — ТОЛЬКО вручную и ТОЛЬКО на архивной test (создают/удаляют свои схемы);
-# на etl_prod не запускать
-ETL_CONFIG_DB_NAME=test python3 etl_config_app/tests/golden_sales_test.py   # запускать ПЕРВЫМ
-ETL_CONFIG_DB_NAME=test python3 etl_config_app/tests/sync_ddl_test.py
-ETL_CONFIG_DB_NAME=test python3 etl_config_app/tests/validator_test.py
 ```
+
+**Отдельной тестовой PostgreSQL-базы нет.** Конфигуратор и инструменты работают с `etl_prod`; опасные операции
+проверяются через dry-run (`ch_config` / `ch_promote` без `--apply`, read-only `sync-plan`), транзакции с
+откатом и временные объекты с последующей уборкой — не через отдельную БД. Тесты `etl_config_app/tests/*`
+создают и удаляют свои схемы — на `etl_prod` их не запускать.
 
 **Не для PROD:** `core.tools.rebuild_sales`, `run_full_period`, `docs/audits/sql/sales_recon.py` —
 инструменты фактов PostgreSQL. На PROD факты заморожены: `rebuild_sales` отказывает до любого шага
@@ -113,9 +111,9 @@ ETL_CONFIG_DB_NAME=test python3 etl_config_app/tests/validator_test.py
 движка (`ETLEngine`, `ConfigLoader`, `DataChecker`, `TransformUtils`, `Loaders`) значения по умолчанию нет:
 пропущенное соединение — немедленный отказ до подключения (`core/conn.py`). Не заменять умолчанием `etl_prod`.
 
-**TEST-контур удалён 2026-09-28**: DAG `incremental` и TEST-конфигуратор :5555. База `test`
-(`postgre_test_base`) сохранена как пассивная test/archive DB — ни один DAG, сервис, cron или триггер в неё
-не пишет; доступ к ней — только явным `--pg-conn postgre_test_base` / `ETL_CONFIG_DB_NAME=test`.
+**TEST-контур удалён**: DAG `incremental` и TEST-конфигуратор :5555 — 2026-09-28; архивные базы `test` и
+локальная `bd_retail` на 10.10.1.142 и их Airflow-подключения —
+2026-10-07. Боевое `bd_retail` (retail, 10.10.1.99) не затронуто.
 
 ## Архитектура
 
