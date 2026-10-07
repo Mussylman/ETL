@@ -22,7 +22,8 @@ ETL-платформа: Apache Airflow + FastAPI конфигуратор. Ан�
   `etl_meta.doc_key_stock_seq`.
 
 Витрины ClickHouse: `fact_sales`, `fact_sales_positions`, `fact_orders`, `fact_order_positions`,
-`cost_daily`, `dim_*`. Копии для отката — `fact_*_direct` (ROLLBACK_KEEP), склад — `fact_stock*_shadow`.
+`cost_daily`, `dim_*`, `fact_stock`, `fact_stock_positions`. Rollback/shadow-копий нет: `fact_*_direct` и
+`fact_stock*_shadow` удалены 2026-10-07 (их `ch_sync` выключены и помечены RETIRED — якорь истории загрузок).
 
 ## Ключевые пути
 - DAG'и: `dags/` — core ETL один: `analytics_sync_dag.py` (остальные — отдельные бизнес-DAG'и: GFK, PowerBI, check_orders)
