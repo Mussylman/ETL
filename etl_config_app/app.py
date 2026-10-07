@@ -820,6 +820,14 @@ async def api_sync_register(reg_id: int, confirm: bool = False):
         DROP CASCADE + CREATE). После recreate данные надо грузить заново (full_period).
     """
     try:
+        # Регистр прямого пути 1С → ClickHouse (pg_fact_write = false): его цели — конфигурация
+        # извлечения, PostgreSQL-таблиц фактов у него нет. Sync создал бы пустые таблицы — отказ.
+        if dao.pg_fact_write_disabled(register_id=reg_id):
+            return JSONResponse({
+                "ok": False, "refused": True,
+                "message": "Регистр загружается напрямую в ClickHouse (запись фактов в PostgreSQL выключена) — "
+                           "Sync PostgreSQL-таблиц для него не выполняется.",
+            }, status_code=409)
         targets = dao.list_targets_for_register(reg_id)
         if not targets:
             return JSONResponse({"ok": True, "plans": [], "message": "no targets"})

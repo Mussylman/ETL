@@ -1675,9 +1675,23 @@ def _drop_dependents_cascade(schema: str, table: str) -> List[str]:
     return [f'{r["s"]}.{r["t"]}' for r in deps]
 
 
+def pg_fact_write_disabled(register_id: int = None, target_id: int = None) -> bool:
+    """
+    Регистр не пишет факты в PostgreSQL (registers.pg_fact_write = false): его цели — конфигурация
+    прямого пути 1С → ClickHouse, физических PostgreSQL-таблиц у них нет и быть не должно.
+    """
+    if target_id is not None:
+        row = query_one(f"SELECT r.pg_fact_write FROM {SCHEMA}.register_targets t "
+                        f"JOIN {SCHEMA}.registers r ON r.id = t.register_id WHERE t.id = %s", [target_id])
+    else:
+        row = query_one(f"SELECT pg_fact_write FROM {SCHEMA}.registers WHERE id = %s", [register_id])
+    return bool(row) and row.get("pg_fact_write") is False
+
+
 def apply_sync_plan(plan: dict, confirm: bool = False) -> dict:
     """
     Применяет план. Возвращает копию plan с applied=True/False и executed_actions.
+    Для регистров с pg_fact_write = false ничего не применяет (см. pg_fact_write_disabled).
 
     Правила:
       - все safe actions применяются всегда
@@ -1689,6 +1703,10 @@ def apply_sync_plan(plan: dict, confirm: bool = False) -> dict:
     """
     if "error" in plan:
         return {**plan, "applied": False, "executed": [], "errors": [plan["error"]]}
+    if plan.get("target_id") is not None and pg_fact_write_disabled(target_id=plan["target_id"]):
+        return {**plan, "applied": False, "executed": [], "refused": True,
+                "errors": ["регистр пишется только в ClickHouse (pg_fact_write = false) — "
+                           "PostgreSQL-таблица цели не создаётся и не меняется"]}
 
     safe = [a for a in plan["actions"] if not a["destructive"]]
     destructive = [a for a in plan["actions"] if a["destructive"]]
