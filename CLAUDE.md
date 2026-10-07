@@ -14,13 +14,15 @@ ETL-платформа: Apache Airflow + FastAPI конфигуратор. Ан�
 - `etl_meta.*` — конфиги, маппинги, watermark, история и состояние публикаций;
 - `etl_meta.doc_key` — реестр id документов (guid → id, строки не удаляются никогда);
 - `public.dim_*` — реестр справочников (guid → id) + атрибуты, реплицируются в ClickHouse;
-- `public.sales`, `sales_positions`, `orders`, `order_positions` — **ROLLBACK_KEEP**:
-  заморожены 2026-09-24 ~17:41 Almaty, ~15 GB, `analytics_sync` их не читает и не пишет,
-  запись запрещена в `ETLEngine` (`registers.pg_fact_write = false`). Удаление — отдельным
-  решением после окна отката.
+- PostgreSQL-таблиц фактов нет: `public.sales`, `sales_positions`, `orders`, `order_positions`
+  (заморожены 2026-09-24) удалены 2026-10-07. Их `register_targets` остаются **активными** — это
+  конфигурация извлечения прямого пути (`ch_sync.source_params.target`), не таблицы; Sync конфигуратора
+  для регистров с `pg_fact_write = false` отключён. Id документов: `doc_key_scope` — sales →
+  `public.sales_id_seq` (отвязана от таблицы), orders → `etl_meta.doc_key_orders_seq`, stock →
+  `etl_meta.doc_key_stock_seq`.
 
 Витрины ClickHouse: `fact_sales`, `fact_sales_positions`, `fact_orders`, `fact_order_positions`,
-`cost_daily`, `dim_*`. Копии для отката — `fact_*_direct` (ROLLBACK_KEEP).
+`cost_daily`, `dim_*`. Копии для отката — `fact_*_direct` (ROLLBACK_KEEP), склад — `fact_stock*_shadow`.
 
 ## Ключевые пути
 - DAG'и: `dags/` — core ETL один: `analytics_sync_dag.py` (остальные — отдельные бизнес-DAG'и: GFK, PowerBI, check_orders)

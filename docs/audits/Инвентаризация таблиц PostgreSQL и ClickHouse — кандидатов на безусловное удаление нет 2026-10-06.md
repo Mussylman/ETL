@@ -11,11 +11,11 @@ Read-only аудит 2026-10-06 (до переименования справо�
 `fact_*_direct` 0.4, shadow склада 0.9) — только после решения об окне отката.
 
 ## Backlog очистки (решения ещё не приняты — ничего не выполнять без подтверждения)
-1. **Перед удалением замороженных `public.sales` / `public.orders`** — `ALTER SEQUENCE public.sales_id_seq OWNED BY NONE`
+1. ~~Выполнено 2026-10-07~~ (sales — OWNED BY NONE; orders — identity-sequence не отвязывается, переход на `etl_meta.doc_key_orders_seq`; таблицы удалены, см. [[Identity-sequence удаляется вместе с таблицей — orders_id_seq нельзя отвязать OWNED BY NONE]]). Было: **Перед удалением замороженных `public.sales` / `public.orders`** — `ALTER SEQUENCE public.sales_id_seq OWNED BY NONE`
    и `ALTER SEQUENCE public.orders_id_seq OWNED BY NONE`: эти последовательности выдают id документов в `etl_meta.doc_key`
    (doc_key_scope), а DROP TABLE удалил бы их вместе с таблицей — выдача id прямого пути сломалась бы.
 2. Отозвать у `etl_writer` права на несуществующие `cost_daily_v2*` (гигиена прав, места не даёт).
-3. `register_targets` замороженных PG-фактов (sales, sales_positions, orders, order_positions) — `is_active = true`:
+3. ~~Разобрано 2026-10-07~~: `is_active = true` — верно, это конфиг прямого пути (Sync PG отключён). Было: `register_targets` замороженных PG-фактов — `is_active = true`:
    разобраться (ETLEngine их не пишет — `pg_fact_write = false`, — но флаг вводит в заблуждение).
 4. Rollback/shadow (`fact_*_direct` + их stage, `fact_stock*_shadow` + stage/raw, записи `*:shadow` в
    `ch_source_state`) — не удалять до решения об окончании окна отката.
