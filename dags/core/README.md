@@ -127,10 +127,10 @@ ETLEngine(
     end_date="4025-11-01",           # конец периода
     target_tables=["sales_daily"],   # конкретные таблицы (опционально)
 
-    # Connections
-    config_conn_id="postgre_test_base",
+    # Connections — только явно (значения по умолчанию нет, см. core/conn.py)
+    config_conn_id="etl_prod",
     src_conn_id="mssql_1c_conn",
-    dst_conn_id="postgre_test_base",
+    dst_conn_id="etl_prod",
     retail_conn_id="bd_retail",
 )
 ```
@@ -209,7 +209,7 @@ df = t.transform_dataframe_by_config(df, binary_columns, {
 ```python
 from core import Loaders
 
-loader = Loaders(dst_conn_id="postgre_test_base")
+loader = Loaders(dst_conn_id="etl_prod")
 
 # INSERT
 loader.insert_only(df, "my_table")
@@ -300,8 +300,12 @@ VALUES (
 | Connection ID | Тип | Назначение |
 |---------------|-----|------------|
 | `mssql_1c_conn` | MSSQL | 1С ERP |
-| `postgre_test_base` | PostgreSQL | ETL-хранилище + конфиг |
-| `bd_retail` | PostgreSQL | Retail (для incremental) |
+| `etl_prod` | PostgreSQL | control plane (`etl_meta`) + реестры (`doc_key`, `dim_*`) |
+| `clickhouse_etl` | ClickHouse | аналитический слой — факты и реплики справочников |
+| `bd_retail` | PostgreSQL | retail — сигнал об изменениях |
+
+Отдельной тестовой PostgreSQL-базы нет. Запись фактов в PostgreSQL выключена (`registers.pg_fact_write =
+false`), таблиц фактов там нет — примеры `ETLEngine`/`Loaders` выше относятся к старому пути.
 
 ## Legacy: ETLCore
 

@@ -14,8 +14,8 @@ ETL-платформа: Apache Airflow + FastAPI конфигуратор. Ан�
 - `etl_meta.*` — конфиги, маппинги, watermark, история и состояние публикаций;
 - `etl_meta.doc_key` — реестр id документов (guid → id, строки не удаляются никогда);
 - `public.dim_*` — реестр справочников (guid → id) + атрибуты, реплицируются в ClickHouse;
-- PostgreSQL-таблиц фактов нет: `public.sales`, `sales_positions`, `orders`, `order_positions`
-  (заморожены 2026-09-24) удалены 2026-10-07. Их `register_targets` остаются **активными** — это
+- PostgreSQL-таблиц фактов нет: старые `public.sales`, `sales_positions`, `orders`, `order_positions`
+  удалены 2026-10-07; production-факты — только в ClickHouse. Их `register_targets` остаются **активными** — это
   конфигурация извлечения прямого пути (`ch_sync.source_params.target`), не таблицы; Sync конфигуратора
   для регистров с `pg_fact_write = false` отключён. Id документов: `doc_key_scope` — sales →
   `public.sales_id_seq` (отвязана от таблицы), orders → `etl_meta.doc_key_orders_seq`, stock →
@@ -103,9 +103,9 @@ PYTHONPATH=dags python3 -m core.tools.ch_report --config-conn etl_prod
 создают и удаляют свои схемы — на `etl_prod` их не запускать.
 
 **Не для PROD:** `core.tools.rebuild_sales`, `run_full_period`, `docs/audits/sql/sales_recon.py` —
-инструменты фактов PostgreSQL. На PROD факты заморожены: `rebuild_sales` отказывает до любого шага
-(`pg_fact_write=false`, а `--from-scratch` — в любом контуре с `etl_meta.doc_key`), `ETLEngine.run`
-запись запрещает.
+инструменты старого пути фактов PostgreSQL. Таблиц фактов в PostgreSQL нет (удалены 2026-10-07):
+`rebuild_sales` отказывает до любого шага (`pg_fact_write=false`, а `--from-scratch` — в любом контуре с
+`etl_meta.doc_key`), `ETLEngine.run` запись запрещает.
 
 **Соединение с PostgreSQL — только явно.** У CLI (`--pg-conn` / `--config-conn` / `--conn`) и классов
 движка (`ETLEngine`, `ConfigLoader`, `DataChecker`, `TransformUtils`, `Loaders`) значения по умолчанию нет:
@@ -168,8 +168,8 @@ PYTHONPATH=dags python3 -m core.tools.ch_report --config-conn etl_prod
 - **ClickHouse: AST-лимит и ARG_MAX** — длинные списки ключей строковыми литералами, запросы через stdin.
 - **Миграции 002/003 — seed без ON CONFLICT**: на живой базе продублируют конфиг. Восстанавливать
   конфиг нужно из `etl_meta_dump.sql`, а не из них.
-- **Sync конфигуратора дропает колонки, которых нет в мэппингах** (факты PostgreSQL — ROLLBACK_KEEP:
-  Sync по регистрам sales/order на PROD не запускать).
+- **Sync конфигуратора дропает колонки, которых нет в мэппингах.** Для регистров прямого пути
+  (`pg_fact_write = false`) Sync PostgreSQL-таблиц отключён — таблиц фактов в PostgreSQL нет.
 - **`recorder` + `recorder_type` + `line_no` — технический хребет** (патч, хвост, удаления, сверка).
 - **Пустая ссылка 1С** `00000000-0000-0000-0000-000000000000` — семантически NULL: в справочник не
   попадает, `*_id` = 0. Это норма, не дыра.

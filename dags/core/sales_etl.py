@@ -1,9 +1,11 @@
 """
-ETL-оркестратор для пары таблиц: sales (шапка) + sales_positions (позиции).
+LEGACY. ETL-оркестратор старого пути фактов в PostgreSQL: sales (шапка) + sales_positions (позиции).
+В production не используется: факты идут 1С → ClickHouse (analytics_sync), PostgreSQL-таблицы фактов
+удалены 2026-10-07, отдельной тестовой PostgreSQL-базы нет.
 
-Поток данных:
+Поток данных (как был устроен):
   1. Retail DB (bd_retail) — обнаружение изменений по updated_at
-  2. Целевая DB (postgre_test_base) — сравнение с последней загруженной updated_at
+  2. Целевая PostgreSQL (dst_conn_id, задаётся явно) — сравнение с последней загруженной updated_at
   3. 1С (mssql_1c_conn) — чтение полных данных по изменённым document_uid
   4. Трансформация (binary→UUID, fix_year и т.д.)
   5. UPSERT шапок / DELETE+INSERT позиций в целевую PostgreSQL

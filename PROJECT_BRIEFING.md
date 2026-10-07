@@ -366,7 +366,7 @@ Row-level вычисления через `dags/core/transform/custom.py`:
 | conn_id | Тип | Назначение |
 |---|---|---|
 | `mssql_1c_conn` | MSSQL | 1С backend `UPP_JAN` (10.10.1.61:1433) |
-| `postgre_test_base` | Postgres | БД `test` — пассивная архивная, автоматически не пишется (2026-09-28) |
+| `etl_prod` | Postgres | control plane (`etl_meta`) + реестры (`doc_key`, `dim_*`); архивная БД `test` удалена 2026-10-07 |
 | `bd_retail` | Postgres | Retail-БД для инкрементальной загрузки |
 | `powerbi_connect` | MSSQL | Power BI витрина (для dim_user_name, dim_asp_products) |
 | `etl_gfk` | MSSQL | GFK витрина |

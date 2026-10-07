@@ -73,8 +73,8 @@ python3 docs/audits/sql/sales_recon.py --strict              # код возвр
 | retail | `10.10.1.99:5432/ims_db`, роль `power_bi_user` | сигнал об изменениях для инкремента; **для rebuild не нужен** |
 | 1С meta API | `http://192.168.18.224:8090/NikitaBase/hs/meta` | поиск физических имён таблиц по русским названиям |
 
-Все креды берутся из Airflow connections: `postgre_test_base`, `mssql_1c_conn`,
-`bd_retail`. В коде их нет.
+Все креды берутся из Airflow connections: `etl_prod`, `mssql_1c_conn`, `bd_retail`. В коде их нет.
+(Runbook старого пути фактов PostgreSQL — таблицы фактов удалены 2026-10-07, отдельной тестовой БД нет.)
 
 ---
 
