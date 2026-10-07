@@ -112,13 +112,14 @@ def list_registers(include_inactive=False) -> List[dict]:
                -- последняя синхронизация — из обоих журналов: load_history (загрузка в PostgreSQL:
                -- справочники, старый путь фактов) и ch_sync_history (прямой путь 1С → ClickHouse,
                -- активные ch_sync с source_object = код регистра)
-               GREATEST(
+               -- журналы пишут UTC (сервер в UTC); в UI — бизнес-время Алматы
+               (GREATEST(
                    (SELECT MAX(h.finished_at) FROM {SCHEMA}.load_history h
                       WHERE h.register_id = r.id AND h.status = 'success'),
                    (SELECT MAX(h.finished_at) FROM {SCHEMA}.ch_sync_history h
                       JOIN {SCHEMA}.ch_sync s ON s.id = h.sync_id
                       WHERE s.source_type = 'onec_register' AND s.source_object = r.code
-                        AND s.is_active AND h.status = 'success')) AS last_success_at,
+                        AND s.is_active AND h.status = 'success')) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Almaty' AS last_success_at,
                (SELECT x.status FROM (
                     SELECT h.status, h.started_at, 0 AS ord FROM {SCHEMA}.load_history h
                      WHERE h.register_id = r.id
@@ -2107,7 +2108,10 @@ def list_load_history(register_id: int, limit: int = 20) -> List[dict]:
     Новые сверху.
     """
     sql = f"""
-        SELECT * FROM (
+        SELECT (x.started_at AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Almaty' AS started_at,
+               (x.finished_at AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Almaty' AS finished_at,
+               x.status, x.run_mode, x.path, x.target_table, x.rows_loaded, x.checkpoint_value, x.error_message
+        FROM (
             SELECT h.started_at, h.finished_at, h.status, h.run_mode,
                    '1С → PostgreSQL' AS path, t.target_table,
                    h.rows_loaded, h.checkpoint_value, h.error_message
