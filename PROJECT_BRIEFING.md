@@ -196,7 +196,6 @@ PostgreSQL public.*  →  Power BI / прочие дашборды
 │   └── infographic.html         # презентационная инфографика
 │
 ├── test_scripts/                # эксперименты вне Airflow
-│   └── test_sales.py            # пример загрузки sales из 1С
 │
 └── logs/                        # Airflow task logs (по dag_id)
 ```
@@ -230,7 +229,7 @@ PostgreSQL public.*  →  Power BI / прочие дашборды
 - **Особенности:** `period` приходит из Airflow Variable; если не задан — `None` и берётся «по умолчанию» в GFK-клиенте.
 
 ### Где ETLEngine / SalesETL?
-- **DAG-обёрток для них в репо нет** — `core/etl_engine.py` и `core/sales_etl.py` доступны как библиотеки, но ни один `.py` в `dags/` не оборачивает их в Airflow DAG. Они тестируются через ETL Config App («Синхронизация») или вручную через `test_scripts/test_sales.py`. Это пробел.
+- **DAG-обёрток для них в репо нет** — `core/etl_engine.py` и `core/sales_etl.py` доступны как библиотеки, но ни один `.py` в `dags/` не оборачивает их в Airflow DAG. Старый путь фактов PostgreSQL выключен (таблицы фактов удалены 2026-10-07), ручной скрипт `test_scripts/test_sales.py` удалён.
 
 ---
 
