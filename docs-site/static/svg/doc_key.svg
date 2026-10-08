@@ -1,0 +1,16 @@
+<svg viewBox="0 0 980 210" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="doc_key: GUID в стабильный ID">
+  <defs><marker id="ah-dk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="head" d="M0,0L10,5L0,10z"/></marker></defs>
+  <rect x="10" y="30" width="200" height="86" rx="10" class="box fsrc src"/>
+  <text x="24" y="54" font-weight="650">1С GUID документа</text><text x="24" y="76" class="mono t2">0b7c…-…-…</text><text x="24" y="96" class="t3 mono">recorder_type 271 (заказ)</text>
+  <rect x="260" y="30" width="250" height="86" rx="10" class="box fpg pg"/>
+  <text x="274" y="54" font-weight="650" class="ctext-pg">etl_meta.doc_key</text><text x="274" y="76" class="t2">(doc_table, recorder, recorder_type) → id</text><text x="274" y="96" class="t3 mono">UNIQUE в обе стороны · строки не удаляются</text>
+  <rect x="560" y="30" width="170" height="86" rx="10" class="box ftr tr"/>
+  <text x="574" y="54" font-weight="650">стабильный ID</text><text x="574" y="80" font-size="22" font-weight="700" class="mono ctext-tr">717550</text><text x="574" y="100" class="t3">выдан один раз, навсегда</text>
+  <rect x="780" y="30" width="190" height="86" rx="10" class="box fld ld"/>
+  <text x="794" y="54" font-weight="650">ClickHouse</text><text x="794" y="76" class="mono t2">fact_orders.id</text><text x="794" y="96" class="t3 mono">order_positions → hdr id</text>
+  <path class="edge" d="M210,73 H258" marker-end="url(#ah-dk)"/><path class="edge" d="M510,73 H558" marker-end="url(#ah-dk)"/><path class="edge" d="M730,73 H778" marker-end="url(#ah-dk)"/>
+  <rect x="260" y="140" width="470" height="56" rx="10" class="box fpg pg"/>
+  <text x="274" y="162" font-weight="650" class="ctext-pg">doc_key_scope</text><text x="390" y="162" class="t2">область → sequence, выдающая следующий id</text>
+  <text x="274" y="182" class="t3 mono">новый документ: nextval(sequence области) только для отсутствующих в реестре</text>
+  <path class="edge" d="M385,140 V118" marker-end="url(#ah-dk)"/>
+</svg>

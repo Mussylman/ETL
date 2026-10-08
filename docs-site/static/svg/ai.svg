@@ -1,0 +1,21 @@
+<svg viewBox="0 0 980 470" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Будущий AI / RAG / MCP слой (PLANNED)">
+  <defs><marker id="ah-ai" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="head-ai" d="M0,0L10,5L0,10z"/></marker>
+  <marker id="ah-ai2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="head" d="M0,0L10,5L0,10z"/></marker></defs>
+  <!-- production foundation -->
+  <rect x="290" y="14" width="400" height="58" rx="10" class="box fld ld"/><text x="306" y="38" font-weight="700">DATA PLATFORM</text><text x="306" y="58" class="t2">PostgreSQL + ClickHouse · сегодня в production</text>
+  <path class="edge" d="M420,72 V96 H215 V112" marker-end="url(#ah-ai2)"/><path class="edge" d="M560,72 V96 H765 V112" marker-end="url(#ah-ai2)"/>
+  <rect x="90" y="114" width="250" height="70" rx="10" class="box fld ld"/><text x="106" y="138" font-weight="650">Structured Data</text><text x="106" y="158" class="t2">Sales · Orders · Stock · Cost · DIM</text>
+  <rect x="640" y="114" width="250" height="70" rx="10" class="box fpg pg"/><text x="656" y="138" font-weight="650">Documentation</text><text x="656" y="158" class="t2">knowledge base · technical docs</text>
+  <!-- planned layer -->
+  <rect x="20" y="200" width="940" height="256" rx="14" class="box fai ai" fill-opacity=".6"/>
+  <text x="38" y="224" class="t3 mono ctext-ai">PLANNED · NEXT STAGE — не production</text>
+  <path class="edge-ai" d="M215,184 V232 H480 V244" marker-end="url(#ah-ai)"/><path class="edge-ai" d="M765,184 V232 H500"/>
+  <rect x="370" y="246" width="240" height="46" rx="10" class="box fai ai"/><text x="386" y="275" font-weight="650" class="ctext-ai">RAG / MCP</text>
+  <path class="edge-ai" d="M490,292 V310" marker-end="url(#ah-ai)"/>
+  <rect x="340" y="312" width="300" height="46" rx="10" class="box fai ai"/><text x="356" y="341" font-weight="650">Auth + Access Control</text>
+  <path class="edge-ai" d="M490,358 V372 H200 V384" marker-end="url(#ah-ai)"/><path class="edge-ai" d="M490,372 V384" marker-end="url(#ah-ai)"/><path class="edge-ai" d="M490,372 H780 V384" marker-end="url(#ah-ai)"/>
+  <rect x="110" y="386" width="180" height="40" rx="10" class="box fai ai"/><text x="126" y="411" font-weight="600">ChatGPT</text>
+  <rect x="400" y="386" width="180" height="40" rx="10" class="box fai ai"/><text x="416" y="411" font-weight="600">Claude</text>
+  <rect x="690" y="386" width="180" height="40" rx="10" class="box fai ai"/><text x="706" y="411" font-weight="600">Other LLMs</text>
+  <text x="430" y="448" class="t2">↓ Employees — только разрешённое</text>
+</svg>

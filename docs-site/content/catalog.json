@@ -1,0 +1,17 @@
+{
+ "fact_sales": {"domain": "Sales", "purpose": "Шапки документов продаж и возвратов (ЧекККМ, реализации, возвраты …)", "grain": "1 строка = документ"},
+ "fact_sales_positions": {"domain": "Sales", "purpose": "Строки товаров документов продаж", "grain": "1 строка = строка документа"},
+ "fact_orders": {"domain": "Orders", "purpose": "Шапки заказов покупателей (Документ.ЗаказПокупателя)", "grain": "1 строка = заказ"},
+ "fact_order_positions": {"domain": "Orders", "purpose": "Строки заказов: товары и услуги", "grain": "1 строка = строка заказа"},
+ "fact_stock": {"domain": "Stock", "purpose": "Регистраторы складских движений (партии товаров на складах, бухучёт)", "grain": "1 строка = документ-регистратор"},
+ "fact_stock_positions": {"domain": "Stock", "purpose": "Движения партий: приход / расход, количество и стоимость", "grain": "1 строка = строка движения регистра"},
+ "cost_daily": {"domain": "Cost Daily", "purpose": "Средняя себестоимость товара на дату по контуру (type)", "grain": "1 строка = дата × товар × type"},
+ "dim_product": {"domain": "DIM", "purpose": "Товары: наименование, код, category, subcategory1…7, brand", "grain": "1 строка = товар (guid ↔ id)"},
+ "dim_warehouse": {"domain": "DIM", "purpose": "Склады", "grain": "1 строка = склад"},
+ "dim_department": {"domain": "DIM", "purpose": "Подразделения", "grain": "1 строка = подразделение"},
+ "dim_quality": {"domain": "DIM", "purpose": "Качество товара", "grain": "1 строка = значение"},
+ "dim_counterparty": {"domain": "DIM", "purpose": "Контрагенты (покупатели, поставщики)", "grain": "1 строка = контрагент"},
+ "dim_contract": {"domain": "DIM", "purpose": "Договоры контрагентов", "grain": "1 строка = договор"},
+ "dim_organization": {"domain": "DIM", "purpose": "Организации", "grain": "1 строка = организация"},
+ "dim_responsible_person": {"domain": "DIM", "purpose": "Ответственные (пользователи 1С)", "grain": "1 строка = пользователь"}
+}

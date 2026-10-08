@@ -1,0 +1,23 @@
+<svg viewBox="0 0 980 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Режимы analytics_sync за сутки">
+  <text x="20" y="22" class="t3 mono">00:00 Алматы</text><text x="124" y="22" class="t3 mono"></text><text x="476" y="22" class="t3 mono">12:00</text><text x="920" y="22" class="t3 mono">24:00</text>
+  <line x1="20" y1="34" x2="960" y2="34" class="edge"/>
+  <!-- patch -->
+  <text x="20" y="66" font-weight="650">PATCH</text><text x="110" y="66" class="t2">каждые 5 минут — изменившиеся документы по сигналу retail</text>
+    <g>
+    <line x1="20" y1="84" x2="960" y2="84" stroke="var(--tr)" stroke-width="10" stroke-dasharray="2 5.8"/>
+  </g>
+  <!-- hot -->
+  <text x="20" y="126" font-weight="650">HOT</text><text x="110" y="126" class="t2">раз в час — пересборка прошлого и текущего месяца · sales, orders · stock: OFF</text>
+  <g stroke="var(--ld)" stroke-width="3">
+    <line x1="20" y1="136" x2="20" y2="152"/><line x1="59" y1="136" x2="59" y2="152"/><line x1="98" y1="136" x2="98" y2="152"/><line x1="137" y1="136" x2="137" y2="152"/>
+    <line x1="176" y1="136" x2="176" y2="152"/><line x1="215" y1="136" x2="215" y2="152"/><line x1="254" y1="136" x2="254" y2="152"/><line x1="294" y1="136" x2="294" y2="152"/>
+    <line x1="333" y1="136" x2="333" y2="152"/><line x1="372" y1="136" x2="372" y2="152"/><line x1="411" y1="136" x2="411" y2="152"/><line x1="450" y1="136" x2="450" y2="152"/>
+    <line x1="490" y1="136" x2="490" y2="152"/><line x1="529" y1="136" x2="529" y2="152"/><line x1="568" y1="136" x2="568" y2="152"/><line x1="607" y1="136" x2="607" y2="152"/>
+    <line x1="646" y1="136" x2="646" y2="152"/><line x1="685" y1="136" x2="685" y2="152"/><line x1="725" y1="136" x2="725" y2="152"/><line x1="764" y1="136" x2="764" y2="152"/>
+    <line x1="803" y1="136" x2="803" y2="152"/><line x1="842" y1="136" x2="842" y2="152"/><line x1="881" y1="136" x2="881" y2="152"/><line x1="920" y1="136" x2="920" y2="152"/>
+  </g>
+  <!-- sweep -->
+  <text x="20" y="190" font-weight="650">SWEEP</text><text x="110" y="190" class="t2">раз в сутки после 03:00 — сверка всей истории 1С ↔ ClickHouse, разошедшиеся месяцы пересобираются</text>
+  <rect x="137" y="200" width="70" height="20" rx="5" class="box fsrc src2"/><text x="146" y="214" class="t3 mono">03:00</text>
+  <text x="20" y="242" class="t3">Режим выбирается по отметкам последнего успешного выполнения в ch_source_state, а не по минуте слота: пропущенный слот не отменяет sweep/hot.</text>
+</svg>

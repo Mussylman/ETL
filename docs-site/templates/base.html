@@ -1,0 +1,47 @@
+{% from "macros.html" import badge %}<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ page_num }} {{ page_title }} · Data Platform</title>
+<meta name="robots" content="noindex,nofollow">
+<link rel="stylesheet" href="/static/site.css">
+<script src="/static/search-index.js"></script>
+<script src="/static/site.js"></script>
+</head>
+<body>
+<header class="top">
+  <button class="icon-btn menu-btn" id="menu" type="button" aria-label="Меню">☰</button>
+  <a class="brand" href="/"><span class="brand-mark"></span>Data Platform</a>
+  {{ badge("PROD") }}
+  <span class="spacer"></span>
+  <div class="meta">
+    <span class="hide-sm">документация: <b>{{ built_at }}</b></span>
+    {% if snap.live %}<span>live config: <b>{{ snap.captured_at }}</b></span>
+    {% else %}{{ badge("FALLBACK", "Live config unavailable") }}<span>snapshot captured: <b>{{ snap.captured_at }}</b></span>{% endif %}
+    <span class="hide-sm">Алматы, UTC+5</span>
+  </div>
+  <button class="icon-btn" id="theme" type="button" title="Тема">◐</button>
+</header>
+<div class="layout">
+  <aside class="side">
+    <input class="search" id="q" type="search" placeholder="Поиск по разделам…" autocomplete="off">
+    <div class="search-results" id="q-res"></div>
+    <div class="nav-label">Портал</div>
+    <nav class="nav">
+      {% for n in nav %}<a href="{{ n.href }}" class="{{ 'on' if n.href == current }}"><span class="n">{{ n.num }}</span>{{ n.title }}</a>{% endfor %}
+    </nav>
+    <div class="side-foot">
+      Внутренний портал передачи проекта.<br>Только внутренняя сеть. Секретов здесь нет —<br>креды в Airflow connections.
+    </div>
+  </aside>
+  <main>
+    {% block content %}{% endblock %}
+    <footer class="foot">
+      Data Platform handover · сборка {{ built_at }} (Алматы) · live snapshot {{ snap.captured_at }}{% if not snap.live %} — <b>FALLBACK</b>{% endif %}
+      · исходники: <code>docs-site/</code> в репозитории · пересборка: <code>venv/bin/python3 docs-site/build.py</code>
+    </footer>
+  </main>
+  <aside class="toc"><h4>На этой странице</h4><div id="toc-list"></div></aside>
+</div>
+</body>
+</html>

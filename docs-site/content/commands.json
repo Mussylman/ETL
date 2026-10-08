@@ -1,0 +1,24 @@
+{
+ "health": [
+  {"title": "Ошибки импорта DAG", "mode": "READ ONLY", "cmd": "cd ~/airflow && venv/bin/airflow dags list-import-errors", "expect": "No data found"},
+  {"title": "Последние прогоны analytics_sync", "mode": "READ ONLY", "cmd": "venv/bin/airflow dags list-runs analytics_sync -o plain | head -6", "expect": "success каждые 5 минут; один running — норма"},
+  {"title": "Планировщик и watchdog", "mode": "READ ONLY", "cmd": "pgrep -af 'airflow scheduler' | grep -v pgrep; tail -3 ops/watchdog_cron.log", "expect": "процесс есть; в логе нет «ПРОБЛЕМА» за последние минуты"},
+  {"title": "Группы и активные конфиги", "mode": "READ ONLY", "cmd": "PYTHONPATH=dags venv/bin/python3 -m core.tools.ch_config --conn etl_prod group show", "expect": "dim_registry, core_pg_to_ch, onec_1c, onec_stock, retail — active=True"},
+  {"title": "Сверка справочников и cost_daily", "mode": "READ ONLY", "cmd": "PYTHONPATH=dags venv/bin/python3 -m core.tools.ch_report --config-conn etl_prod", "expect": "CLICKHOUSE CORE ANALYTICS: PASS"},
+  {"title": "PostgreSQL", "mode": "READ ONLY", "cmd": "pg_lsclusters", "expect": "14 main 5432 online"},
+  {"title": "Диск", "mode": "READ ONLY", "cmd": "df -h /", "expect": "занято < 80 %"}
+ ],
+ "change": [
+  {"title": "Патч группы вручную", "mode": "CHANGES PROD", "cmd": "PYTHONPATH=dags venv/bin/python3 -m core.tools.ch_sync --config-conn etl_prod --group onec_1c --mode patch --apply", "expect": "то же, что делает DAG; запускать вне слота DAG"},
+  {"title": "Пересборка месяца", "mode": "CHANGES PROD", "cmd": "PYTHONPATH=dags venv/bin/python3 -m core.tools.ch_sync --config-conn etl_prod --group onec_1c --mode rebuild --partition 202609 --apply", "expect": "партиция публикуется только если сошлась сверка"},
+  {"title": "Справочник 1С → реестр", "mode": "CHANGES PROD", "cmd": "PYTHONPATH=dags venv/bin/python3 -m core.tools.load_dim_from_config --dim dim_product --mode incremental --pg-conn etl_prod", "expect": "id существующих не меняются"},
+  {"title": "Пауза / снятие паузы DAG", "mode": "CHANGES PROD", "cmd": "venv/bin/airflow dags pause analytics_sync    # unpause — обратно", "expect": "идущий прогон доработает, новые не стартуют"}
+ ],
+ "new_fact": [
+  {"title": "1. Регистр, источники, маппинги, цели", "mode": "CHANGES PROD", "cmd": "# мастер конфигуратора :5556 — ссылки на справочники с transform_params.dim", "expect": "регистр с pg_fact_write=false"},
+  {"title": "2. Черновик ch_sync из цели", "mode": "READ ONLY", "cmd": "C=\"venv/bin/python3 -m core.tools.ch_config --conn etl_prod\"; export PYTHONPATH=dags\n$C scaffold --register R --target R --shadow --group shadow_r > r_hdr.json", "expect": "JSON — проверить типы, order_by, signal_sources"},
+  {"title": "3. Область id, группа, конфиг", "mode": "CHANGES PROD", "cmd": "$C scope --name R --apply\n$C group set --group shadow_r --dag analytics_sync --position 18 --active off --apply\n$C sync --spec r_hdr.json            # dry-run\n$C sync --spec r_hdr.json --apply", "expect": "без --apply — выполняется и откатывается; повтор — «БЕЗ ИЗМЕНЕНИЙ»"},
+  {"title": "4. Таблицы ClickHouse", "mode": "CHANGES PROD", "cmd": "venv/bin/python3 -m core.tools.ch_ddl --config-conn etl_prod --code fact_R_shadow --plan   # затем --apply", "expect": "цель + _stage (+ _raw) и права etl_writer"},
+  {"title": "5. Shadow → production", "mode": "CHANGES PROD", "cmd": "venv/bin/python3 -m core.tools.ch_promote --conn etl_prod cutover --group shadow_r --live-group onec_r \\\n  --dag analytics_sync --position 18 --watermark '2026-10-08 11:00:00' --open-window 1    # dry-run, затем --apply", "expect": "gates PASS → REPLACE PARTITION FROM shadow, конфиг одной транзакцией"}
+ ]
+}

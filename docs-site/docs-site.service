@@ -1,0 +1,13 @@
+[Unit]
+Description=Data Platform handover portal (static, internal 10.10.1.142:8700)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/dev/airflow/docs-site
+ExecStart=/usr/bin/python3 /home/dev/airflow/docs-site/serve.py --bind 10.10.1.142 --port 8700
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

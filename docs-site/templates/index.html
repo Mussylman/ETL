@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% from "macros.html" import badge, figure, rules_for, rule, last %}
+{% block content %}
+{% set sb = c.site.storage_benchmark %}
+<section class="hero">
+  <div class="eyebrow">01 · КАК УСТРОЕНО</div>
+  <h1>Data Platform</h1>
+  <p class="lead">Аналитическая платформа: данные 1С и Retail загружаются в ClickHouse, PostgreSQL хранит конфигурацию и реестры ключей, бизнес смотрит отчёты в Power BI.</p>
+  <div class="flowline"><span class="c-src">1С / Retail</span><i>→</i><span class="c-af">Airflow</span><i>→</i><span>PostgreSQL</span><i>/</i><span class="c-ld">ClickHouse</span><i>→</i><span class="c-bi">Power BI</span><i>→</i><span class="c-ai">Future AI Layer</span></div>
+  <div class="status-row">
+    {% for dm in d.domains %}{{ badge("ACTIVE" if dm.active else "WARNING", dm.name ~ (" · ACTIVE" if dm.active else "")) }}{% endfor %}
+  </div>
+</section>
+
+<h2 id="start">Начать здесь · 30–60 минут</h2>
+<div class="grid g3">
+  <div class="card accent-src"><h4>15 мин · эта страница</h4><p>Архитектура, где живут данные, откуда берутся id, что выведено из работы.</p></div>
+  <div class="card accent-tr"><h4>20 мин · <a href="/operations">02 Как сопровождать</a></h4><p>Ежедневный цикл, health check за 5 минут, плейбуки, красные линии.</p></div>
+  <div class="card accent-bi"><h4>15 мин · <a href="/analytics">03 Данные и отчёты</a></h4><p>Каталог витрин, связи, Power BI и логика Average Cost.</p></div>
+</div>
+
+<h2 id="snapshot" data-toc="Live snapshot">Live system snapshot</h2>
+<p>Собрано при сборке портала из production в режиме <strong>READ ONLY</strong> (метаданные etl_meta, system.parts, Airflow), {{ snap.captured_at }} Алматы{% if not snap.live %} — <strong>production был недоступен, показан последний сохранённый snapshot</strong>{% endif %}.</p>
+<div class="grid g4">
+  <div class="kpi"><div class="v">{{ snap.postgres.etl_prod_bytes | human }}</div><div class="l">PostgreSQL · etl_prod</div><div class="s">control plane + реестры</div></div>
+  <div class="kpi"><div class="v">{{ snap.clickhouse.bytes | human }}</div><div class="l">ClickHouse · analytics_poc</div><div class="s">на диске, active parts</div></div>
+  <div class="kpi"><div class="v">{{ d.fact_rows | num }}</div><div class="l">Строк фактов</div><div class="s">sales + orders + stock + cost</div></div>
+  <div class="kpi"><div class="v" style="font-size:20px">{{ last(d.last_update) }}</div><div class="l">Последнее обновление данных</div><div class="s">успешная публикация, Алматы</div></div>
+</div>
+
+<h2 id="footprint">Текущий объём платформы</h2>
+<div class="tbl-wrap"><table>
+  <tr><th>Домен</th><th>Основные таблицы</th><th style="text-align:right">Строк</th><th style="text-align:right">Размер</th><th>Частота обновления</th><th>Последний success</th></tr>
+  {% for dm in d.domains %}
+  <tr><td><strong>{{ dm.name }}</strong></td>
+      <td>{% if dm.name == "DIM" %}<code>dim_*</code> ({{ dm.tables | length }}){% else %}{% for t in dm.tables %}<code>{{ t }}</code> {{ dm.rows_by[t] | num }}<br>{% endfor %}{% endif %}</td>
+      <td class="num">{{ dm.rows | num }}</td><td class="num">{{ dm.bytes | human }}</td><td>{{ dm.freq }}</td><td class="mono">{{ last(dm.last) }}</td></tr>
+  {% endfor %}
+  <tr><td><strong>PostgreSQL</strong></td><td>control plane <code>etl_meta.*</code>, <code>doc_key</code> (~{{ snap.doc_key_rows_est | num }} строк), реестры <code>dim_*</code></td>
+      <td class="num">—</td><td class="num">{{ snap.postgres.etl_prod_bytes | human }}</td><td>каждый цикл (конфиг, watermark, история)</td><td class="mono">{{ last(snap.airflow.last_success) }}</td></tr>
+</table></div>
+<p class="sub">PostgreSQL-таблиц фактов в production: <strong>{{ snap.postgres.fact_tables_in_pg | length }}</strong> {% if not snap.postgres.fact_tables_in_pg %}— удалены 2026-10-07, факты только в ClickHouse.{% endif %} Последний успешный прогон analytics_sync: {{ last(snap.airflow.last_success) }}.</p>
+
+<h2 id="architecture">Архитектура</h2>
+<p>Два контура хранения с разными ролями. <strong>Production-факты — только в ClickHouse.</strong> PostgreSQL управляет загрузкой и выдаёт стабильные id.</p>
+{{ figure("architecture", "Источник → Airflow → PostgreSQL (control plane) + ClickHouse (analytics plane) → Power BI. AI-слой — PLANNED.") }}
+<div class="grid g2">
+  <div class="card accent-pg"><h4>PostgreSQL · Control Plane {{ badge("ACTIVE") }}</h4><p>Конфигурация (registers → ch_sync), <code>etl_meta.doc_key</code> и <code>doc_key_scope</code>, sequences, реестры <code>dim_*</code>, watermark, история публикаций.</p><div class="src">fact tables: REMOVED 2026-10-07</div></div>
+  <div class="card accent-ld"><h4>ClickHouse · Analytics Plane {{ badge("ACTIVE") }}</h4><p>Факты продаж, заказов, склада, <code>cost_daily</code>, аналитические реплики <code>dim_*</code>, источник для Power BI.</p><div class="src">{{ d.prod_tables | length }} таблиц витрин + {{ d.tech_tables | length }} рабочих _stage/_raw</div></div>
+</div>
+
+<h2 id="why-clickhouse" data-toc="Почему ClickHouse">Почему ClickHouse</h2>
+<p>Модель продаж в обеих системах, один и тот же объём данных, замер {{ sb.date }} системными функциями ({{ sb.method }}).</p>
+<div class="grid g3">
+  <div class="kpi metric"><div class="v">~{{ sb.ratio }}×</div><div class="l">меньше места на модели продаж</div><div class="s">{{ sb.pg_total_gib }} GiB PostgreSQL → {{ sb.ch_gib }} GiB ClickHouse</div></div>
+  <div class="kpi metric"><div class="v">~{{ sb.saved_pct | int }}%</div><div class="l">экономии хранения</div><div class="s">тот же диапазон до 202609: ~{{ sb.same_range_ratio }}×</div></div>
+  <div class="kpi metric"><div class="v">{{ sb.pg_indexes_gib }} GiB</div><div class="l">одних индексов PostgreSQL</div><div class="s">heap {{ sb.pg_heap_gib }} GiB + индексы — 40 % объёма</div></div>
+</div>
+<div class="callout"><div class="t">ClickHouse выбран не потому, что он быстрее во всём.</div>
+  <p>Точечные операции по ключу, транзакционные обновления конфига и выдача id — задача PostgreSQL, и она там и осталась (doc_key, реестры, watermark). ClickHouse берёт то, в чём силён: сканы, агрегации и компактное хранение фактов для Power BI.</p></div>
+<details><summary>Что не опубликовано и почему</summary><div>
+  <ul>{% for u in c.site.unconfirmed %}<li>{{ u }}</li>{% endfor %}</ul>
+  <p class="sub">{{ sb.note }}</p></div></details>
+
+<h2 id="flow" data-toc="Загрузка из 1С">Общая загрузка из 1С</h2>
+<p>Продажи, заказы и склад грузятся одним механизмом. Различаются только источник сигнала и наличие ежечасной пересборки.</p>
+{{ figure("onec_flow", "Signal → Lookup в 1С → Extract → Stable IDs → Partition publication → ClickHouse") }}
+<div class="tbl-wrap"><table>
+  <tr><th>Домен</th><th>Сигнал retail</th><th>Цели ClickHouse</th><th>Patch</th><th>Hot</th><th>Sweep</th><th>Особенности</th></tr>
+  {% for name, reg, tgts, note in [("Sales", "sales", ["fact_sales", "fact_sales_positions"], "retail сигналит не обо всём — правки закрывают hot и sweep"),
+                                   ("Orders", "order", ["fact_orders", "fact_order_positions"], "B2B-заказы — сигнал только при создании"),
+                                   ("Stock", "stock", ["fact_stock", "fact_stock_positions"], "сигнал из 4 таблиц retail; ПоступлениеДопРасходов и ГТД — без сигнала, их ловит sweep")] %}
+  {% set s = d.sync_by_target.get(tgts[0], {}) %}
+  <tr><td><strong>{{ name }}</strong></td>
+      <td class="mono">{{ (s.signal_sources | join(", ")) if s.signal_sources else (d.regs.get(reg, {}).retail_table or "—") }}</td>
+      <td class="mono">{{ tgts | join("<br>") | safe }}</td>
+      <td>{{ badge("ACTIVE", "5 мин") }}</td>
+      <td>{% if s.hot_rebuild == False %}{{ badge("RETIRED", "OFF") }}{% else %}{{ badge("ACTIVE", "ежечасно") }}{% endif %}</td>
+      <td>{{ badge("ACTIVE", "после " ~ "%02d"|format(snap.sweep_hour_almaty) ~ ":00") }}</td><td>{{ note }}</td></tr>
+  {% endfor %}
+</table></div>
+
+<h2 id="modes" data-toc="Patch · Rebuild · Sweep">Patch · Rebuild · Reconciliation</h2>
+<div class="grid g3">
+  <div class="card accent-tr"><h4>PATCH</h4><p>Точечно обновляет изменившиеся документы: документ и все его строки заменяются из 1С.</p></div>
+  <div class="card accent-ld"><h4>REBUILD</h4><p>Полностью пересобирает конкретную месячную партицию из 1С и публикует её целиком после сверки.</p></div>
+  <div class="card accent-src"><h4>RECONCILIATION · SWEEP</h4><p>Сверяет каждый месяц 1С ↔ ClickHouse по независимому отпечатку и пересобирает разошедшиеся.</p></div>
+</div>
+{{ figure("modes", "Сутки analytics_sync (время Алматы): patch каждые 5 минут, hot раз в час (sales/orders), sweep после " ~ ("%02d"|format(snap.sweep_hour_almaty)) ~ ":00.", legend=False) }}
+<div class="grid g2">
+  <div class="card"><h4>Sales · Orders</h4><p>patch + hot rebuild (прошлый и текущий месяц, раз в час) + ночной sweep</p></div>
+  <div class="card"><h4>Stock {{ badge("WARNING", "hot OFF") }}</h4><p>patch + ночной sweep. <code>source_params.hot_rebuild = false</code> — в часовой слот выполняется обычный patch.</p></div>
+</div>
+
+<h2 id="doc-key">doc_key — стабильные id</h2>
+{{ figure("doc_key", "Реальный пример из etl_meta.doc_key: заказ 0b7c… (тип 271) → id 717550 → fact_orders.id") }}
+<div class="grid g2">
+  <div class="card accent-pg"><h4>Что гарантирует</h4><p>Авторитетная связь GUID ↔ ID; id выдаётся один раз и не переиспользуется; строки реестра не удаляются никогда.</p></div>
+  <div class="card accent-pg"><h4>Кто выдаёт</h4><p><code>doc_key_scope</code> задаёт для области sequence; она даёт следующий id-кандидат только документам, которых ещё нет в реестре.</p></div>
+</div>
+<div class="tbl-wrap"><table><tr><th>Область</th><th>Sequence</th><th>Issuer</th><th style="text-align:right">Последнее значение</th><th style="text-align:right">MAX(id) в doc_key</th></tr>
+  {% for s in snap.doc_key_scopes %}<tr><td class="mono">{{ s.scope }}</td><td class="mono">{{ s.sequence }}</td><td>{{ s.issuer }}</td><td class="num">{{ s.sequence_last | num }}</td><td class="num">{{ s.max_id | num }}</td></tr>{% endfor %}
+</table></div>
+<div class="rules">{% for r in c.rules if r.id in ("doc-key", "sequence") %}{{ rule(r) }}{% endfor %}</div>
+
+<h2 id="control-plane" data-toc="Карта control plane">Карта control plane</h2>
+<p>Конфиг живёт в базе, а не в коде: правка конфига не меняет DAG.</p>
+<div class="flowline"><span>registers</span><i>→</i><span>register_sources</span><i>→</i><span>column_mappings</span><i>→</i><span>register_targets</span><i>→</i><span class="c-ld">ch_sync + ch_sync_columns</span><i>→</i><span class="c-af">ch_sync_group → analytics_sync</span></div>
+<div class="tbl-wrap"><table><tr><th>Группа</th><th>Позиция</th><th>Runner</th><th>Конфигураций</th><th>Статус</th></tr>
+  {% for g in snap.groups if g.dag == "analytics_sync" %}{% set n = snap.ch_sync | selectattr("group", "equalto", g.group) | list | length %}
+  <tr><td class="mono">{{ g.group }}</td><td class="num">{{ g.position }}</td><td class="mono">{{ g.runner }}</td><td class="num">{{ n if g.runner == "ch_sync" else "реестр" }}</td><td>{{ badge("ACTIVE" if g.active else "RETIRED") }}</td></tr>{% endfor %}
+</table></div>
+<div class="callout bad"><div class="t">{{ badge("DO NOT") }} register_targets ≠ «PostgreSQL-таблица должна существовать»</div>
+  <p>Активные цели регистров ({{ snap.register_targets | length }}) — конфигурация извлечения прямого пути в ClickHouse. Физических PostgreSQL-таблиц фактов у них нет. Выключение цели останавливает загрузку.</p></div>
+
+<h2 id="decisions">Ключевые архитектурные решения</h2>
+<div class="grid g2">{% for x in c.site.decisions %}
+  <div class="card{% if x.planned %} planned{% endif %}"><h4>{{ x.title }} {% if x.planned %}{{ badge("PLANNED") }}{% endif %}</h4><p>{{ x.why }}</p><div class="src">источник: {{ x.src }}</div></div>{% endfor %}
+</div>
+
+<h2 id="current-retired" data-toc="Текущее и выведенное">Текущее и выведенное</h2>
+<div class="grid g2">
+  <div>{% for x in c.site.current %}<div class="card" style="margin-bottom:8px"><h4>{{ x.t }} {{ badge("ACTIVE") }}</h4><p>{{ x.d }}</p></div>{% endfor %}</div>
+  <div>{% for x in c.site.retired %}<div class="card" style="margin-bottom:8px"><h4>{{ x.t }} {{ badge("RETIRED") }}</h4><p>{{ x.d }} — {{ x.why }}.</p></div>{% endfor %}</div>
+</div>
+<p class="sub">Только история: инструкций по возврату выведенных путей нет намеренно.</p>
+
+<h2 id="ai" data-toc="Следующий этап — AI">Следующий этап — AI Knowledge Platform</h2>
+<div class="callout plan"><div class="t">{{ badge("PLANNED", "PLANNED · NEXT STAGE") }} Это не текущий production</div>
+  <p>Платформа строится не только как источник Power BI: те же данные и документация станут фундаментом для RAG/MCP-доступа с правами по ролям.</p></div>
+{{ figure("ai", "Data Platform (сегодня) → Structured Data + Documentation → RAG/MCP → Auth + Access Control → LLM-клиенты → сотрудники") }}
+<h3 id="ai-request">Как будет работать запрос</h3>
+{{ figure("ai_request", "Пользователь → идентификация → права → только разрешённые данные и документы → LLM → ответ", legend=False) }}
+<div class="grid g3">{% for x in c.site.ai_examples %}<div class="card planned"><h4>{{ x.who }}</h4><p>«{{ x.q }}»</p><div class="src">→ {{ x.a }}</div></div>{% endfor %}</div>
+<h3 id="ai-goals">Зачем</h3>
+<div class="grid g2">{% for g in c.site.ai_goals %}<div class="card planned"><p>{{ g }}</p></div>{% endfor %}</div>
+
+<h2 id="sources">Источники</h2>
+<div class="tbl-wrap"><table><tr><th>Утверждение</th><th>Откуда</th></tr>
+  {% for s in c.site.sources %}<tr><td>{{ s.what }}</td><td>{{ s.src }}</td></tr>{% endfor %}</table></div>
+{% endblock %}

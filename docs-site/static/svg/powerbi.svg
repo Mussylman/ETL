@@ -1,0 +1,12 @@
+<svg viewBox="0 0 980 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Путь данных в Power BI">
+  <defs><marker id="ah-pbi" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="head" d="M0,0L10,5L0,10z"/></marker></defs>
+  <rect x="10" y="30" width="230" height="110" rx="10" class="box fld ld"/><text x="24" y="54" font-weight="650" class="ctext-ld">ClickHouse</text><text x="24" y="74" class="t2 mono">analytics_poc</text>
+  <text x="24" y="94" class="t2 mono">cost_daily · dim_product</text><text x="24" y="110" class="t2 mono">fact_* · dim_*</text><text x="24" y="128" class="t3">10.10.1.142</text>
+  <rect x="285" y="30" width="200" height="110" rx="10" class="box fpg pg"/><text x="299" y="54" font-weight="650">ODBC / HTTP</text><text x="299" y="74" class="t2 mono">порт 8123</text>
+  <text x="299" y="94" class="t2 mono">user analytics_reader</text><text x="299" y="110" class="t3">SELECT на analytics_poc.*</text><text x="299" y="128" class="t3">пароль — не здесь</text>
+  <rect x="530" y="30" width="210" height="110" rx="10" class="box fbi bi"/><text x="544" y="54" font-weight="650" class="ctext-bi">Power BI</text><text x="544" y="74" class="t2">DirectQuery / Dual</text>
+  <text x="544" y="94" class="t2">модель: cost_daily ⨝ dim_product</text><text x="544" y="110" class="t2">RLS</text><text x="544" y="128" class="t3 mono">сервер 10.10.1.136</text>
+  <rect x="785" y="30" width="185" height="110" rx="10" class="box fbi bi"/><text x="799" y="54" font-weight="650">Пользователи</text><text x="799" y="74" class="t2">видят только</text><text x="799" y="90" class="t2">свою область RLS</text>
+  <path class="edge" d="M240,85 H283" marker-end="url(#ah-pbi)"/><path class="edge" d="M485,85 H528" marker-end="url(#ah-pbi)"/><path class="edge" d="M740,85 H783" marker-end="url(#ah-pbi)"/>
+  <text x="10" y="172" class="t3">Подтверждено system.query_log: analytics_reader, HTTP-интерфейс, чтения cost_daily и dim_product с 10.10.1.136.</text>
+</svg>

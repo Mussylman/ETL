@@ -1,0 +1,32 @@
+{% macro badge(kind, text=None) -%}
+{%- set cls = {"ACTIVE": "b-active", "PASS": "b-pass", "PLANNED": "b-planned", "RETIRED": "b-retired", "WARNING": "b-warning",
+               "DO NOT": "b-donot", "READ ONLY": "b-readonly", "CHANGES PROD": "b-changes", "PROD": "b-prod",
+               "FALLBACK": "b-fallback"}[kind] -%}
+<span class="badge {{ cls }}">{{ text or kind }}</span>
+{%- endmacro %}
+
+{% macro cli(c) -%}
+<div class="cli{% if c.mode == 'CHANGES PROD' %} danger{% endif %}">
+  <div class="cli-h"><span class="dots"><i></i><i></i><i></i></span><span class="t">{{ c.title }}</span>{{ badge(c.mode) }}<button class="copy" type="button">копировать</button></div>
+  <pre>{% for line in c.cmd.split("\n") %}{% if not line.startswith("#") %}<span class="ps">$ </span>{% endif %}{{ line }}
+{% endfor %}</pre>
+  {% if c.expect %}<div class="cli-x"><b>ожидаемо →</b> {{ c.expect }}</div>{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro rule(r) -%}
+<div class="rule">{{ badge("DO NOT") }}<span class="r">{{ r.rule }}</span>
+  <span class="w">{{ r.why }}{% if r.incident %} <em>· инцидент: {{ r.incident }}</em>{% endif %}</span></div>
+{%- endmacro %}
+
+{% macro rules_for(rules, where) -%}
+<div class="rules">{% for r in rules if where in r.where %}{{ rule(r) }}{% endfor %}</div>
+{%- endmacro %}
+
+{% macro figure(name, caption, legend=True) -%}
+<figure class="diagram">{{ svg(name) | safe }}
+  {% if legend %}<div class="legend"><span><i style="background:var(--src)"></i>Extract / источники</span><span><i style="background:var(--tr)"></i>Transform / проверки</span><span><i style="background:var(--ld)"></i>Load / ClickHouse</span><span><i style="background:var(--pg)"></i>PostgreSQL control plane</span><span><i style="background:var(--bi)"></i>Power BI</span><span><i style="background:var(--ai)"></i>Future AI · PLANNED</span></div>{% endif %}
+  <figcaption>{{ caption }}</figcaption></figure>
+{%- endmacro %}
+
+{% macro last(ts) -%}{{ ts or "—" }}{%- endmacro %}

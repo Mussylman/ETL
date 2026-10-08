@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% from "macros.html" import badge, figure, rule, last %}
+{% block content %}
+{% set ac = c.site.avg_cost %}
+<div class="eyebrow">03 · ДАННЫЕ И ОТЧЁТЫ</div>
+<h1>Данные и отчёты</h1>
+<p class="lead">Какие данные есть, как они связаны и что видит бизнес в Power BI.</p>
+
+<h2 id="catalog" data-toc="Каталог витрин">Каталог витрин</h2>
+<p>ClickHouse <code>analytics_poc</code>, live snapshot {{ snap.captured_at }}. Строки и размер — по active parts, без сканов данных.</p>
+<div class="tbl-wrap"><table>
+  <tr><th>Таблица</th><th>Назначение · зерно</th><th>Ключ</th><th>Связи (*_id)</th><th>Обновление</th><th>Последний success</th><th style="text-align:right">Строк</th><th style="text-align:right">Размер</th></tr>
+  {% for name, meta in c.catalog.items() %}{% set t = d.tables.get(name) %}{% if t %}{% set s = d.sync_by_target.get(name, {}) %}
+  {% set fks = t.fks %}
+  <tr><td class="mono"><strong>{{ name }}</strong></td><td>{{ meta.purpose }}<br><span class="sub">{{ meta.grain }}</span></td>
+      <td class="mono">{{ (s.business_key or ["guid"]) | join(" + ") if s else "—" }}</td>
+      <td class="mono">{% for f in fks %}{{ f }}{{ "<br>" | safe if not loop.last }}{% endfor %}{% if not fks %}—{% endif %}</td>
+      <td>{% if s.load_mode == "document_patch" %}5 мин{% if s.hot_rebuild == False %}, hot OFF{% else %} + hot{% endif %} + sweep{% elif name == "cost_daily" %}раз в сутки{% else %}при изменении{% endif %}</td>
+      <td class="mono">{{ last(snap.last_success.get(name)) }}</td><td class="num">{{ t.rows | num }}</td><td class="num">{{ t.bytes | human }}</td></tr>
+  {% endif %}{% endfor %}
+</table></div>
+<details><summary>Колонки таблиц фактов и cost_daily</summary><div>
+  {% for name in ["fact_sales", "fact_sales_positions", "fact_orders", "fact_order_positions", "fact_stock", "fact_stock_positions", "cost_daily", "dim_product"] %}{% set t = d.tables.get(name) %}{% if t %}
+  <h3 id="cols-{{ name }}" class="mono">{{ name }}</h3>
+  <p class="mono" style="font-size:12px">{% for col in t.columns %}{{ col.name }} <span class="sub">{{ col.type }}</span>{{ " · " if not loop.last }}{% endfor %}</p>
+  {% endif %}{% endfor %}</div></details>
+<div class="rules">{% for r in c.rules if r.id == "raw-stage" %}{{ rule(r) }}{% endfor %}</div>
+<p class="sub">Рабочие <code>_stage</code> / <code>_raw</code> ({{ d.tech_tables | length }} шт.) в каталог не включены: это staging загрузчиков, BI их не читает.</p>
+
+<h2 id="relationships" data-toc="Связи">Связи</h2>
+<div class="flowline"><span class="c-ld">fact_*.&lt;ключ&gt;_id</span><i>→</i><span class="c-ld">dim_*.id</span><i>·</i><span>0 = пустая ссылка 1С</span><i>·</i><span>positions.&lt;шапка&gt;_id → header.id</span></div>
+<div class="grid g2">
+  <div class="card accent-ld"><h4>Справочники</h4><p>Все <code>*_id</code> фактов ведут в <code>dim_*.id</code>. Пустая ссылка 1С (<code>00000000-…</code>) — семантически NULL: <code>*_id = 0</code>, в справочник не попадает. Это норма, не дыра.</p></div>
+  <div class="card accent-pg"><h4>Шапка ↔ строки</h4><p>Документ: <code>recorder + recorder_type</code>; строка: + <code>line_no</code>. id шапки — из <code>doc_key</code>, строки ссылаются на него.</p></div>
+</div>
+
+<h2 id="dim-product" data-toc="dim_product и справочники">dim_product и справочники</h2>
+<div class="callout bad"><div class="t">{{ badge("DO NOT") }} Справочник товаров — <code>analytics_poc.dim_product</code>, не dim_nomenklatura</div><p>Переименован 2026-10-06; временный VIEW dim_nomenklatura удалён, Power BI переведён.</p></div>
+<div class="grid g4">{% for x in d.dims %}<div class="kpi"><div class="v mono" style="font-size:15px">{{ x.name }}</div><div class="l">{{ x.rows | num }} строк</div><div class="s">{{ last(snap.last_success.get(x.name)) }}</div></div>{% endfor %}</div>
+<p class="sub">Колонки фактов (<code>nomenklatura_id</code>, <code>sklad_id</code> …) сохранили прежние имена — переименованы только таблицы. Иерархия товара: <code>category → subcategory1 … subcategory7</code>, <code>brand</code>.</p>
+
+<h2 id="powerbi" data-toc="Power BI подключение">Power BI — подключение</h2>
+{{ figure("powerbi", "ClickHouse → ODBC / HTTP 8123 (analytics_reader) → Power BI DirectQuery / Dual → RLS → пользователи") }}
+<div class="tbl-wrap"><table><tr><th>Параметр</th><th>Значение</th></tr>
+  <tr><td>Host</td><td class="mono">10.10.1.142</td></tr><tr><td>Порт (HTTP-интерфейс ClickHouse)</td><td class="mono">8123</td></tr>
+  <tr><td>База</td><td class="mono">analytics_poc</td></tr><tr><td>Пользователь</td><td class="mono">analytics_reader — SELECT на analytics_poc.*</td></tr>
+  <tr><td>Пароль</td><td>не публикуется</td></tr></table></div>
+
+<h2 id="average-cost" data-toc="Average Cost">Average Cost</h2>
+<div class="callout"><div class="t">{{ badge("PASS", ac.approved) }}</div><p>Модели Power BI (PBIP) на сервере нет. Колонки и типы ниже — из ClickHouse (live); логика отчёта — описание владельца проекта, не автоматическая проверка модели.</p></div>
+{{ figure("cost_daily", "retail_cost → группа retail → lookup dim_product → cost_daily → Power BI") }}
+<div class="grid g2">
+  <div class="card accent-ld"><h4>Источники</h4><p><code>{{ ac.sources }}</code>. В <code>cost_daily</code>: {% for col in d.tables.cost_daily.columns %}<code>{{ col.name }}</code>{{ ", " if not loop.last }}{% endfor %}.</p></div>
+  <div class="card accent-bi"><h4>type — не смешиваются</h4><p>{% for tv in ac.type %}<code>{{ tv.v }}</code> = {{ tv.name }}{{ " · " if not loop.last }}{% endfor %}</p></div>
+</div>
+<ul>{% for pt in ac.points %}<li>{{ pt }}</li>{% endfor %}</ul>
+<h3 id="rls">RLS</h3>
+<p>Row-level security сохранён в модели Power BI: пользователь видит только свою область. Меры не должны обходить RLS.</p>
+<h3 id="directquery">DirectQuery — предупреждения</h3>
+<div class="rules">{% for w in c.site.pbi_warnings %}<div class="rule">{{ badge("WARNING") }}<span class="r">{{ w }}</span></div>{% endfor %}</div>
+<div class="rules">{% for r in c.rules if "analytics" in r.where and r.id != "raw-stage" %}{{ rule(r) }}{% endfor %}</div>
+
+<h2 id="modify" data-toc="Как менять безопасно">Как менять отчёт безопасно</h2>
+<ul>
+  <li>Новые поля — из существующих витрин и <code>dim_*</code>; не создавать таблицы под отчёт в ClickHouse вручную.</li>
+  <li>Тяжёлую логику — на стороне ClickHouse (агрегаты), не в DAX поверх DirectQuery.</li>
+  <li>Связи — только по <code>*_id → dim_*.id</code>; GUID — для сверки, не для связей.</li>
+  <li>Перед публикацией — проверить под ролью RLS, что срез ограничен.</li>
+</ul>
+
+<h2 id="limitations" data-toc="Ограничения">Известные ограничения</h2>
+<div class="tbl-wrap"><table><tr><th>Область</th><th>Ограничение</th><th></th></tr>
+  {% for x in c.site.limits %}<tr><td><strong>{{ x.area }}</strong></td><td>{{ x.t }}</td><td>{{ badge(x.badge) }}</td></tr>{% endfor %}</table></div>
+{% endblock %}

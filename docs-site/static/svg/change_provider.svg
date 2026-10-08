@@ -1,0 +1,20 @@
+<svg viewBox="0 0 980 240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Change-provider">
+  <defs><marker id="ah-cp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="head" d="M0,0L10,5L0,10z"/></marker></defs>
+  <rect x="10" y="80" width="180" height="80" rx="10" class="box fsrc src"/>
+  <text x="24" y="106" font-weight="650">Кандидаты</text><text x="24" y="126" class="t2">сигналы retail с watermark</text><text x="24" y="144" class="t3 mono">+ pending из хвоста</text>
+  <rect x="250" y="80" width="190" height="80" rx="10" class="box fsrc src"/>
+  <text x="264" y="106" font-weight="650">Точный lookup в 1С</text><text x="264" y="126" class="t2">есть ли документ</text><text x="264" y="144" class="t2">и есть ли в витрине</text>
+  <path class="edge" d="M190,120 H248" marker-end="url(#ah-cp)"/>
+  <path class="edge" d="M440,120 C480,120 480,40 520,40" marker-end="url(#ah-cp)"/>
+  <path class="edge" d="M440,120 H518" marker-end="url(#ah-cp)"/>
+  <path class="edge" d="M440,120 C480,120 480,200 520,200" marker-end="url(#ah-cp)"/>
+  <rect x="522" y="14" width="440" height="52" rx="10" class="box ftr tr"/>
+  <text x="538" y="36" font-weight="650" class="ctext-tr">ready</text><text x="600" y="36" class="t2">есть в 1С → в патч: документ и все его строки заменяются</text>
+  <text x="538" y="55" class="t3">ЧекККМ, реализации, перемещения … — данные всегда из 1С, retail — только сигнал</text>
+  <rect x="522" y="94" width="440" height="52" rx="10" class="box fpg pg"/>
+  <text x="538" y="116" font-weight="650" class="ctext-pg">pending</text><text x="610" y="116" class="t2">нет в 1С и нет в витрине → ждёт в хвосте</text>
+  <text x="538" y="135" class="t3">1С ещё не догнала; перепроверяется следующими циклами</text>
+  <rect x="522" y="174" width="440" height="52" rx="10" class="box fbad bad"/>
+  <text x="538" y="196" font-weight="650" class="ctext-bad">actually_deleted</text><text x="660" y="196" class="t2">нет в 1С, есть в витрине → патч удаляет</text>
+  <text x="538" y="215" class="t3">только после точной проверки 1С</text>
+</svg>

@@ -1,0 +1,97 @@
+{
+ "decisions": [
+  {"title": "PostgreSQL = Control Plane", "why": "Конфигурация, реестры ключей, watermark и история требуют транзакционной целостности и точечных обновлений — это сильная сторона PostgreSQL.", "src": "CLAUDE.md, live config"},
+  {"title": "ClickHouse = Analytics Plane", "why": "Факты — это сканы и агрегации по десяткам миллионов строк; колоночное хранение и сжатие дали ×33.5 меньше места на модели продаж.", "src": "замер 2026-10-06"},
+  {"title": "Direct 1С → ClickHouse", "why": "Убран лишний hop фактов через PostgreSQL: один путь, один источник правды, корректность — по сверке с 1С.", "src": "docs/knowledge/decisions — Прямой путь 1С → ClickHouse"},
+  {"title": "doc_key — стабильные id", "why": "BI работает с целыми id, а не с GUID 1С; id выдаётся один раз и не меняется, даже если документ пересобран.", "src": "CLAUDE.md, live doc_key_scope"},
+  {"title": "Config-driven sync", "why": "Новый факт — данные control plane (ch_config, ch_promote), а не новый DAG или миграция.", "src": "ch_config / ch_promote, commits 2026-10-05…07"},
+  {"title": "Power BI", "why": "Слой потребления для бизнеса: DirectQuery к ClickHouse через analytics_reader.", "src": "ClickHouse query_log"},
+  {"title": "Future RAG / MCP", "why": "Тот же фундамент данных + документация станут источником для AI-доступа с правами по ролям.", "src": "roadmap владельца проекта", "planned": true}
+ ],
+ "current": [
+  {"t": "Факты напрямую 1С → ClickHouse", "d": "sales, orders — с 2026-09-24; stock — с 2026-10-06"},
+  {"t": "PostgreSQL — control plane", "d": "etl_meta, doc_key, реестры dim_*"},
+  {"t": "dim_product и английские имена справочников", "d": "с 2026-10-06"},
+  {"t": "analytics_sync — один core DAG", "d": "группы и порядок — из etl_meta.ch_sync_group"},
+  {"t": "doc_key — реестр id документов", "d": "области sales / orders / stock"}
+ ],
+ "retired": [
+  {"t": "PostgreSQL-таблицы фактов", "d": "sales, sales_positions, orders, order_positions — заморожены 2026-09-24, удалены 2026-10-07", "why": "путь фактов перенесён в ClickHouse"},
+  {"t": "Второй hop PostgreSQL → ClickHouse для фактов", "d": "конфиги legacy_frozen — RETIRED", "why": "прямой путь из 1С"},
+  {"t": "Rollback-таблицы fact_*_direct", "d": "удалены 2026-10-07", "why": "окно отката после cutover закрыто"},
+  {"t": "Shadow склада fact_stock*_shadow", "d": "удалены 2026-10-07", "why": "склад в production с 2026-10-06"},
+  {"t": "Тестовая PostgreSQL test и локальная bd_retail", "d": "удалены 2026-10-07 вместе с connections", "why": "проверки — dry-run / транзакции / временные объекты"},
+  {"t": "Ручные shadow-инструменты", "d": "stock_history_load, ch_shadow_compare — удалены", "why": "работали только с удалёнными таблицами"},
+  {"t": "dim_nomenklatura и русские имена справочников", "d": "переименованы 2026-10-06", "why": "единый английский naming"}
+ ],
+ "storage_benchmark": {
+  "date": "2026-10-06",
+  "method": "pg_relation_size / pg_indexes_size / pg_total_relation_size; ClickHouse system.parts (active), bytes_on_disk",
+  "scope": "модель продаж: PostgreSQL sales + sales_positions против ClickHouse fact_sales + fact_sales_positions",
+  "pg_total_gib": 13.24, "pg_heap_gib": 7.95, "pg_indexes_gib": 5.29, "ch_gib": 0.395,
+  "ratio": 33.5, "saved_pct": 97.0, "same_range_ratio": 34,
+  "note": "Таблицы фактов PostgreSQL удалены 2026-10-07 — замер исторический и повторён быть не может."
+ },
+ "unconfirmed": [
+  "Ускорение аналитических агрегаций (ориентир «70–129×») — первичный отчёт бенчмарка в репозитории и на сервере не найден, на портале не публикуется.",
+  "Point lookup PostgreSQL ≈10 мс / ClickHouse ≈22 мс — первичный замер не найден, не публикуется."
+ ],
+ "ai_goals": [
+  "Единая точка доступа к корпоративным данным",
+  "Ответы на языке пользователя",
+  "Аналитика и документация в одном ответе",
+  "Меньше зависимости от аналитиков и helpdesk",
+  "Доступ по ролям: каждый видит только свою разрешённую область",
+  "Подключение из ChatGPT, Claude и других LLM-клиентов",
+  "Техническая документация как knowledge base",
+  "Руководитель — обзор системы, сотрудник — свой участок"
+ ],
+ "ai_examples": [
+  {"who": "Сотрудник", "q": "Какие продажи моего региона за неделю?", "a": "только доступный ему регион"},
+  {"who": "Руководитель", "q": "Что происходит по всем магазинам?", "a": "вся разрешённая ему область"},
+  {"who": "Техспециалист", "q": "Почему упал analytics_sync?", "a": "техническая документация + разрешённый system context"}
+ ],
+ "avg_cost": {
+  "approved": "Business logic approved by project owner",
+  "sources": "cost_daily + dim_product",
+  "type": [{"v": "1", "name": "Эврика"}, {"v": "2", "name": "Монобренд"}],
+  "points": [
+   "price_full — готовая средняя себестоимость из источника (retail_cost)",
+   "Отчёт snapshot-based: текущая цена = price_full товара на выбранную дату состояния",
+   "Сравнение: предыдущий snapshot, 7 дней, 30 дней",
+   "Значимое изменение — 1 %",
+   "Главная: товары с себестоимостью, подорожало / подешевело, медиана изменения, появилось / выбыло",
+   "Матрица subcategory1 → subcategory2 → brand; Top рост; Top снижение; детальная таблица",
+   "История — отдельная страница товара",
+   "RLS сохранён; DirectQuery"
+  ]
+ },
+ "pbi_warnings": [
+  "Не использовать dim_nomenklatura — только dim_product",
+  "Не SUM price_full между type",
+  "Не AVG между type",
+  "Не протягивать старую price_full как текущую",
+  "DirectQuery: ограничения DAX и производительности — тяжёлое считать в ClickHouse",
+  "price_full = 0 может быть реальным значением",
+  "Пустой MAX в ClickHouse возвращает 0 / 1970-01-01, а не NULL",
+  "Большие IN-списки могут упереться в лимиты запроса",
+  "id типа decimal(20,0) на стороне Power BI требует осторожности при связях",
+  "RLS нельзя обходить мерами"
+ ],
+ "limits": [
+  {"area": "Stock", "t": "price — семантика валюты и НДС PENDING (Σ Сумма / Σ Количество по поступлению)", "badge": "WARNING"},
+  {"area": "Stock", "t": "Пересортица ТМЗ (тип 26908): document_basis_guid = NULL — достоверный источник основания не найден", "badge": "WARNING"},
+  {"area": "Average Cost", "t": "cost_daily считается source of truth; портал и Power BI не контролируют качество upstream-данных", "badge": "WARNING"},
+  {"area": "Retail signal", "t": "retail сигналит не обо всём — расхождения закрывают hot (sales / orders) и ночной sweep (все)", "badge": "ACTIVE"}
+ ],
+ "sources": [
+  {"what": "Live config и метаданные", "src": "etl_meta (PostgreSQL), system.parts / system.tables (ClickHouse), метаданные Airflow — снимок при сборке, READ ONLY"},
+  {"what": "Расписание", "src": "Airflow timetable analytics_sync, ch_sync.source_params.hot_rebuild, runner.SWEEP_HOUR, история ch_sync_history"},
+  {"what": "Хранение PostgreSQL vs ClickHouse", "src": "замер 2026-10-06 системными функциями (исторический — PG-факты удалены)"},
+  {"what": "Архитектурные решения", "src": "CLAUDE.md, docs/knowledge/decisions/*"},
+  {"what": "Инциденты", "src": "docs/knowledge/debugging/* (2026-10-02 … 2026-10-07)"},
+  {"what": "Логика Average Cost", "src": "описание владельца проекта; модель Power BI (PBIP) на сервере отсутствует"},
+  {"what": "Power BI подключение", "src": "ClickHouse system.query_log: пользователь analytics_reader, HTTP-интерфейс"},
+  {"what": "AI / RAG / MCP", "src": "roadmap владельца проекта — PLANNED, не production"}
+ ]
+}

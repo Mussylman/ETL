@@ -1,0 +1,49 @@
+<svg viewBox="0 0 980 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Архитектура Data Platform">
+  <defs><marker id="ah-arch" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0,0L10,5L0,10z"/></marker>
+  <marker id="ah-arch-ai" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="head-ai" d="M0,0L10,5L0,10z"/></marker></defs>
+  <!-- SOURCES -->
+  <text x="20" y="28" class="t3 mono">SOURCES · EXTRACT</text>
+  <rect x="20" y="40" width="210" height="70" rx="10" class="box fsrc src"/>
+  <text x="36" y="66" font-weight="650">1С УПП</text><text x="36" y="86" class="t2">MSSQL · регистры, документы</text><text x="36" y="101" class="t3 mono">mssql_1c_conn</text>
+  <rect x="250" y="40" width="210" height="70" rx="10" class="box fsrc src"/>
+  <text x="266" y="66" font-weight="650">Retail</text><text x="266" y="86" class="t2">сигнал изменений (guid + updated_at)</text><text x="266" y="101" class="t3 mono">bd_retail</text>
+  <rect x="480" y="40" width="210" height="70" rx="10" class="box fsrc src"/>
+  <text x="496" y="66" font-weight="650">Retail cost</text><text x="496" y="86" class="t2">средняя себестоимость</text><text x="496" y="101" class="t3 mono">retail_cost</text>
+  <!-- AIRFLOW -->
+  <path class="edge" d="M125,110 V150 H350" marker-end="url(#ah-arch)"/><path class="edge" d="M355,110 V150"/><path class="edge" d="M585,110 V150 H360"/>
+  <rect x="200" y="155" width="310" height="76" rx="10" class="box fsrc src2"/>
+  <text x="216" y="181" font-weight="650">Airflow · analytics_sync</text>
+  <text x="216" y="200" class="t2">одна задача sync каждые 5 минут</text>
+  <text x="216" y="218" class="t3 mono">patch · hot · sweep · группы из etl_meta</text>
+  <!-- split -->
+  <path class="edge" d="M300,231 V275 H200 V300" marker-end="url(#ah-arch)"/>
+  <path class="edge" d="M410,231 V275 H620 V300" marker-end="url(#ah-arch)"/>
+  <text x="96" y="268" class="t3">конфиг · id · watermark</text><text x="560" y="268" class="t3">факты · партиции</text>
+  <!-- POSTGRES -->
+  <rect x="40" y="302" width="320" height="150" rx="12" class="box fpg pg"/>
+  <text x="58" y="328" font-weight="700" class="ctext-pg">PostgreSQL · Control Plane</text><text x="58" y="346" class="t3 mono">etl_prod</text>
+  <text x="58" y="370" class="t2">• конфигурация: registers → ch_sync</text>
+  <text x="58" y="388" class="t2">• etl_meta.doc_key · doc_key_scope · sequences</text>
+  <text x="58" y="406" class="t2">• реестры справочников dim_*</text>
+  <text x="58" y="424" class="t2">• watermark, история и состояние публикаций</text>
+  <rect x="58" y="432" width="200" height="16" rx="4" class="fbad"/><text x="64" y="444" class="t3 ctext-bad mono">fact tables: REMOVED 2026-10-07</text>
+  <!-- CLICKHOUSE -->
+  <rect x="440" y="302" width="340" height="150" rx="12" class="box fld ld"/>
+  <text x="458" y="328" font-weight="700" class="ctext-ld">ClickHouse · Analytics Plane</text><text x="458" y="346" class="t3 mono">analytics_poc</text>
+  <text x="458" y="370" class="t2">• fact_sales · fact_sales_positions</text>
+  <text x="458" y="388" class="t2">• fact_orders · fact_order_positions</text>
+  <text x="458" y="406" class="t2">• fact_stock · fact_stock_positions</text>
+  <text x="458" y="424" class="t2">• cost_daily · реплики dim_* (product …)</text>
+  <text x="458" y="444" class="t3 ctext-ok mono">production facts live here</text>
+  <path class="edge" d="M360,377 H440" marker-end="url(#ah-arch)"/><text x="368" y="370" class="t3">dim_* →</text>
+  <!-- POWER BI -->
+  <path class="edge" d="M610,452 V492" marker-end="url(#ah-arch)"/>
+  <rect x="520" y="494" width="180" height="50" rx="10" class="box fbi bi"/>
+  <text x="536" y="516" font-weight="650">Power BI</text><text x="536" y="533" class="t3 mono">DirectQuery · analytics_reader</text>
+  <!-- FUTURE AI -->
+  <rect x="800" y="302" width="160" height="150" rx="12" class="box fai ai"/>
+  <text x="816" y="328" font-weight="650" class="ctext-ai">AI Knowledge</text><text x="816" y="346" font-weight="650" class="ctext-ai">Platform</text>
+  <text x="816" y="370" class="t2">RAG / MCP</text><text x="816" y="388" class="t2">+ права доступа</text>
+  <rect x="816" y="420" width="72" height="18" rx="9" class="fai ai" stroke-width="1"/><text x="823" y="433" class="t3 ctext-ai mono">PLANNED</text>
+  <path class="edge-ai" d="M780,377 H798" marker-end="url(#ah-arch-ai)"/>
+</svg>

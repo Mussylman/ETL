@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% from "macros.html" import badge, figure, cli, rule, last %}
+{% block content %}
+<div class="eyebrow">02 · КАК СОПРОВОЖДАТЬ</div>
+<h1>Как сопровождать</h1>
+<p class="lead">Как система работает каждый день, как за 5 минут понять, что всё в порядке, и что делать при сбое.</p>
+<div class="callout warn"><div class="t">{{ badge("WARNING") }} Команды с пометкой CHANGES PROD меняют production</div>
+  <p>Запускать вне слота DAG, понимая, что делает команда. Всё, что помечено READ ONLY, безопасно.</p></div>
+
+<h2 id="daily-cycle" data-toc="Ежедневный цикл">Ежедневный цикл</h2>
+<p>Один core DAG — <code>analytics_sync</code>: одна задача <code>sync</code>, {{ (snap.airflow.schedule_text or "каждые 5 минут") | lower }} (<code>{{ snap.airflow.schedule or "*/5 * * * *" }}</code>), <code>max_active_runs=1</code>. Группы и порядок читаются из <code>etl_meta.ch_sync_group</code> в момент выполнения; сбой одной группы не останавливает остальные.</p>
+<div class="tbl-wrap"><table><tr><th>Позиция</th><th>Группа</th><th>Что делает</th><th>Hot</th><th>Последний success</th></tr>
+  {% set what = {"dim_registry": "справочники 1С → реестр PostgreSQL (dim_*)", "core_pg_to_ch": "реестры dim_* → реплики ClickHouse", "onec_1c": "заказы, затем продажи: 1С → ClickHouse", "onec_stock": "склад: 1С → ClickHouse", "retail": "cost_daily из retail_cost"} %}
+  {% for g in snap.groups if g.active %}{% set members = snap.ch_sync | selectattr("group", "equalto", g.group) | list %}
+  <tr><td class="num">{{ g.position }}</td><td class="mono">{{ g.group }}</td><td>{{ what.get(g.group, "") }}</td>
+      <td>{% if members and members[0].load_mode == "document_patch" %}{% if members | selectattr("hot_rebuild", "equalto", False) | list %}{{ badge("RETIRED", "OFF") }}{% else %}{{ badge("ACTIVE", "ежечасно") }}{% endif %}{% else %}—{% endif %}</td>
+      <td class="mono">{% if g.group == "dim_registry" %}{{ last(snap.dim_registry_last_success) }}{% else %}{{ last(d.group_last.get(g.group)) }}{% endif %}</td></tr>
+  {% endfor %}
+</table></div>
+{{ figure("modes", "patch каждые 5 минут · hot раз в час (sales/orders) · sweep после " ~ ("%02d"|format(snap.sweep_hour_almaty)) ~ ":00 Алматы", legend=False) }}
+{{ figure("change_provider", "Сигнал retail ≠ готовность в 1С: кандидаты → точный lookup → ready / pending / actually_deleted") }}
+{{ figure("publish", "Публикация партиции: сверка до REPLACE PARTITION; плохая партиция не публикуется") }}
+<p class="sub">cost_daily: публикаций за 7 дней — {{ snap.cost_daily_days | length }} ({% for x in snap.cost_daily_days %}{{ x.time[11:] }}{{ ", " if not loop.last }}{% endfor %} Алматы) — источник обновляется раз в сутки, DAG проверяет его каждый цикл.</p>
+
+<h2 id="health-check" data-toc="Health check">Health check за 5 минут</h2>
+<p>Все команды — из <code>~/airflow</code>. Ожидаемый результат — под каждой.</p>
+{% for x in c.commands.health %}{{ cli(x) }}{% endfor %}
+
+<h2 id="playbooks" data-toc="Плейбуки">Плейбуки инцидентов</h2>
+<p>Только реальные случаи. Формат: симптом → проверить → причина → действие → когда остановиться.</p>
+{% for p in c.playbooks %}
+<details id="pb-{{ p.id }}"><summary>{{ p.title }}</summary><div><dl class="pb">
+  <dt>симптом</dt><dd>{{ p.symptom }}</dd>
+  <dt>проверить</dt><dd><ul style="margin:0">{% for x in p.check %}<li>{{ x }}</li>{% endfor %}</ul></dd>
+  <dt>причина</dt><dd>{{ p.cause }}</dd>
+  <dt>действие</dt><dd>{{ p.action }}</dd>
+  <dt>STOP</dt><dd class="stop">{{ p.stop }}</dd></dl></div></details>
+{% endfor %}
+
+<h2 id="commands" data-toc="Команды">Команды, меняющие production</h2>
+{% for x in c.commands.change %}{{ cli(x) }}{% endfor %}
+
+<h2 id="new-fact" data-toc="Новый факт">Как завести новый факт / регистр</h2>
+<p>Без миграции: конфиг — данными control plane. Каждая команда без <code>--apply</code> выполняется и откатывается (dry-run), повтор ничего не меняет.</p>
+{% for x in c.commands.new_fact %}{{ cli(x) }}{% endfor %}
+
+<h2 id="ch-config"><code>ch_config</code> — конфиг публикации</h2>
+<div class="grid g2">
+  <div class="card accent-tr"><h4>sync / scaffold / export</h4><p><code>etl_meta.ch_sync</code> + <code>ch_sync_columns</code> по JSON-спецификации; черновик — из цели регистра.</p></div>
+  <div class="card accent-pg"><h4>scope</h4><p>Область реестра id: sequence + <code>doc_key_scope</code>. Удаление — только пустой области.</p></div>
+  <div class="card accent-src"><h4>group show / set / add / order</h4><p><code>ch_sync_group</code>, состав и порядок (priority).</p></div>
+  <div class="card"><h4>Защиты</h4><p>Одна транзакция под advisory-блокировкой; действующее — только с <code>--allow-live</code>; соединение — только явно.</p></div>
+</div>
+
+<h2 id="ch-promote"><code>ch_promote</code> — shadow → production</h2>
+<div class="grid g2">
+  <div class="card accent-tr"><h4>gates</h4><p>Схема = конфиг, engine/partition/order, дубли, not_zero, сироты, recorder → id = doc_key; закрытые партиции строго 1:1 с 1С, открытые (<code>--open-window N</code>) — shadow ⊆ источника.</p></div>
+  <div class="card accent-ld"><h4>перенос</h4><p><code>REPLACE PARTITION … FROM</code> shadow — жёсткие ссылки, без перезагрузки, id те же; конфиг — одной транзакцией.</p></div>
+  <div class="card"><h4>rollback</h4><p>Выключает боевую группу и конфиги; таблицы, doc_key, история не трогаются.</p></div>
+  <div class="card"><h4>discard</h4><p>Удаляет неиспользуемые боевые таблицы и отзывает их права.</p></div>
+</div>
+
+<h2 id="do-not" data-toc="НЕ ДЕЛАЙ ЭТО">Красные линии · НЕ ДЕЛАЙ ЭТО</h2>
+<div class="rules">{% for r in c.rules %}{{ rule(r) }}{% endfor %}</div>
+
+<h2 id="connections" data-toc="Подключения">Подключения и где лежат секреты</h2>
+<p>Секретов на портале нет. Пароли — в Airflow connections и файлах вне репозитория (права 600).</p>
+<div class="tbl-wrap"><table><tr><th>Система</th><th>Адрес</th><th>Airflow conn_id</th></tr>
+  <tr><td>PostgreSQL — control plane, реестры</td><td class="mono">10.10.1.142:5432/etl_prod</td><td class="mono">etl_prod</td></tr>
+  <tr><td>ClickHouse — аналитический слой</td><td class="mono">10.10.1.142:9000 · HTTP 8123 / analytics_poc</td><td class="mono">clickhouse_etl (etl_writer)</td></tr>
+  <tr><td>1С УПП (MSSQL)</td><td class="mono">10.10.1.61:1433/UPP_JAN</td><td class="mono">mssql_1c_conn</td></tr>
+  <tr><td>Retail — сигнал изменений</td><td class="mono">10.10.1.99:5432/ims_db</td><td class="mono">bd_retail</td></tr>
+  <tr><td>Retail — себестоимость</td><td class="mono">10.10.1.85:5432/main_db</td><td class="mono">retail_cost</td></tr>
+  <tr><td>Конфигуратор</td><td class="mono">:5556 (PROD)</td><td>секреты — <code>~/.config/etl_config/prod.env</code></td></tr>
+  <tr><td>ClickHouse admin (только ручной DDL)</td><td>—</td><td><code>~/.config/clickhouse/ch_admin.xml</code>, в Airflow не заведён</td></tr>
+  <tr><td>MSSQL PowerBI</td><td class="mono">10.10.1.136</td><td>{{ badge("WARNING", "вне scope") }}</td></tr>
+</table></div>
+<div class="callout warn"><div class="t">{{ badge("WARNING") }} Ротация паролей</div><p>Пароли <code>airflow_admin</code> (PostgreSQL) и <code>musulmon.k</code> (1С MSSQL) были в git с первого коммита — сменить, затем обновить Airflow connections и prod.env.</p></div>
+
+<h2 id="troubleshooting" data-toc="Карта неисправностей">Карта неисправностей</h2>
+<div class="tbl-wrap"><table><tr><th>Видите</th><th>Смотрите</th></tr>
+  <tr><td>Прогон DAG failed</td><td><a href="#pb-sync-failed">analytics_sync упал</a> · <a href="#pb-manual-conflict">конфликт с ручным прогоном</a></td></tr>
+  <tr><td>«No space left on device», PostgreSQL PANIC</td><td><a href="#pb-disk-full">Диск заполнен</a></td></tr>
+  <tr><td>«дублей бизнес-ключа»</td><td><a href="#pb-month-boundary">Дубль на стыке месяцев</a></td></tr>
+  <tr><td>UNIQUE (doc_table, id), нет sequence</td><td><a href="#pb-doc-key">Выдача id</a></td></tr>
+  <tr><td>Месяц отстаёт от 1С, sweep расходится</td><td><a href="#pb-missing-publication">Данные месяца не обновляются</a></td></tr>
+  <tr><td>Отчёт показывает старые данные</td><td><a href="#pb-powerbi-stale">Power BI не видит свежих данных</a></td></tr>
+</table></div>
+{% endblock %}

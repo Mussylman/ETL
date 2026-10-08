@@ -1,0 +1,12 @@
+<svg viewBox="0 0 980 130" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Как будет работать AI-запрос (PLANNED)">
+  <defs><marker id="ah-air" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="head-ai" d="M0,0L10,5L0,10z"/></marker></defs>
+  <rect x="10" y="30" width="140" height="64" rx="10" class="box fai ai"/><text x="22" y="56" font-weight="600">Вопрос</text><text x="22" y="76" class="t3">на языке пользователя</text>
+  <rect x="175" y="30" width="140" height="64" rx="10" class="box fai ai"/><text x="187" y="56" font-weight="600">Кто спрашивает</text><text x="187" y="76" class="t3">идентификация</text>
+  <rect x="340" y="30" width="140" height="64" rx="10" class="box fai ai"/><text x="352" y="56" font-weight="600">Права</text><text x="352" y="76" class="t3">роль, область</text>
+  <rect x="505" y="30" width="160" height="64" rx="10" class="box fai ai"/><text x="517" y="56" font-weight="600">Только разрешённое</text><text x="517" y="76" class="t3">данные + документы</text>
+  <rect x="690" y="30" width="130" height="64" rx="10" class="box fai ai"/><text x="702" y="56" font-weight="600">LLM</text><text x="702" y="76" class="t3">формирует ответ</text>
+  <rect x="845" y="30" width="125" height="64" rx="10" class="box fai ai"/><text x="857" y="56" font-weight="600">Ответ</text><text x="857" y="76" class="t3">в границах прав</text>
+  <path class="edge-ai" d="M150,62 H173" marker-end="url(#ah-air)"/><path class="edge-ai" d="M315,62 H338" marker-end="url(#ah-air)"/><path class="edge-ai" d="M480,62 H503" marker-end="url(#ah-air)"/>
+  <path class="edge-ai" d="M665,62 H688" marker-end="url(#ah-air)"/><path class="edge-ai" d="M820,62 H843" marker-end="url(#ah-air)"/>
+  <text x="10" y="120" class="t3 mono ctext-ai">PLANNED — права проверяются ДО извлечения данных, а не фильтром поверх ответа</text>
+</svg>

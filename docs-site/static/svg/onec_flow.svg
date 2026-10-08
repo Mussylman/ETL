@@ -1,0 +1,19 @@
+<svg viewBox="0 0 980 230" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Общая загрузка из 1С">
+  <defs><marker id="ah-onec" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="head" d="M0,0L10,5L0,10z"/></marker></defs>
+  <text x="10" y="22" class="t3 mono">EXTRACT</text><text x="410" y="22" class="t3 mono">TRANSFORM</text><text x="790" y="22" class="t3 mono">LOAD</text>
+  <rect x="10" y="40" width="170" height="96" rx="10" class="box fsrc src"/>
+  <text x="24" y="64" font-weight="650">1 · Signal</text><text x="24" y="84" class="t2">retail: guid + updated_at</text><text x="24" y="100" class="t2">с watermark источника</text><text x="24" y="122" class="t3 mono">+ 15-дневный хвост</text>
+  <rect x="205" y="40" width="170" height="96" rx="10" class="box fsrc src"/>
+  <text x="219" y="64" font-weight="650">2 · Lookup в 1С</text><text x="219" y="84" class="t2">точный поиск документа</text><text x="219" y="100" class="t2">ready / pending / deleted</text><text x="219" y="122" class="t3 mono">WITH (NOLOCK)</text>
+  <rect x="400" y="40" width="170" height="96" rx="10" class="box ftr tr"/>
+  <text x="414" y="64" font-weight="650">3 · Extract frame</text><text x="414" y="84" class="t2">поля по метаданным</text><text x="414" y="100" class="t2">registers → mappings</text><text x="414" y="122" class="t3 mono">ETLEngine.extract_frame</text>
+  <rect x="595" y="40" width="170" height="96" rx="10" class="box ftr tr"/>
+  <text x="609" y="64" font-weight="650">4 · Stable IDs</text><text x="609" y="84" class="t2">документ → doc_key</text><text x="609" y="100" class="t2">ссылки → dim_*.id</text><text x="609" y="122" class="t3 mono">registry.resolve</text>
+  <rect x="790" y="40" width="180" height="96" rx="10" class="box fld ld"/>
+  <text x="804" y="64" font-weight="650">5 · Публикация</text><text x="804" y="84" class="t2">партиция месяца</text><text x="804" y="100" class="t2">сверка → REPLACE</text><text x="804" y="122" class="t3 mono">fact_* в ClickHouse</text>
+  <path class="edge" d="M180,88 H203" marker-end="url(#ah-onec)"/><path class="edge" d="M375,88 H398" marker-end="url(#ah-onec)"/>
+  <path class="edge" d="M570,88 H593" marker-end="url(#ah-onec)"/><path class="edge" d="M765,88 H788" marker-end="url(#ah-onec)"/>
+  <rect x="10" y="160" width="960" height="54" rx="10" class="box fpg pg"/>
+  <text x="26" y="184" font-weight="650" class="ctext-pg">Control plane (PostgreSQL)</text>
+  <text x="26" y="202" class="t2">конфиг извлечения и публикации · watermark источника · doc_key / doc_key_scope · реестры dim_* · история ch_sync_history</text>
+</svg>
