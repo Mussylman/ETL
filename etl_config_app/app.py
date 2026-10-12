@@ -3,6 +3,7 @@ ETL Config — standalone web application.
 FastAPI + Jinja2. Один экземпляр — PROD на :5556; запуск и окружение — etl_config_app/RUNNING.md.
 """
 
+from typing import Optional
 import json
 from pathlib import Path
 from fastapi import FastAPI, Request, Form, Query
@@ -127,6 +128,14 @@ def _tpl(name: str, request: Request, **ctx):
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return RedirectResponse("/registers", status_code=302)
+
+
+@app.get("/reconcile", response_class=HTMLResponse)
+async def reconcile_page(request: Request, year: Optional[int] = None):
+    """Сверка 1С / источник ↔ ClickHouse по месяцам — статус от DAG reconcile_status (только чтение)."""
+    from datetime import datetime as _dt
+    grid = dao.reconcile_grid(year or _dt.now().year)
+    return _tpl("reconcile.html", request, g=grid)
 
 
 @app.get("/registers", response_class=HTMLResponse)

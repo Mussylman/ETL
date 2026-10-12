@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% set active_nav = "reconcile" %}
+{% block title %}Сверка — ETL Config{% endblock %}
+{% block breadcrumb %}<li class="active">Сверка</li>{% endblock %}
+{% block content %}
+<style>
+  .rc-head { display:flex; justify-content:space-between; align-items:flex-end; gap:16px; flex-wrap:wrap; margin-bottom:18px; }
+  .rc-title { font-size:24px; font-weight:700; margin:0; } .rc-sub { color:#6b7280; margin:4px 0 0; font-size:13.5px; }
+  .rc-kpis { display:flex; gap:10px; flex-wrap:wrap; }
+  .rc-kpi { border:1px solid #e5e7eb; border-radius:10px; padding:10px 14px; min-width:150px; background:#fff; }
+  .rc-kpi b { font-size:22px; display:block; } .rc-kpi span { font-size:12px; color:#6b7280; }
+  .rc-kpi.fail { border-color:#fecaca; background:#fef2f2; } .rc-kpi.fail b { color:#b91c1c; }
+  .rc-kpi.wait { border-color:#fde68a; background:#fffbeb; } .rc-kpi.wait b { color:#b45309; }
+  .rc-kpi.pass b { color:#047857; }
+  .rc-years a { margin-right:8px; font-size:13px; } .rc-years a.on { font-weight:700; text-decoration:underline; }
+  .rc-wrap { overflow-x:auto; border:1px solid #e5e7eb; border-radius:10px; background:#fff; }
+  table.rc { border-collapse:collapse; width:100%; font-size:13px; }
+  .rc th, .rc td { border-bottom:1px solid #f1f5f9; padding:7px 8px; text-align:center; white-space:nowrap; }
+  .rc th { background:#f8fafc; color:#475569; font-weight:600; font-size:12px; }
+  .rc td.t { text-align:left; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12.5px; }
+  .rc tr.grp td { background:#f8fafc; font-weight:700; text-align:left; color:#334155; font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .cell { display:inline-block; min-width:62px; padding:4px 6px; border-radius:6px; font-weight:600; font-size:12px; cursor:help; }
+  .c-PASS { background:#ecfdf5; color:#047857; } .c-WAIT { background:#fef3c7; color:#92400e; } .c-FAIL { background:#fee2e2; color:#b91c1c; }
+  .c-none { color:#cbd5e1; }
+  .rc-legend { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:16px 0; font-size:13px; }
+  .rc-legend div { border:1px solid #e5e7eb; border-radius:10px; padding:10px 12px; background:#fff; }
+  .rc-list { margin-top:20px; } .rc-item { border:1px solid #e5e7eb; border-left:4px solid #f59e0b; border-radius:8px; padding:10px 14px; margin:8px 0; background:#fff; font-size:13px; }
+  .rc-item.FAIL { border-left-color:#dc2626; } .rc-item h4 { margin:0 0 4px; font-size:14px; }
+  .rc-item .v { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; color:#475569; }
+</style>
+
+<div class="rc-head">
+  <div>
+    <h1 class="rc-title">Сверка 1С / источник ↔ ClickHouse — {{ g.year }}</h1>
+    <p class="rc-sub">Последняя лёгкая проверка (строки + суммы, ежечасно): <b>{{ g.last.light.strftime('%d.%m %H:%M') if g.last.light else '—' }}</b>
+      · полная (отпечаток, раз в сутки): <b>{{ g.last.full.strftime('%d.%m %H:%M') if g.last.full else '—' }}</b> · Алматы · DAG <code>reconcile_status</code></p>
+    <div class="rc-years">{% for y in g.years %}<a href="/reconcile?year={{ y }}" class="{{ 'on' if y == g.year }}">{{ y }}</a>{% endfor %}</div>
+  </div>
+  <div class="rc-kpis">
+    <div class="rc-kpi fail"><b>{{ g.counts.FAIL }}</b><span>требуют реакции</span></div>
+    <div class="rc-kpi wait"><b>{{ g.counts.WAIT }}</b><span>исправятся автоматически</span></div>
+    <div class="rc-kpi pass"><b>{{ g.counts.PASS }}</b><span>совпадает</span></div>
+  </div>
+</div>
+
+<div class="rc-wrap"><table class="rc">
+  <tr><th style="text-align:left">Таблица</th>{% for m in g.months %}<th>{{ m[4:] }}.{{ m[2:4] }}</th>{% endfor %}<th>без партиций</th></tr>
+  {% for grp in g.groups %}
+  <tr class="grp"><td colspan="{{ g.months|length + 2 }}">{{ grp.name }}</td></tr>
+  {% for t in grp.tables %}
+  <tr><td class="t">{{ t }}</td>
+    {% for m in g.months + ['all'] %}{% set c = g.cells.get((t, m)) %}
+    <td>{% if c %}{% set r = c.checks.get('full') or c.checks.get('light') %}
+      <span class="cell c-{{ c.status }}" title="{{ c.status }}{% if c.status != 'PASS' %} · расхождение {{ '%.4f'|format(c.pct) }}% · исправит: {{ r.fixer or '—' }}{% if r.note %} · {{ r.note }}{% endif %}{% endif %} · проверено {{ r.checked_at.strftime('%d.%m %H:%M') }}">
+        {% if c.status == 'PASS' %}✓{% else %}{{ '%.2f'|format(c.pct) }}%{% endif %}</span>
+    {% else %}<span class="c-none">·</span>{% endif %}</td>
+    {% endfor %}
+  </tr>
+  {% endfor %}{% endfor %}
+</table></div>
+
+<div class="rc-legend">
+  <div><span class="cell c-PASS">✓</span> <b>PASS</b> — 1С / источник и ClickHouse совпадают.</div>
+  <div><span class="cell c-WAIT">0.12%</span> <b>WAIT</b> — расхождение ещё исправит штатная загрузка: текущий месяц — patch (5 мин) и hot; прошлый месяц продаж/заказов — hot (ежечасно); остальное — ночной sweep; справочники и cost_daily — следующий цикл.</div>
+  <div><span class="cell c-FAIL">0.12%</span> <b>FAIL</b> — механизм, который должен был исправить, уже отработал, а расхождение (те же документы) осталось. <b>Реагировать.</b></div>
+</div>
+<p class="rc-sub">Процент — максимальное отклонение по числу строк и суммам мер. Большой процент в текущем месяце обычно нормален (документы ещё догружаются); маленький процент в закрытом месяце со статусом FAIL — повод разобраться.</p>
+
+{% set attention = [] %}{% for key, c in g.cells.items() if c.status != 'PASS' %}{% set _ = attention.append((key, c)) %}{% endfor %}
+{% if attention %}
+<div class="rc-list"><h3>Требует внимания</h3>
+  {% for key, c in attention|sort(attribute='1.status', reverse=True) %}{% set r = c.checks.get('full') or c.checks.get('light') %}
+  <div class="rc-item {{ c.status }}"><h4>{{ key[0] }} · {{ key[1] }} — {{ c.status }} · {{ '%.4f'|format(c.pct) }}%</h4>
+    <div>Исправит: <b>{{ r.fixer or '—' }}</b>{% if r.first_mismatch_at %} · замечено {{ r.first_mismatch_at.strftime('%d.%m %H:%M') }}{% endif %}{% if r.note %} · {{ r.note }}{% endif %}</div>
+    {% for kind, ck in c.checks.items() %}<div class="v">{{ kind }}: 1С/источник {{ ck.source_values | tojson }} · ClickHouse {{ (ck.ch_values or {}) | dictsort | rejectattr('0', 'equalto', 'changed_keys') | list | tojson }}</div>{% endfor %}
+  </div>{% endfor %}
+</div>
+{% endif %}
+{% endblock %}

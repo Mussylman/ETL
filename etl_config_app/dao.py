@@ -2132,3 +2132,51 @@ def list_load_history(register_id: int, limit: int = 20) -> List[dict]:
         ORDER BY x.started_at DESC NULLS LAST LIMIT %s
     """
     return query(sql, [register_id, register_id, limit])
+
+
+# ================================================================
+#  СВЕРКА — etl_meta.reconcile_status (пишет DAG reconcile_status)
+# ================================================================
+_RECON_DOMAIN = [("Продажи", ("fact_sales", "fact_sales_positions")),
+                 ("Заказы", ("fact_orders", "fact_order_positions")),
+                 ("Склад", ("fact_stock", "fact_stock_positions")),
+                 ("Себестоимость", ("cost_daily",))]
+_RANK = {"PASS": 0, "WAIT": 1, "FAIL": 2}
+
+
+def reconcile_grid(year: int) -> dict:
+    """
+    Сетка «таблица × месяц» за год: худший статус из лёгкой (ежечасной) и полной (суточной) проверки,
+    процент расхождения, кто исправит. Время — по Алматы (в базе UTC).
+    """
+    rows = query(f"""
+        SELECT target_table, partition_key, check_kind, status, diff_pct, fixer, note,
+               source_values, ch_values,
+               (first_mismatch_at AT TIME ZONE 'Asia/Almaty') AS first_mismatch_at,
+               (checked_at AT TIME ZONE 'Asia/Almaty') AS checked_at
+          FROM {SCHEMA}.reconcile_status
+         WHERE partition_key = 'all' OR partition_key LIKE %s
+         ORDER BY target_table, partition_key, check_kind""", [f"{year}%"])
+    cells: dict = {}
+    for r in rows:
+        key = (r["target_table"], r["partition_key"])
+        c = cells.setdefault(key, {"status": "PASS", "pct": 0.0, "checks": {}})
+        c["checks"][r["check_kind"]] = r
+        if _RANK[r["status"]] > _RANK[c["status"]]:
+            c["status"] = r["status"]
+        c["pct"] = max(c["pct"], float(r["diff_pct"] or 0))
+    tables = sorted({t for t, _ in cells})
+    months = [f"{year}{m:02d}" for m in range(1, 13)]
+    order = [t for _, ts in _RECON_DOMAIN for t in ts]
+    groups = [{"name": n, "tables": [t for t in ts if t in tables]} for n, ts in _RECON_DOMAIN]
+    dims = [t for t in tables if t.startswith("dim_")]
+    groups.append({"name": "Справочники", "tables": dims})
+    groups.append({"name": "Прочее", "tables": [t for t in tables if t not in order and t not in dims]})
+    last = query_one(f"""SELECT max(checked_at) FILTER (WHERE check_kind = 'light') AT TIME ZONE 'Asia/Almaty' AS light,
+                                max(checked_at) FILTER (WHERE check_kind = 'full') AT TIME ZONE 'Asia/Almaty' AS full
+                           FROM {SCHEMA}.reconcile_status""") or {}
+    counts = {s: sum(1 for c in cells.values() if c["status"] == s) for s in ("PASS", "WAIT", "FAIL")}
+    years = [int(r["y"]) for r in query(f"SELECT DISTINCT left(partition_key, 4) AS y FROM {SCHEMA}.reconcile_status "
+                                         f"WHERE partition_key <> 'all' ORDER BY 1")]
+    return {"cells": cells, "groups": [g for g in groups if g["tables"]], "months": months, "last": last,
+            "counts": counts, "years": years or [year], "year": year}

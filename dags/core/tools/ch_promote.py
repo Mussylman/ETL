@@ -246,6 +246,7 @@ def open_partition_diff(ms, ch, spec, p: Dict, partition: str) -> Dict:
             "source_new": len(new), "source_new_rows": sum(int(src[k][0]) for k in new),
             "changed": len(changed), "deleted": len(deleted), "shadow_extra": len(extra),
             "examples": {"changed": changed[:3], "deleted": deleted[:3], "shadow_extra": extra[:3]},
+            "changed_keys": ["|".join(k) for k in changed[:200]],
             "ok": not changed and not deleted and not extra}
 
 
