@@ -96,6 +96,10 @@ PYTHONPATH=dags python3 -m core.tools.load_dim_from_config --dim dim_product --m
 
 # Отчёт сверки источник ↔ ClickHouse по обобщённым источникам (справочники, cost_daily)
 PYTHONPATH=dags python3 -m core.tools.ch_report --config-conn etl_prod
+
+# Проверка расхождений по ВСЕМ активным таблицам (READ ONLY): справочники/cost_daily — с источником,
+# регистры 1С — помесячно с 1С (закрытые 1:1, открытые — CH ⊆ 1С), целостность и doc_key. PASS / WAIT / FAIL
+PYTHONPATH=dags python3 -m core.tools.ch_verify --config-conn etl_prod            # ~17 мин; --months 2 — быстро
 ```
 
 **Отдельной тестовой PostgreSQL-базы нет.** Конфигуратор и инструменты работают с `etl_prod`; опасные операции
